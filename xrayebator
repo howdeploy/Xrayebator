@@ -95,32 +95,31 @@ main_menu() {
         echo -e "${CYAN}  1)${NC} Создать новый профиль"
         echo -e "${CYAN}  2)${NC} Удалить существующий профиль"
         echo -e "${CYAN}  3)${NC} Подключиться по профилю"
-        echo -e "${CYAN}  4)${NC} Список всех профилей"
         echo ""
         echo -e "${MAGENTA}  НАСТРОЙКИ МАСКИРОВКИ:${NC}"
-        echo -e "${CYAN}  5)${NC} Подменить SNI (домен маскировки)"
-        echo -e "${CYAN}  6)${NC} Подменить Fingerprint (браузер)"
-        echo -e "${CYAN}  7)${NC} Изменить порт профиля"
+        echo -e "${CYAN}  4)${NC} Подменить SNI (для маскировки)"
+        echo -e "${CYAN}  5)${NC} Подменить Fingerprint (браузер)"
+	echo -e "${CYAN}  6)${NC} Изменить порты подключения (на всякий)"
         echo ""
         echo -e "${RED}  0)${NC} Выход"
         echo ""
         echo -e "${BLUE}╚════════════════════════════════════════╝${NC}"
         echo -n -e "${YELLOW}Выберите действие: ${NC}"
         read choice
-        
+
         case $choice in
             1) create_profile_menu ;;
             2) delete_profile_menu ;;
             3) connect_profile_menu ;;
-            4) list_profiles ;;
-            5) change_sni_menu ;;
-            6) change_fingerprint_menu ;;
-            7) change_port_menu ;;
+            4) change_sni_menu ;;
+            5) change_fingerprint_menu ;;
+            6) change_port_menu ;;
             0) exit 0 ;;
             *) echo -e "${RED}Неверный выбор${NC}"; sleep 1 ;;
         esac
     done
 }
+
 
 # Меню создания профиля
 create_profile_menu() {
