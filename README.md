@@ -42,7 +42,7 @@
 ### Универсальная команда (работает для всех)
 
 `wget -qO- https://raw.githubusercontent.com/howdeploy/Xrayebator/main/install.sh | sudo bash`  
-или
+или  
 `curl -fsSL https://raw.githubusercontent.com/howdeploy/Xrayebator/main/install.sh | sudo bash`
 
 ### 🔐 Рекомендации по безопасности (опционально)
