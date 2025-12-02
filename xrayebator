@@ -509,7 +509,7 @@ connect_profile_menu() {
     fi
 }
 
-# Генерация данных подключения (ИСПРАВЛЕНО)
+# Генерация данных подключения
 generate_connection() {
     local profile_name=$1
     local profile_file="$PROFILES_DIR/$profile_name.json"
@@ -518,35 +518,36 @@ generate_connection() {
     local port=$(jq -r '.port' "$profile_file")
     local fingerprint=$(jq -r '.fingerprint // "chrome"' "$profile_file")
     local current_sni=$(cat "$CURRENT_SNI_FILE" 2>/dev/null || echo "www.microsoft.com")
-    
-    # ИСПРАВЛЕНО: Очистка публичного ключа от лишних символов
-    local clean_public_key=$(echo "$PUBLIC_KEY" | tr -d '\n\r ')
-    
+
+    # ИСПРАВЛЕНО: Очистка публичного ключа
+    local clean_public_key=$(echo "$PUBLIC_KEY" | tr -d '\n\r\t ')
+
     show_ascii
     echo -e "${GREEN}═══════════════════════════════════════════════${NC}"
     echo -e "${GREEN}  ДАННЫЕ ДЛЯ ПОДКЛЮЧЕНИЯ: $profile_name${NC}"
     echo -e "${GREEN}═══════════════════════════════════════════════${NC}\n"
-    
+
     local vless_link=""
-    
+
     case $transport in
         tcp|tcp-utls)
-            vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&type=tcp&headerType=none#${profile_name}"
+            # ИСПРАВЛЕНО: добавлен sid и правильный порядок параметров
+            vless_link="vless://${uuid}@${SERVER_IP}:${port}?type=tcp&security=reality&pbk=${clean_public_key}&fp=${fingerprint}&sni=${current_sni}&sid=&spx=%2F&flow=xtls-rprx-vision#${profile_name}"
             ;;
         grpc)
-            vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&type=grpc&serviceName=grpc#${profile_name}"
+            vless_link="vless://${uuid}@${SERVER_IP}:${port}?type=grpc&security=reality&pbk=${clean_public_key}&fp=${fingerprint}&sni=${current_sni}&sid=&serviceName=grpc#${profile_name}"
             ;;
         xhttp)
-            vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&type=xhttp&path=/xhttp#${profile_name}"
+            vless_link="vless://${uuid}@${SERVER_IP}:${port}?type=xhttp&security=reality&pbk=${clean_public_key}&fp=${fingerprint}&sni=${current_sni}&sid=&path=%2Fxhttp#${profile_name}"
             ;;
     esac
-    
+
     echo -e "${BLUE}Ссылка для подключения:${NC}"
     echo -e "${YELLOW}${vless_link}${NC}\n"
-    
+
     echo -e "${BLUE}QR-код:${NC}\n"
     qrencode -t ANSIUTF8 "$vless_link"
-    
+
     echo ""
     echo -e "${GREEN}═══════════════════════════════════════════════${NC}"
     echo -e "${CYAN}IP сервера:${NC} $SERVER_IP"
@@ -554,9 +555,9 @@ generate_connection() {
     echo -e "${CYAN}Порт:${NC} $port"
     echo -e "${CYAN}Fingerprint:${NC} $fingerprint"
     echo -e "${CYAN}SNI:${NC} $current_sni"
-    echo -e "${CYAN}Public Key:${NC} ${clean_public_key:0:32}..."
+    echo -e "${CYAN}Public Key:${NC} ${clean_public_key}"
     echo -e "${GREEN}═══════════════════════════════════════════════${NC}\n"
-    
+
     echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
     read
 }
