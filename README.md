@@ -112,7 +112,7 @@ PubkeyAuthentication yes - вход через ssh ключ
 - **Qv2ray** — [GitHub](https://github.com/Qv2ray/Qv2ray)
 
 #### Android
-- **v2rayNG** — [Google Play](https://play.google.com/store/apps/details?id=com.v2ray.ang) / [GitHub](https://github.com/2dust/v2rayNG)
+- **v2rayNG** — [GitHub](https://github.com/2dust/v2rayNG)
 - **NekoBox** — [GitHub](https://github.com/MatsuriDayo/NekoBoxForAndroid) ⭐ Юзаю сам
 
 #### iOS
