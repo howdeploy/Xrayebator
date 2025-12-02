@@ -352,7 +352,11 @@ GRPCEOF
     "streamSettings": {
         "network": "xhttp",
         "security": "reality",
-        "xhttpSettings": {"mode": "auto", "path": "/xhttp"},
+        "xhttpSettings": {
+            "mode": "stream",
+            "path": "/xhttp",
+            "host": "$sni"
+        },
         "realitySettings": {
             "show": false,
             "dest": "$sni:443",
