@@ -128,10 +128,48 @@ cp -r /usr/local/etc/xray/profiles "$BACKUP_DIR/" 2>/dev/null
 cp /usr/local/etc/xray/config.json "$BACKUP_DIR/" 2>/dev/null
 cp /usr/local/etc/xray/.private_key "$BACKUP_DIR/" 2>/dev/null
 cp /usr/local/etc/xray/.public_key "$BACKUP_DIR/" 2>/dev/null
+# Резервируем сам скрипт обновления
+cp /usr/local/etc/xray/scripts/update.sh "$BACKUP_DIR/update.sh.bak" 2>/dev/null
 echo -e "${GREEN}✓ Резервная копия создана: $BACKUP_DIR${NC}\n"
 
 # Сохранение информации о текущей ветке
 echo "$GITHUB_BRANCH" > /usr/local/etc/xray/.current_branch 2>/dev/null
+
+# ═══════════════════════════════════════════════════════════
+# СНАЧАЛА ОБНОВЛЯЕМ САМ СКРИПТ update.sh
+# ═══════════════════════════════════════════════════════════
+echo -e "${YELLOW}Обновление скрипта update.sh...${NC}"
+curl -fsSL "${RAW_BASE_URL}/update.sh" -o /tmp/update_new.sh
+if [[ $? -eq 0 ]] && [[ -s /tmp/update_new.sh ]]; then
+  chmod +x /tmp/update_new.sh
+
+  # Проверяем что скрипт валидный (содержит shebang)
+  if head -n 1 /tmp/update_new.sh | grep -q "^#!/bin/bash"; then
+    # Создаём директорию если не существует
+    mkdir -p /usr/local/etc/xray/scripts
+
+    # Сравниваем с текущей версией
+    if ! cmp -s /tmp/update_new.sh /usr/local/etc/xray/scripts/update.sh 2>/dev/null; then
+      mv /tmp/update_new.sh /usr/local/etc/xray/scripts/update.sh
+      echo -e "${GREEN}✓ Скрипт update.sh обновлён${NC}"
+      echo -e "${YELLOW}⚠ Требуется перезапуск скрипта для применения изменений${NC}"
+      echo ""
+      echo -e "${CYAN}Перезапускаю скрипт обновления...${NC}"
+      sleep 2
+      exec /usr/local/etc/xray/scripts/update.sh
+      exit 0
+    else
+      echo -e "${GREEN}✓ Скрипт update.sh уже актуален${NC}"
+      rm /tmp/update_new.sh
+    fi
+  else
+    echo -e "${YELLOW}⚠ Скачанный скрипт некорректен, пропускаю${NC}"
+    rm /tmp/update_new.sh
+  fi
+else
+  echo -e "${YELLOW}⚠ Не удалось обновить update.sh (продолжаю)${NC}"
+fi
+echo ""
 
 # Обновление основного скрипта
 echo -e "${YELLOW}Обновление xrayebator...${NC}"
@@ -148,6 +186,7 @@ fi
 
 # Обновление списка SNI
 echo -e "${YELLOW}Обновление списка SNI...${NC}"
+mkdir -p /usr/local/etc/xray/data
 curl -fsSL "${RAW_BASE_URL}/sni_list.txt" -o /usr/local/etc/xray/data/sni_list.txt
 if [[ $? -eq 0 ]]; then
   echo -e "${GREEN}✓ Список SNI обновлён${NC}\n"
@@ -157,10 +196,6 @@ fi
 
 # Обновление ASCII арта (опционально)
 curl -fsSL "${RAW_BASE_URL}/ascii_art.txt" -o /usr/local/etc/xray/data/ascii_art.txt 2>/dev/null
-
-# Обновление скриптов управления (если есть)
-curl -fsSL "${RAW_BASE_URL}/update.sh" -o /usr/local/etc/xray/scripts/update.sh 2>/dev/null
-chmod +x /usr/local/etc/xray/scripts/update.sh 2>/dev/null
 
 # Проверка версии
 echo -e "${YELLOW}Проверка установленной версии...${NC}"
@@ -228,10 +263,10 @@ case $GITHUB_BRANCH in
     echo -e "${MAGENTA}  ⚡ ВЫ ИСПОЛЬЗУЕТЕ ЭКСПЕРИМЕНТАЛЬНУЮ ВЕРСИЮ ⚡${NC}"
     echo -e "${MAGENTA}═══════════════════════════════════════════════════════════${NC}"
     echo -e "${CYAN}Новые функции:${NC}"
+    echo -e "  ${GREEN}✓${NC} Автоподбор рабочих связок с динамическим портом"
     echo -e "  ${GREEN}✓${NC} Индивидуальная смена SNI для каждого профиля"
     echo -e "  ${GREEN}✓${NC} Индивидуальная смена fingerprint"
     echo -e "  ${GREEN}✓${NC} Меню с топ-20 SNI и описаниями"
-    echo -e "  ${GREEN}✓${NC} Автоподбор рабочих связок (BETA)"
     echo -e "  ${GREEN}✓${NC} Улучшенная диагностика соединений"
     echo ""
     echo -e "${RED}⚠ ВАЖНО:${NC}"
