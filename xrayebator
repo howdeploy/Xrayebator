@@ -87,6 +87,22 @@ show_ascii() {
 main_menu() {
   while true; do
     show_ascii
+
+    # Показываем текущую ветку
+    local current_branch=$(cat /usr/local/etc/xray/.current_branch 2>/dev/null || echo "main")
+    case $current_branch in
+      main)
+        echo -e "${GREEN}[Stable]${NC} Стабильная версия"
+        ;;
+      dev)
+        echo -e "${BLUE}[Dev]${NC} Версия с быстрыми фиксами"
+        ;;
+      experimental)
+        echo -e "${MAGENTA}[Experimental]${NC} Экспериментальная версия"
+        ;;
+    esac
+    echo ""
+
     echo -e "${BLUE}╔════════════════════════════════════════╗${NC}"
     echo -e "${BLUE}║            ГЛАВНОЕ МЕНЮ                ║${NC}"
     echo -e "${BLUE}╚════════════════════════════════════════╝${NC}"
@@ -189,7 +205,7 @@ create_profile_menu() {
   esac
 }
 
-# Создание профиля (ИСПРАВЛЕНО: добавлено сохранение SNI)
+# Создание профиля
 create_profile() {
   local name=$1
   local transport=$2
@@ -197,11 +213,9 @@ create_profile() {
   local fingerprint=$4
   local uuid=$(uuidgen)
 
-  # Дефолтный SNI - первый из списка или www.microsoft.com
   local default_sni=$(head -n 1 "$SNI_LIST" 2>/dev/null | cut -d'|' -f1)
   [[ -z "$default_sni" ]] && default_sni="www.microsoft.com"
 
-  # Создание файла профиля (ДОБАВЛЕНО: поле "sni")
   cat > "$PROFILES_DIR/$name.json" << EOF
 {
   "name": "$name",
@@ -214,7 +228,6 @@ create_profile() {
 }
 EOF
 
-  # Добавление inbound в конфиг
   add_inbound "$uuid" "$transport" "$port" "$default_sni" "$fingerprint"
   systemctl restart xray
   echo ""
@@ -455,7 +468,7 @@ connect_profile_menu() {
   fi
 }
 
-# Генерация данных подключения (ИСПРАВЛЕНО: читаем SNI из профиля)
+# Генерация данных подключения
 generate_connection() {
   local profile_name=$1
   local profile_file="$PROFILES_DIR/$profile_name.json"
@@ -509,7 +522,7 @@ generate_connection() {
   read
 }
 
-# ИСПРАВЛЕНО: Индивидуальная смена SNI по профилям
+# Смена SNI
 change_sni_menu() {
   show_ascii
   echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
@@ -562,7 +575,6 @@ change_sni_menu() {
     return
   fi
 
-  # Создание ассоциативного массива с описаниями
   declare -A sni_desc
   sni_desc["ozone.ru"]="E-commerce, макс. устойчивость для мобильных"
   sni_desc["wildberries.ru"]="E-commerce, стабильно для Мегафон/Ростелеком"
@@ -627,7 +639,6 @@ change_sni_menu() {
     return
   fi
 
-  # Предупреждение
   echo ""
   echo -e "${RED}╔═══════════════════════════════════════════════════════════╗${NC}"
   echo -e "${RED}║            ⚠ КРИТИЧЕСКОЕ ПРЕДУПРЕЖДЕНИЕ ⚠               ║${NC}"
@@ -652,12 +663,10 @@ change_sni_menu() {
     return
   fi
 
-  # Обновляем SNI в файле профиля
   local temp_profile=$(mktemp)
   jq --arg sni "$new_sni" '.sni = $sni' "$PROFILES_DIR/$selected.json" > "$temp_profile"
   mv "$temp_profile" "$PROFILES_DIR/$selected.json"
 
-  # Обновляем в конфиге (только для этого inbound)
   local port=$(jq -r '.port' "$PROFILES_DIR/$selected.json")
   local temp_config=$(mktemp)
   jq --arg tag "inbound-$port" --arg sni "$new_sni" '
@@ -679,7 +688,7 @@ change_sni_menu() {
   read
 }
 
-# Смена Fingerprint (уже исправлено ранее)
+# Смена Fingerprint
 change_fingerprint_menu() {
   show_ascii
   echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
@@ -928,12 +937,10 @@ change_port_menu() {
   read
 }
 
-# Экспериментальный автоподбор (сокращённая версия для компактности)
 # ════════════════════════════════════════════════════════════
-# ФУНКЦИЯ: Автоподбор рабочей связки (ЭКСПЕРИМЕНТАЛЬНАЯ)
+# ФУНКЦИИ ДЛЯ АВТОПОДБОРА
 # ════════════════════════════════════════════════════════════
 
-# Вспомогательная: получить SNI по категории
 get_sni_by_category() {
   local category=$1
   local limit=${2:-5}
@@ -954,15 +961,11 @@ get_sni_by_category() {
   echo "${result[@]}"
 }
 
-# Вспомогательная: настройка временного SOCKS5 для тестирования
 setup_test_socks5() {
   local temp_config=$(mktemp)
-
-  # Проверяем есть ли уже test-socks inbound
   local has_test_socks=$(jq -r '.inbounds[] | select(.tag == "test-socks") | .tag' "$CONFIG_FILE" 2>/dev/null)
 
   if [[ -z "$has_test_socks" ]]; then
-    # Добавляем временный SOCKS5 inbound для тестирования
     jq '.inbounds += [{
       "listen": "127.0.0.1",
       "port": 10808,
@@ -977,20 +980,115 @@ setup_test_socks5() {
   fi
 }
 
-# Вспомогательная: удаление test-socks
 remove_test_socks() {
   local temp_config=$(mktemp)
   jq 'del(.inbounds[] | select(.tag == "test-socks"))' "$CONFIG_FILE" > "$temp_config"
   mv "$temp_config" "$CONFIG_FILE"
 }
 
-# Вспомогательная: создание временного тестового профиля
+add_test_inbound() {
+  local uuid=$1
+  local transport=$2
+  local port=$3
+  local sni=$4
+  local fingerprint=${5:-"chrome"}
+
+  echo -e "${CYAN} → Создание тестового inbound на порту $port${NC}"
+
+  local temp_config=$(mktemp)
+  jq 'del(.inbounds[] | select(.tag == "test-inbound"))' "$CONFIG_FILE" > "$temp_config"
+  mv "$temp_config" "$CONFIG_FILE"
+
+  local inbound=""
+  case $transport in
+    tcp|tcp-utls)
+      inbound=$(cat << 'TCPEOF'
+{
+  "listen": "0.0.0.0",
+  "port": PORT_PLACEHOLDER,
+  "protocol": "vless",
+  "settings": {
+    "clients": [{"id": "UUID_PLACEHOLDER", "flow": "xtls-rprx-vision"}],
+    "decryption": "none"
+  },
+  "streamSettings": {
+    "network": "tcp",
+    "security": "reality",
+    "realitySettings": {
+      "show": false,
+      "dest": "SNI_PLACEHOLDER:443",
+      "xver": 0,
+      "serverNames": ["SNI_PLACEHOLDER"],
+      "privateKey": "PRIVKEY_PLACEHOLDER",
+      "shortIds": [""],
+      "fingerprint": "FP_PLACEHOLDER"
+    }
+  },
+  "sniffing": {"enabled": true, "destOverride": ["http", "tls"]},
+  "tag": "test-inbound"
+}
+TCPEOF
+)
+      inbound="${inbound//PORT_PLACEHOLDER/$port}"
+      inbound="${inbound//UUID_PLACEHOLDER/$uuid}"
+      inbound="${inbound//SNI_PLACEHOLDER/$sni}"
+      inbound="${inbound//PRIVKEY_PLACEHOLDER/$PRIVATE_KEY}"
+      inbound="${inbound//FP_PLACEHOLDER/$fingerprint}"
+      ;;
+    grpc)
+      inbound=$(cat << 'GRPCEOF'
+{
+  "listen": "0.0.0.0",
+  "port": PORT_PLACEHOLDER,
+  "protocol": "vless",
+  "settings": {
+    "clients": [{"id": "UUID_PLACEHOLDER", "flow": ""}],
+    "decryption": "none"
+  },
+  "streamSettings": {
+    "network": "grpc",
+    "security": "reality",
+    "grpcSettings": {"serviceName": "grpc", "multiMode": false},
+    "realitySettings": {
+      "show": false,
+      "dest": "SNI_PLACEHOLDER:443",
+      "xver": 0,
+      "serverNames": ["SNI_PLACEHOLDER"],
+      "privateKey": "PRIVKEY_PLACEHOLDER",
+      "shortIds": [""],
+      "fingerprint": "FP_PLACEHOLDER"
+    }
+  },
+  "sniffing": {"enabled": true, "destOverride": ["http", "tls"]},
+  "tag": "test-inbound"
+}
+GRPCEOF
+)
+      inbound="${inbound//PORT_PLACEHOLDER/$port}"
+      inbound="${inbound//UUID_PLACEHOLDER/$uuid}"
+      inbound="${inbound//SNI_PLACEHOLDER/$sni}"
+      inbound="${inbound//PRIVKEY_PLACEHOLDER/$PRIVATE_KEY}"
+      inbound="${inbound//FP_PLACEHOLDER/$fingerprint}"
+      ;;
+  esac
+
+  temp_config=$(mktemp)
+  echo "$inbound" | jq -s '.[0]' > /tmp/test_inbound.json
+  jq ".inbounds += [$(cat /tmp/test_inbound.json)]" "$CONFIG_FILE" > "$temp_config"
+  mv "$temp_config" "$CONFIG_FILE"
+  rm /tmp/test_inbound.json
+  chown root:root "$CONFIG_FILE"
+  chmod 644 "$CONFIG_FILE"
+}
+
 create_test_profile() {
   local sni=$1
   local transport=$2
   local port=$3
   local fp=$4
   local uuid=$(uuidgen)
+
+  cleanup_test_profile
 
   cat > "$PROFILES_DIR/_test.json" << EOF
 {
@@ -1004,59 +1102,51 @@ create_test_profile() {
 }
 EOF
 
-  add_inbound "$uuid" "$transport" "$port" "$sni" "$fp"
+  add_test_inbound "$uuid" "$transport" "$port" "$sni" "$fp"
 }
 
-# Вспомогательная: очистка тестового профиля
 cleanup_test_profile() {
   rm -f "$PROFILES_DIR/_test.json" 2>/dev/null
 
-  # Удаляем тестовые inbounds
   local temp_config=$(mktemp)
-  jq 'del(.inbounds[] | select(.tag | startswith("inbound-")))' "$CONFIG_FILE" > "$temp_config"
-
-  # Восстанавливаем только не-тестовые профили
-  for profile_file in "$PROFILES_DIR"/*.json; do
-    [[ "$profile_file" == *"_test.json" ]] && continue
-    [[ ! -f "$profile_file" ]] && continue
-
-    local p_uuid=$(jq -r '.uuid' "$profile_file")
-    local p_transport=$(jq -r '.transport' "$profile_file")
-    local p_port=$(jq -r '.port' "$profile_file")
-    local p_sni=$(jq -r '.sni' "$profile_file")
-    local p_fp=$(jq -r '.fingerprint' "$profile_file")
-
-    # Пересоздаём через temp конфиг чтобы не ломать существующие
-    echo "Restoring: $(basename $profile_file)"
-  done
+  jq 'del(.inbounds[] | select(.tag == "test-inbound"))' "$CONFIG_FILE" > "$temp_config"
+  mv "$temp_config" "$CONFIG_FILE"
+  chown root:root "$CONFIG_FILE"
+  chmod 644 "$CONFIG_FILE"
 }
 
-# Вспомогательная: полный тест соединения
 test_connection_full() {
   local sni=$1
   local transport=$2
   local port=$3
   local fp=$4
 
-  # Создаём временный профиль
   create_test_profile "$sni" "$transport" "$port" "$fp"
-  systemctl restart xray >/dev/null 2>&1
-  sleep 4
 
-  # Проверка 1: Xray запущен?
+  echo -e "${CYAN}  → Проверка конфигурации...${NC}"
+  if ! /usr/local/bin/xray -test -config "$CONFIG_FILE" >/dev/null 2>&1; then
+    echo -e "${RED}  ✗ Конфигурация невалидна${NC}"
+    return 1
+  fi
+
+  echo -e "${CYAN}  → Перезапуск Xray...${NC}"
+  systemctl restart xray >/dev/null 2>&1
+  sleep 5
+
   if ! systemctl is-active --quiet xray; then
     echo -e "${RED}  ✗ Xray не запустился${NC}"
     return 1
   fi
 
-  # Проверка 2: Порт слушается?
+  sleep 2
   if ! ss -tuln | grep -q ":${port}.*LISTEN"; then
     echo -e "${RED}  ✗ Порт $port не слушается${NC}"
     return 1
   fi
 
-  # Проверка 3: HTTP через SOCKS5
-  local http_code=$(curl -s --connect-timeout 5 \
+  echo -e "${GREEN}  ✓ Порт $port слушается${NC}"
+
+  local http_code=$(timeout 10 curl -s --connect-timeout 5 \
     --max-time 8 \
     --socks5 127.0.0.1:10808 \
     https://www.google.com \
@@ -1067,20 +1157,7 @@ test_connection_full() {
     return 0
   fi
 
-  # Проверка 4: Cloudflare DNS через SOCKS5 (fallback)
-  local dns_test=$(curl -s --connect-timeout 5 \
-    --max-time 8 \
-    --socks5 127.0.0.1:10808 \
-    https://1.1.1.1 \
-    -o /dev/null -w "%{http_code}" 2>/dev/null)
-
-  if [[ "$dns_test" == "200" ]] || [[ "$dns_test" == "301" ]] || [[ "$dns_test" == "400" ]]; then
-    echo -e "${GREEN}  ✓ DNS test passed (code: $dns_test)${NC}"
-    return 0
-  fi
-
-  # Проверка 5: Yandex (для РФ)
-  local yandex_test=$(curl -s --connect-timeout 5 \
+  local yandex_test=$(timeout 10 curl -s --connect-timeout 5 \
     --max-time 8 \
     --socks5 127.0.0.1:10808 \
     https://ya.ru \
@@ -1091,11 +1168,10 @@ test_connection_full() {
     return 0
   fi
 
-  echo -e "${RED}  ✗ Все тесты провалены (http:$http_code, dns:$dns_test, ya:$yandex_test)${NC}"
+  echo -e "${RED}  ✗ Все тесты провалены (http:$http_code, ya:$yandex_test)${NC}"
   return 1
 }
 
-# Вспомогательная: сохранение найденного профиля
 save_profile_from_test() {
   local sni=$1
   local transport=$2
@@ -1119,7 +1195,6 @@ save_profile_from_test() {
     echo -n -e "${YELLOW}Введите имя профиля (например: auto_found): ${NC}"
     read profile_name
 
-    # Валидация имени
     if [[ -z "$profile_name" ]]; then
       profile_name="auto_$(date +%Y%m%d_%H%M%S)"
     fi
@@ -1130,12 +1205,18 @@ save_profile_from_test() {
       echo -e "${YELLOW}Используется автоимя: $profile_name${NC}"
     fi
 
-    # Переименовываем _test.json в постоянный профиль
     if [[ -f "$PROFILES_DIR/_test.json" ]]; then
       mv "$PROFILES_DIR/_test.json" "$PROFILES_DIR/$profile_name.json"
       local temp_profile=$(mktemp)
       jq --arg name "$profile_name" '.name = $name' "$PROFILES_DIR/$profile_name.json" > "$temp_profile"
       mv "$temp_profile" "$PROFILES_DIR/$profile_name.json"
+
+      # Обновляем tag в конфиге
+      local temp_config=$(mktemp)
+      jq --arg new_tag "inbound-$port" '
+        (.inbounds[] | select(.tag == "test-inbound") | .tag) |= $new_tag
+      ' "$CONFIG_FILE" > "$temp_config"
+      mv "$temp_config" "$CONFIG_FILE"
 
       echo ""
       echo -e "${GREEN}✓ Профиль '$profile_name' успешно создан!${NC}"
@@ -1148,7 +1229,7 @@ save_profile_from_test() {
 }
 
 # ════════════════════════════════════════════════════════════
-# ГЛАВНАЯ ФУНКЦИЯ: Автоподбор профиля
+# ГЛАВНАЯ ФУНКЦИЯ АВТОПОДБОРА (С ДИНАМИЧЕСКИМ ПОРТОМ)
 # ════════════════════════════════════════════════════════════
 
 auto_profile_setup_menu() {
@@ -1159,8 +1240,8 @@ auto_profile_setup_menu() {
 
   echo -e "${YELLOW}Функция автоматически перебирает комбинации:${NC}"
   echo -e "  ${CYAN}•${NC} SNI доменов (топ-15 из списка по приоритету)"
-  echo -e "  ${CYAN}•${NC} Транспорты (TCP, gRPC, XHTTP)"
-  echo -e "  ${CYAN}•${NC} Порты (443, 2053, 9443)"
+  echo -e "  ${CYAN}•${NC} Транспорты (TCP, gRPC)"
+  echo -e "  ${CYAN}•${NC} Порты (динамический выбор свободного)"
   echo -e "  ${CYAN}•${NC} Fingerprints (chrome, firefox)"
   echo ""
   echo -e "${MAGENTA}Будет создан временный профиль для каждого теста.${NC}"
@@ -1181,20 +1262,34 @@ auto_profile_setup_menu() {
     return
   fi
 
+  # ДИНАМИЧЕСКИЙ ВЫБОР СВОБОДНОГО ПОРТА
+  local test_port=8443
   echo ""
+  echo -e "${CYAN}Проверка свободного порта для тестов...${NC}"
+  if ss -tuln | grep -q ":8443.*LISTEN"; then
+    test_port=9443
+    echo -e "${YELLOW}⚠ Порт 8443 занят, использую 9443${NC}"
+  fi
+  if ss -tuln | grep -q ":${test_port}.*LISTEN"; then
+    test_port=7443
+    echo -e "${YELLOW}⚠ Порт 9443 занят, использую 7443${NC}"
+  fi
+  if ss -tuln | grep -q ":${test_port}.*LISTEN"; then
+    test_port=6443
+    echo -e "${YELLOW}⚠ Порт 7443 занят, использую 6443${NC}"
+  fi
+  echo -e "${GREEN}✓ Тестовый порт: $test_port${NC}\n"
+
   echo -e "${CYAN}════════════════════════════════════════════════════════════${NC}"
   echo -e "${CYAN}           НАЧИНАЮ ТЕСТИРОВАНИЕ КОМБИНАЦИЙ                ${NC}"
   echo -e "${CYAN}════════════════════════════════════════════════════════════${NC}\n"
 
-  # Настраиваем временный SOCKS5
   setup_test_socks5
 
-  # Читаем SNI по категориям
   local sni_tier1=($(get_sni_by_category "ru_whitelist" 5))
   local sni_tier2=($(get_sni_by_category "yandex_cdn" 5))
   local sni_tier3=($(get_sni_by_category "foreign" 3))
 
-  # Если списки пустые - используем дефолтные
   [[ ${#sni_tier1[@]} -eq 0 ]] && sni_tier1=("ozone.ru" "sberbank.ru" "gosuslugi.ru")
   [[ ${#sni_tier2[@]} -eq 0 ]] && sni_tier2=("speller.yandex.net")
   [[ ${#sni_tier3[@]} -eq 0 ]] && sni_tier3=("www.microsoft.com" "cloudflare.com")
@@ -1202,12 +1297,12 @@ auto_profile_setup_menu() {
   local test_num=1
   local found=0
 
-  # Tier 1: ru_whitelist + TCP + chrome (ПРИОРИТЕТ)
-  echo -e "${MAGENTA}[Tier-1] Тестирую российские домены + TCP${NC}\n"
+  # Tier 1: ru_whitelist + TCP + chrome
+  echo -e "${MAGENTA}[Tier-1] Тестирую российские домены + TCP:$test_port${NC}\n"
   for sni in "${sni_tier1[@]}"; do
-    echo -e "${BLUE}[$test_num] Тест:${NC} ${YELLOW}$sni${NC} + tcp:443 + chrome"
-    if test_connection_full "$sni" "tcp" "443" "chrome"; then
-      save_profile_from_test "$sni" "tcp" "443" "chrome"
+    echo -e "${BLUE}[$test_num] Тест:${NC} ${YELLOW}$sni${NC} + tcp:$test_port + chrome"
+    if test_connection_full "$sni" "tcp" "$test_port" "chrome"; then
+      save_profile_from_test "$sni" "tcp" "$test_port" "chrome"
       found=1
       break
     fi
@@ -1216,15 +1311,14 @@ auto_profile_setup_menu() {
     sleep 1
   done
 
-  # Если нашли - выходим
   [[ $found -eq 1 ]] && { remove_test_socks; systemctl restart xray >/dev/null 2>&1; return 0; }
 
   # Tier 1b: ru_whitelist + TCP + firefox
-  echo -e "\n${MAGENTA}[Tier-1b] Тестирую российские домены + TCP + Firefox${NC}\n"
+  echo -e "\n${MAGENTA}[Tier-1b] Тестирую российские домены + TCP:$test_port + Firefox${NC}\n"
   for sni in "${sni_tier1[@]}"; do
-    echo -e "${BLUE}[$test_num] Тест:${NC} ${YELLOW}$sni${NC} + tcp:443 + firefox"
-    if test_connection_full "$sni" "tcp" "443" "firefox"; then
-      save_profile_from_test "$sni" "tcp" "443" "firefox"
+    echo -e "${BLUE}[$test_num] Тест:${NC} ${YELLOW}$sni${NC} + tcp:$test_port + firefox"
+    if test_connection_full "$sni" "tcp" "$test_port" "firefox"; then
+      save_profile_from_test "$sni" "tcp" "$test_port" "firefox"
       found=1
       break
     fi
@@ -1236,11 +1330,11 @@ auto_profile_setup_menu() {
   [[ $found -eq 1 ]] && { remove_test_socks; systemctl restart xray >/dev/null 2>&1; return 0; }
 
   # Tier 2: yandex_cdn + TCP
-  echo -e "\n${MAGENTA}[Tier-2] Тестирую Яндекс CDN + TCP${NC}\n"
+  echo -e "\n${MAGENTA}[Tier-2] Тестирую Яндекс CDN + TCP:$test_port${NC}\n"
   for sni in "${sni_tier2[@]}"; do
-    echo -e "${BLUE}[$test_num] Тест:${NC} ${YELLOW}$sni${NC} + tcp:443 + chrome"
-    if test_connection_full "$sni" "tcp" "443" "chrome"; then
-      save_profile_from_test "$sni" "tcp" "443" "chrome"
+    echo -e "${BLUE}[$test_num] Тест:${NC} ${YELLOW}$sni${NC} + tcp:$test_port + chrome"
+    if test_connection_full "$sni" "tcp" "$test_port" "chrome"; then
+      save_profile_from_test "$sni" "tcp" "$test_port" "chrome"
       found=1
       break
     fi
@@ -1252,7 +1346,7 @@ auto_profile_setup_menu() {
   [[ $found -eq 1 ]] && { remove_test_socks; systemctl restart xray >/dev/null 2>&1; return 0; }
 
   # Tier 3: ru_whitelist + gRPC
-  echo -e "\n${MAGENTA}[Tier-3] Тестирую российские домены + gRPC${NC}\n"
+  echo -e "\n${MAGENTA}[Tier-3] Тестирую российские домены + gRPC:2053${NC}\n"
   for sni in "${sni_tier1[@]:0:3}"; do
     echo -e "${BLUE}[$test_num] Тест:${NC} ${YELLOW}$sni${NC} + grpc:2053 + chrome"
     if test_connection_full "$sni" "grpc" "2053" "chrome"; then
@@ -1267,12 +1361,12 @@ auto_profile_setup_menu() {
 
   [[ $found -eq 1 ]] && { remove_test_socks; systemctl restart xray >/dev/null 2>&1; return 0; }
 
-  # Tier 4: foreign + TCP (ПОСЛЕДНИЙ ШАНС)
-  echo -e "\n${MAGENTA}[Tier-4] Тестирую зарубежные домены + TCP${NC}\n"
+  # Tier 4: foreign + TCP
+  echo -e "\n${MAGENTA}[Tier-4] Тестирую зарубежные домены + TCP:$test_port${NC}\n"
   for sni in "${sni_tier3[@]}"; do
-    echo -e "${BLUE}[$test_num] Тест:${NC} ${YELLOW}$sni${NC} + tcp:443 + chrome"
-    if test_connection_full "$sni" "tcp" "443" "chrome"; then
-      save_profile_from_test "$sni" "tcp" "443" "chrome"
+    echo -e "${BLUE}[$test_num] Тест:${NC} ${YELLOW}$sni${NC} + tcp:$test_port + chrome"
+    if test_connection_full "$sni" "tcp" "$test_port" "chrome"; then
+      save_profile_from_test "$sni" "tcp" "$test_port" "chrome"
       found=1
       break
     fi
@@ -1281,7 +1375,6 @@ auto_profile_setup_menu() {
     sleep 1
   done
 
-  # Очистка
   remove_test_socks
   cleanup_test_profile
   systemctl restart xray >/dev/null 2>&1
@@ -1293,7 +1386,6 @@ auto_profile_setup_menu() {
     echo -e "${RED}╚═══════════════════════════════════════════════════════════╝${NC}"
     echo ""
     echo -e "${YELLOW}Возможные причины:${NC}"
-    echo -e "  ${CYAN}•${NC} Заблокирован порт 443/2053 провайдером"
     echo -e "  ${CYAN}•${NC} Проблемы с интернет-подключением сервера"
     echo -e "  ${CYAN}•${NC} Firewall блокирует исходящие соединения"
     echo -e "  ${CYAN}•${NC} Список SNI устарел (обновите: sudo xrayebator-update)"
@@ -1308,7 +1400,6 @@ auto_profile_setup_menu() {
   echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
   read
 }
-
 
 # Запуск главного меню
 main_menu
