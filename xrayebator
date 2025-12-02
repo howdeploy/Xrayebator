@@ -245,7 +245,7 @@ EOF
     read
 }
 
-# Добавление inbound в конфиг (ИСПРАВЛЕНО - добавляет клиента, а не дублирует inbound)
+# Добавление inbound в
 add_inbound() {
     local uuid=$1
     local transport=$2
@@ -257,8 +257,8 @@ add_inbound() {
     local existing_tag=$(jq -r --argjson port "$port" '.inbounds[] | select(.port == $port) | .tag' "$CONFIG_FILE" 2>/dev/null)
 
     if [[ -n "$existing_tag" ]]; then
-        # ИСПРАВЛЕНО: Добавляем клиента в существующий inbound
-        echo -e "${CYAN}Добавление клиента в существующий inbound на порту $port${NC}"
+        # Добавляем клиента в существующий inbound
+        echo -e "${CYAN}  → Добавление клиента в существующий inbound на порту $port${NC}"
 
         local temp_config=$(mktemp)
         jq --arg uuid "$uuid" --argjson port "$port" '
@@ -267,11 +267,16 @@ add_inbound() {
                 "flow": (if .settings.clients[0].flow then .settings.clients[0].flow else "xtls-rprx-vision" end)
             }]
         ' "$CONFIG_FILE" > "$temp_config"
+
+        # ИСПРАВЛЕНО: Устанавливаем правильные права
         mv "$temp_config" "$CONFIG_FILE"
+        chown root:root "$CONFIG_FILE"
+        chmod 644 "$CONFIG_FILE"
         return
     fi
 
-    # Создаём новый inbound только если порт свободен
+    # Создаём новый inbound
+    echo -e "${CYAN}  → Создание нового inbound на порту $port${NC}"
     local inbound=""
 
     case $transport in
@@ -282,12 +287,7 @@ add_inbound() {
     "port": $port,
     "protocol": "vless",
     "settings": {
-        "clients": [
-            {
-                "id": "$uuid",
-                "flow": "xtls-rprx-vision"
-            }
-        ],
+        "clients": [{"id": "$uuid", "flow": "xtls-rprx-vision"}],
         "decryption": "none"
     },
     "streamSettings": {
@@ -297,23 +297,13 @@ add_inbound() {
             "show": false,
             "dest": "$sni:443",
             "xver": 0,
-            "serverNames": [
-                "$sni"
-            ],
+            "serverNames": ["$sni"],
             "privateKey": "$PRIVATE_KEY",
-            "shortIds": [
-                ""
-            ],
+            "shortIds": [""],
             "fingerprint": "$fingerprint"
         }
     },
-    "sniffing": {
-        "enabled": true,
-        "destOverride": [
-            "http",
-            "tls"
-        ]
-    },
+    "sniffing": {"enabled": true, "destOverride": ["http", "tls"]},
     "tag": "inbound-$port"
 }
 TCPEOF
@@ -326,42 +316,24 @@ TCPEOF
     "port": $port,
     "protocol": "vless",
     "settings": {
-        "clients": [
-            {
-                "id": "$uuid",
-                "flow": ""
-            }
-        ],
+        "clients": [{"id": "$uuid", "flow": ""}],
         "decryption": "none"
     },
     "streamSettings": {
         "network": "grpc",
         "security": "reality",
-        "grpcSettings": {
-            "serviceName": "grpc",
-            "multiMode": false
-        },
+        "grpcSettings": {"serviceName": "grpc", "multiMode": false},
         "realitySettings": {
             "show": false,
             "dest": "$sni:443",
             "xver": 0,
-            "serverNames": [
-                "$sni"
-            ],
+            "serverNames": ["$sni"],
             "privateKey": "$PRIVATE_KEY",
-            "shortIds": [
-                ""
-            ],
+            "shortIds": [""],
             "fingerprint": "$fingerprint"
         }
     },
-    "sniffing": {
-        "enabled": true,
-        "destOverride": [
-            "http",
-            "tls"
-        ]
-    },
+    "sniffing": {"enabled": true, "destOverride": ["http", "tls"]},
     "tag": "inbound-$port"
 }
 GRPCEOF
@@ -374,42 +346,24 @@ GRPCEOF
     "port": $port,
     "protocol": "vless",
     "settings": {
-        "clients": [
-            {
-                "id": "$uuid",
-                "flow": ""
-            }
-        ],
+        "clients": [{"id": "$uuid", "flow": ""}],
         "decryption": "none"
     },
     "streamSettings": {
         "network": "xhttp",
         "security": "reality",
-        "xhttpSettings": {
-            "mode": "auto",
-            "path": "/xhttp"
-        },
+        "xhttpSettings": {"mode": "auto", "path": "/xhttp"},
         "realitySettings": {
             "show": false,
             "dest": "$sni:443",
             "xver": 0,
-            "serverNames": [
-                "$sni"
-            ],
+            "serverNames": ["$sni"],
             "privateKey": "$PRIVATE_KEY",
-            "shortIds": [
-                ""
-            ],
+            "shortIds": [""],
             "fingerprint": "$fingerprint"
         }
     },
-    "sniffing": {
-        "enabled": true,
-        "destOverride": [
-            "http",
-            "tls"
-        ]
-    },
+    "sniffing": {"enabled": true, "destOverride": ["http", "tls"]},
     "tag": "inbound-$port"
 }
 XHTTPEOF
@@ -420,8 +374,13 @@ XHTTPEOF
     # Добавление inbound в конфиг
     local temp_config=$(mktemp)
     jq ".inbounds += [$inbound]" "$CONFIG_FILE" > "$temp_config"
+
+    # ИСПРАВЛЕНО: Устанавливаем правильные права
     mv "$temp_config" "$CONFIG_FILE"
+    chown root:root "$CONFIG_FILE"
+    chmod 644 "$CONFIG_FILE"
 }
+
 
 # Удаление профиля
 delete_profile_menu() {
