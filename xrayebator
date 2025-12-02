@@ -664,137 +664,95 @@ change_sni_menu() {
 
 # Смена Fingerprint
 change_fingerprint_menu() {
-	show_ascii
-	echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
-	echo -e "${BLUE}         ПОДМЕНА FINGERPRINT (TLS БРАУЗЕР)          ${NC}"
-	echo -e "${BLUE}═══════════════════════════════════════════════${NC}
-"
+    show_ascii
+    echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
+    echo -e "${BLUE}   ПОДМЕНА FINGERPRINT (TLS БРАУЗЕР)           ${NC}"
+    echo -e "${BLUE}═══════════════════════════════════════════════${NC}\n"
 
-	local profiles=($(ls -1 "$PROFILES_DIR" 2>/dev/null | sed 's/.json//'))
+    # Определение текущего fingerprint (берем из первого inbound)
+    local current_fp=$(jq -r '.inbounds[0].streamSettings.realitySettings.fingerprint // "chrome"' "$CONFIG_FILE")
 
-	if [[ ${#profiles[@]} -eq 0 ]]; then
-		echo -e "${RED}✗ Нет созданных профилей${NC}"
-		echo ""
-		echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
-		read
-		return
-	fi
+    echo -e "${CYAN}Текущий fingerprint:${NC} ${GREEN}$current_fp${NC}\n"
 
-	echo -e "${YELLOW}Выберите профиль для изменения fingerprint:${NC}
-"
+    echo -e "${YELLOW}Доступные fingerprint (эмуляция браузера):${NC}\n"
+    echo -e "${CYAN}  1)${NC} chrome ${BLUE}(стандартный, широкая совместимость)${NC}"
+    echo -e "${CYAN}  2)${NC} firefox ${GREEN}(рекомендуется при блокировках РКН)${NC}"
+    echo -e "${CYAN}  3)${NC} safari ${BLUE}(для iOS/macOS клиентов)${NC}"
+    echo -e "${CYAN}  4)${NC} edge ${BLUE}(альтернатива chrome)${NC}"
+    echo -e "${CYAN}  0)${NC} Назад в главное меню\n"
 
-	local i=1
-	for profile in "${profiles[@]}"; do
-		local transport=$(jq -r '.transport' "$PROFILES_DIR/$profile.json" 2>/dev/null)
-		local port=$(jq -r '.port' "$PROFILES_DIR/$profile.json" 2>/dev/null)
-		local current_fp=$(jq -r '.fingerprint // "chrome"' "$PROFILES_DIR/$profile.json" 2>/dev/null)
-		echo -e "${CYAN} $i)${NC} $profile ${BLUE}[$transport:$port]${NC} ${GREEN}[FP: $current_fp]${NC}"
-		((i++))
-	done
+    echo -n -e "${YELLOW}Выберите новый fingerprint: ${NC}"
+    read choice
 
-	echo -e "${CYAN} 0)${NC} Назад в главное меню
-"
+    local new_fp=""
+    case $choice in
+        1) new_fp="chrome" ;;
+        2) new_fp="firefox" ;;
+        3) new_fp="safari" ;;
+        4) new_fp="edge" ;;
+        0) return ;;
+        *) echo -e "${RED}✗ Неверный выбор${NC}"; sleep 2; return ;;
+    esac
 
-	echo -n -e "${YELLOW}Выберите профиль: ${NC}"
-	read choice
+    if [[ "$new_fp" == "$current_fp" ]]; then
+        echo -e "${YELLOW}⚠ Этот fingerprint уже используется${NC}"
+        sleep 2
+        return
+    fi
 
-	if [[ "$choice" == "0" ]]; then
-		return
-	fi
+    # Критическое предупреждение
+    echo ""
+    echo -e "${RED}╔═══════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${RED}║            ⚠ КРИТИЧЕСКОЕ ПРЕДУПРЕЖДЕНИЕ ⚠                ║${NC}"
+    echo -e "${RED}╚═══════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${YELLOW}Смена fingerprint изменит TLS имитацию браузера.${NC}"
+    echo ""
+    echo -e "${RED}ВСЕ активные подключения будут разорваны!${NC}"
+    echo ""
+    echo -e "${CYAN}После смены необходимо:${NC}"
+    echo -e "  ${BLUE}1.${NC} Получить НОВЫЕ ссылки для всех профилей"
+    echo -e "  ${BLUE}2.${NC} Обновить конфигурацию в клиентах"
+    echo -e "  ${BLUE}3.${NC} Fingerprint изменится для ВСЕХ профилей сразу"
+    echo ""
+    echo -e "${MAGENTA}Новый fingerprint будет: ${YELLOW}$new_fp${NC}"
+    echo ""
+    echo -n -e "${YELLOW}Продолжить смену fingerprint? (y/N): ${NC}"
+    read confirm
 
-	if [[ ! "$choice" =~ ^[0-9]+$ ]] || [[ $choice -lt 1 ]] || [[ $choice -gt ${#profiles[@]} ]]; then
-		echo -e "${RED}✗ Неверный выбор${NC}"
-		sleep 2
-		return
-	fi
+    if [[ ! "$confirm" =~ ^[yYдД]$ ]]; then
+        echo -e "${CYAN}✓ Отменено${NC}"
+        sleep 1
+        return
+    fi
 
-	local profile_name="${profiles[$((choice-1))]}"
-	local profile_file="$PROFILES_DIR/$profile_name.json"
-	local old_port=$(jq -r '.port' "$profile_file")
-	local current_fp=$(jq -r '.fingerprint // "chrome"' "$profile_file")
+    # Обновление fingerprint во всех inbound
+    local temp_config=$(mktemp)
+    jq --arg fp "$new_fp" '
+        (.inbounds[].streamSettings.realitySettings.fingerprint) |= $fp
+    ' "$CONFIG_FILE" > "$temp_config"
+    mv "$temp_config" "$CONFIG_FILE"
 
-	echo ""
-	echo -e "${CYAN}Текущий fingerprint профиля '$profile_name':${NC} ${GREEN}$current_fp${NC}
-"
+    # Обновление в файлах профилей
+    for profile_file in "$PROFILES_DIR"/*.json; do
+        if [[ -f "$profile_file" ]]; then
+            local temp_profile=$(mktemp)
+            jq --arg fp "$new_fp" '.fingerprint = $fp' "$profile_file" > "$temp_profile"
+            mv "$temp_profile" "$profile_file"
+        fi
+    done
 
-	echo -e "${YELLOW}Доступные fingerprint (эмуляция браузера):${NC}
-"
-	echo -e "${CYAN} 1)${NC} chrome     ${BLUE}(стандартный, широкая совместимость)${NC}"
-	echo -e "${CYAN} 2)${NC} firefox    ${GREEN}(рекомендуется при блокировках РКН)${NC}"
-	echo -e "${CYAN} 3)${NC} safari     ${BLUE}(для iOS/macOS клиентов)${NC}"
-	echo -e "${CYAN} 4)${NC} edge       ${BLUE}(альтернатива chrome)${NC}"
-	echo -e "${CYAN} 0)${NC} Назад в главное меню
-"
+    systemctl restart xray
 
-	echo -n -e "${YELLOW}Выберите новый fingerprint: ${NC}"
-	read fp_choice
-
-	local new_fp=""
-	case $fp_choice in
-		1) new_fp="chrome" ;;
-		2) new_fp="firefox" ;;
-		3) new_fp="safari" ;;
-		4) new_fp="edge" ;;
-		0) return ;;
-		*) echo -e "${RED}✗ Неверный выбор${NC}"; sleep 2; return ;;
-	esac
-
-	if [[ "$new_fp" == "$current_fp" ]]; then
-		echo -e "${YELLOW}⚠ Этот fingerprint уже используется${NC}"
-		sleep 2
-		return
-	fi
-
-	# Критическое предупреждение
-	echo ""
-	echo -e "${RED}╔═══════════════════════════════════════════════════════════╗${NC}"
-	echo -e "${RED}║              ⚠  КРИТИЧЕСКОЕ ПРЕДУПРЕЖДЕНИЕ  ⚠             ║${NC}"
-	echo -e "${RED}╚═══════════════════════════════════════════════════════════╝${NC}"
-	echo ""
-	echo -e "${YELLOW}Смена fingerprint изменит TLS имитацию браузера для профиля.${NC}"
-	echo ""
-	echo -e "${RED}Активные подключения профиля '$profile_name' будут разорваны!${NC}"
-	echo ""
-	echo -e "${CYAN}После смены необходимо:${NC}"
-	echo -e "  ${BLUE}1.${NC} Получить НОВУЮ ссылку для профиля '$profile_name'"
-	echo -e "  ${BLUE}2.${NC} Обновить конфигурацию в клиентах"
-	echo ""
-	echo -e "${MAGENTA}Новый fingerprint будет: ${YELLOW}$new_fp${NC}"
-	echo ""
-	echo -n -e "${YELLOW}Продолжить смену fingerprint? (y/N): ${NC}"
-	read confirm
-
-	if [[ ! "$confirm" =~ ^[yYдД]$ ]]; then
-		echo -e "${CYAN}✓ Отменено${NC}"
-		sleep 1
-		return
-	fi
-
-	# Обновление fingerprint в конфиге для конкретного inbound
-	local temp_config=$(mktemp)
-	jq --arg tag "inbound-$old_port" --arg fp "$new_fp" '
-		(.inbounds[] | select(.tag == $tag) | .streamSettings.realitySettings.fingerprint) |= $fp
-	' "$CONFIG_FILE" > "$temp_config"
-	mv "$temp_config" "$CONFIG_FILE"
-	chown root:root "$CONFIG_FILE"
-	chmod 644 "$CONFIG_FILE"
-
-	# Обновление в файле профиля
-	local temp_profile=$(mktemp)
-	jq --arg fp "$new_fp" '.fingerprint = $fp' "$profile_file" > "$temp_profile"
-	mv "$temp_profile" "$profile_file"
-
-	systemctl restart xray
-
-	echo ""
-	echo -e "${GREEN}✓ Fingerprint профиля '$profile_name' изменен на: ${YELLOW}$new_fp${NC}"
-	echo ""
-	echo -e "${MAGENTA}╔═══════════════════════════════════════════════════════════╗${NC}"
-	echo -e "${MAGENTA}║         Теперь ОБЯЗАТЕЛЬНО получите новую ссылку!        ║${NC}"
-	echo -e "${MAGENTA}╚═══════════════════════════════════════════════════════════╝${NC}"
-	echo ""
-	echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
-	read
+    echo ""
+    echo -e "${GREEN}✓ Fingerprint успешно изменен на: ${YELLOW}$new_fp${NC}"
+    echo ""
+    echo -e "${MAGENTA}╔═══════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${MAGENTA}║         Теперь ОБЯЗАТЕЛЬНО получите новые ссылки!         ║${NC}"
+    echo -e "${MAGENTA}╚═══════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
+    read
 }
 
 # Смена порта профиля
