@@ -27,15 +27,15 @@ ASCII_ART="$DATA_DIR/ascii_art.txt"
 
 # Проверка прав root
 if [[ $EUID -ne 0 ]]; then
-   echo -e "${RED}✗ Требуются права root${NC}"
-   echo -e "${YELLOW}Используйте: sudo xrayebator${NC}"
-   exit 1
+    echo -e "${RED}✗ Требуются права root${NC}"
+    echo -e "${YELLOW}Используйте: sudo xrayebator${NC}"
+    exit 1
 fi
 
-# Загрузка ключей
+# Загрузка ключей (ИСПРАВЛЕНО: удаляем переносы строк)
 if [[ -f "$PRIVATE_KEY_FILE" ]] && [[ -f "$PUBLIC_KEY_FILE" ]]; then
-    PRIVATE_KEY=$(cat "$PRIVATE_KEY_FILE")
-    PUBLIC_KEY=$(cat "$PUBLIC_KEY_FILE")
+    PRIVATE_KEY=$(cat "$PRIVATE_KEY_FILE" | tr -d '\n\r ')
+    PUBLIC_KEY=$(cat "$PUBLIC_KEY_FILE" | tr -d '\n\r ')
 else
     echo -e "${RED}✗ Ключи Reality не найдены. Запустите install.sh${NC}"
     exit 1
@@ -74,13 +74,12 @@ show_ascii() {
         echo -e "${CYAN}"
         echo '  ╔═══════════════════════════════════╗'
         echo '  ║                                   ║'
-        echo '  ║         XRAYEBATOR v1.0           ║'
-        echo '  ║    Xray Reality VPN Manager       ║'
+        echo '  ║       XRAYEBATOR v1.0             ║'
+        echo '  ║   Xray Reality VPN Manager        ║'
         echo '  ║                                   ║'
         echo '  ╚═══════════════════════════════════╝'
         echo -e "${NC}"
     fi
-    
     echo ""
 }
 
@@ -97,9 +96,9 @@ main_menu() {
         echo -e "${CYAN}  3)${NC} Подключиться по профилю"
         echo ""
         echo -e "${MAGENTA}  НАСТРОЙКИ МАСКИРОВКИ:${NC}"
-        echo -e "${CYAN}  4)${NC} Подменить SNI (для маскировки)"
+        echo -e "${CYAN}  4)${NC} Подменить SNI (домен маскировки)"
         echo -e "${CYAN}  5)${NC} Подменить Fingerprint (браузер)"
-	echo -e "${CYAN}  6)${NC} Изменить порты подключения (на всякий)"
+        echo -e "${CYAN}  6)${NC} Изменить порт профиля"
         echo ""
         echo -e "${RED}  0)${NC} Выход"
         echo ""
@@ -119,7 +118,6 @@ main_menu() {
         esac
     done
 }
-
 
 # Меню создания профиля
 create_profile_menu() {
@@ -156,7 +154,7 @@ create_profile_menu() {
     
     echo ""
     echo -e "${BLUE}╔════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${BLUE}║           ВЫБЕРИТЕ ТИП МАРШРУТА                            ║${NC}"
+    echo -e "${BLUE}║              ВЫБЕРИТЕ ТИП МАРШРУТА                         ║${NC}"
     echo -e "${BLUE}╚════════════════════════════════════════════════════════════╝${NC}"
     echo ""
     echo -e "${CYAN}  1)${NC} VLESS + TCP + Reality + Vision ${GREEN}(порт 443)${NC}"
@@ -164,32 +162,28 @@ create_profile_menu() {
     echo -e "     ${GREEN}✓${NC} Маскируется под обычный HTTPS трафик"
     echo -e "     ${GREEN}✓${NC} Рекомендуется для повседневного использования"
     echo ""
-    
     echo -e "${CYAN}  2)${NC} VLESS + TCP + Reality + Vision + uTLS ${MAGENTA}(порт 8443, Firefox)${NC}"
     echo -e "     ${GREEN}✓${NC} Трафик маскируется под Firefox HTTPS"
     echo -e "     ${GREEN}✓${NC} Решает проблему TLS fingerprint"
     echo -e "     ${GREEN}✓${NC} TCP BBR congestion control"
-    echo -e "     ${BLUE}ℹ${NC}  Идеален для обхода продвинутой DPI фильтрации"
+    echo -e "     ${BLUE}ℹ${NC} Идеален для обхода продвинутой DPI фильтрации"
     echo ""
-    
     echo -e "${CYAN}  3)${NC} VLESS + gRPC + Reality ${GREEN}(порт 2053)${NC}"
     echo -e "     ${GREEN}✓${NC} Эффективен при активных блокировках РКН"
     echo -e "     ${GREEN}✓${NC} Хорошо работает в корпоративных сетях"
-    echo -e "     ${YELLOW}⚠${NC}  Может быть медленнее TCP"
+    echo -e "     ${YELLOW}⚠${NC} Может быть медленнее TCP"
     echo ""
-    
     echo -e "${CYAN}  4)${NC} VLESS + XHTTP + Reality ${GREEN}(порт 9443)${NC}"
     echo -e "     ${GREEN}✓${NC} Современный протокол с низкой задержкой"
     echo -e "     ${GREEN}✓${NC} Минимизирует обнаружение DPI"
-    echo -e "     ${YELLOW}⚠${NC}  Требует клиенты с поддержкой XHTTP"
+    echo -e "     ${YELLOW}⚠${NC} Требует клиенты с поддержкой XHTTP"
     echo ""
-    
     echo -e "${CYAN}  0)${NC} Назад в главное меню"
     echo ""
     echo -e "${BLUE}╚════════════════════════════════════════════════════════════╝${NC}"
     echo -n -e "${YELLOW}Ваш выбор: ${NC}"
     read route_choice
-    
+
     case $route_choice in
         1) create_profile "$profile_name" "tcp" "443" "chrome" ;;
         2) create_profile "$profile_name" "tcp-utls" "8443" "firefox" ;;
@@ -208,7 +202,7 @@ create_profile() {
     local fingerprint=$4
     local uuid=$(uuidgen)
     local current_sni=$(cat "$CURRENT_SNI_FILE" 2>/dev/null || echo "www.microsoft.com")
-    
+
     # Создание файла профиля
     cat > "$PROFILES_DIR/$name.json" << EOF
 {
@@ -220,12 +214,11 @@ create_profile() {
     "created": "$(date +%Y-%m-%d\ %H:%M:%S)"
 }
 EOF
-    
+
     # Добавление inbound в конфиг
     add_inbound "$uuid" "$transport" "$port" "$current_sni" "$fingerprint"
-    
     systemctl restart xray
-    
+
     echo ""
     echo -e "${GREEN}╔═══════════════════════════════════════════════${NC}"
     echo -e "${GREEN}  ✓ ПРОФИЛЬ УСПЕШНО СОЗДАН!${NC}"
@@ -251,9 +244,8 @@ add_inbound() {
     local port=$3
     local sni=$4
     local fingerprint=${5:-"chrome"}
-    
     local inbound=""
-    
+
     case $transport in
         tcp|tcp-utls)
             inbound=$(cat << TCPEOF
@@ -396,7 +388,7 @@ XHTTPEOF
 )
             ;;
     esac
-    
+
     # Добавление inbound в конфиг
     local temp_config=$(mktemp)
     jq ".inbounds += [$inbound]" "$CONFIG_FILE" > "$temp_config"
@@ -421,6 +413,7 @@ delete_profile_menu() {
     fi
     
     echo -e "${YELLOW}Доступные профили:${NC}\n"
+    
     local i=1
     for profile in "${profiles[@]}"; do
         local transport=$(jq -r '.transport' "$PROFILES_DIR/$profile.json" 2>/dev/null)
@@ -428,8 +421,8 @@ delete_profile_menu() {
         echo -e "${CYAN}  $i)${NC} $profile ${BLUE}[$transport:$port]${NC}"
         ((i++))
     done
-    echo -e "${CYAN}  0)${NC} Назад в главное меню\n"
     
+    echo -e "${CYAN}  0)${NC} Назад в главное меню\n"
     echo -n -e "${YELLOW}Выберите профиль для удаления: ${NC}"
     read choice
     
@@ -490,6 +483,7 @@ connect_profile_menu() {
     fi
     
     echo -e "${YELLOW}Доступные профили:${NC}\n"
+    
     local i=1
     for profile in "${profiles[@]}"; do
         local transport=$(jq -r '.transport' "$PROFILES_DIR/$profile.json" 2>/dev/null)
@@ -497,8 +491,8 @@ connect_profile_menu() {
         echo -e "${CYAN}  $i)${NC} $profile ${BLUE}[$transport:$port]${NC}"
         ((i++))
     done
-    echo -e "${CYAN}  0)${NC} Назад в главное меню\n"
     
+    echo -e "${CYAN}  0)${NC} Назад в главное меню\n"
     echo -n -e "${YELLOW}Выберите профиль: ${NC}"
     read choice
     
@@ -515,16 +509,18 @@ connect_profile_menu() {
     fi
 }
 
-# Генерация данных подключения
+# Генерация данных подключения (ИСПРАВЛЕНО)
 generate_connection() {
     local profile_name=$1
     local profile_file="$PROFILES_DIR/$profile_name.json"
-    
     local uuid=$(jq -r '.uuid' "$profile_file")
     local transport=$(jq -r '.transport' "$profile_file")
     local port=$(jq -r '.port' "$profile_file")
     local fingerprint=$(jq -r '.fingerprint // "chrome"' "$profile_file")
     local current_sni=$(cat "$CURRENT_SNI_FILE" 2>/dev/null || echo "www.microsoft.com")
+    
+    # ИСПРАВЛЕНО: Очистка публичного ключа от лишних символов
+    local clean_public_key=$(echo "$PUBLIC_KEY" | tr -d '\n\r ')
     
     show_ascii
     echo -e "${GREEN}═══════════════════════════════════════════════${NC}"
@@ -535,13 +531,13 @@ generate_connection() {
     
     case $transport in
         tcp|tcp-utls)
-            vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${PUBLIC_KEY}&type=tcp&headerType=none#${profile_name}"
+            vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&type=tcp&headerType=none#${profile_name}"
             ;;
         grpc)
-            vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${PUBLIC_KEY}&type=grpc&serviceName=grpc#${profile_name}"
+            vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&type=grpc&serviceName=grpc#${profile_name}"
             ;;
         xhttp)
-            vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${PUBLIC_KEY}&type=xhttp&path=/xhttp#${profile_name}"
+            vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&type=xhttp&path=/xhttp#${profile_name}"
             ;;
     esac
     
@@ -558,53 +554,8 @@ generate_connection() {
     echo -e "${CYAN}Порт:${NC} $port"
     echo -e "${CYAN}Fingerprint:${NC} $fingerprint"
     echo -e "${CYAN}SNI:${NC} $current_sni"
-    echo -e "${CYAN}Public Key:${NC} ${PUBLIC_KEY:0:32}..."
+    echo -e "${CYAN}Public Key:${NC} ${clean_public_key:0:32}..."
     echo -e "${GREEN}═══════════════════════════════════════════════${NC}\n"
-    
-    echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
-    read
-}
-
-# Список профилей
-list_profiles() {
-    show_ascii
-    echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
-    echo -e "${BLUE}        СПИСОК ПРОФИЛЕЙ                        ${NC}"
-    echo -e "${BLUE}═══════════════════════════════════════════════${NC}\n"
-    
-    local profiles=($(ls -1 "$PROFILES_DIR" 2>/dev/null | sed 's/.json//'))
-    
-    if [[ ${#profiles[@]} -eq 0 ]]; then
-        echo -e "${RED}✗ Нет созданных профилей${NC}"
-        echo -e "${CYAN}Создайте профиль через меню 'Создать новый профиль'${NC}"
-        echo ""
-        echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
-        read
-        return
-    fi
-    
-    local current_sni=$(cat "$CURRENT_SNI_FILE" 2>/dev/null || echo "не установлен")
-    
-    echo -e "${CYAN}Общая информация:${NC}"
-    echo -e "${BLUE}├─${NC} IP сервера: ${GREEN}$SERVER_IP${NC}"
-    echo -e "${BLUE}├─${NC} Текущий SNI: ${GREEN}$current_sni${NC}"
-    echo -e "${BLUE}└─${NC} Всего профилей: ${GREEN}${#profiles[@]}${NC}\n"
-    
-    for profile in "${profiles[@]}"; do
-        local profile_file="$PROFILES_DIR/$profile.json"
-        local transport=$(jq -r '.transport' "$profile_file" 2>/dev/null)
-        local port=$(jq -r '.port' "$profile_file" 2>/dev/null)
-        local created=$(jq -r '.created' "$profile_file" 2>/dev/null)
-        local uuid=$(jq -r '.uuid' "$profile_file" 2>/dev/null)
-        
-        echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-        echo -e "${GREEN}▶ Профиль:${NC} ${YELLOW}$profile${NC}"
-        echo -e "${BLUE}  ├─${NC} Транспорт: $transport"
-        echo -e "${BLUE}  ├─${NC} Порт: $port"
-        echo -e "${BLUE}  ├─${NC} UUID: ${uuid:0:8}...${uuid: -8}"
-        echo -e "${BLUE}  └─${NC} Создан: $created"
-        echo ""
-    done
     
     echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
     read
@@ -639,8 +590,8 @@ change_sni_menu() {
         fi
         ((i++))
     done < "$SNI_LIST"
-    echo -e "${CYAN}  0)${NC} Назад в главное меню\n"
     
+    echo -e "${CYAN}  0)${NC} Назад в главное меню\n"
     echo -n -e "${YELLOW}Выберите новый SNI: ${NC}"
     read choice
     
@@ -665,7 +616,7 @@ change_sni_menu() {
     # Критическое предупреждение
     echo ""
     echo -e "${RED}╔═══════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${RED}║         ⚠  КРИТИЧЕСКОЕ ПРЕДУПРЕЖДЕНИЕ  ⚠                  ║${NC}"
+    echo -e "${RED}║            ⚠ КРИТИЧЕСКОЕ ПРЕДУПРЕЖДЕНИЕ ⚠                ║${NC}"
     echo -e "${RED}╚═══════════════════════════════════════════════════════════╝${NC}"
     echo ""
     echo -e "${YELLOW}Смена SNI обновит конфигурацию сервера.${NC}"
@@ -692,7 +643,7 @@ change_sni_menu() {
     # Обновление SNI в конфиге
     local temp_config=$(mktemp)
     jq --arg sni "$new_sni" '
-        (.inbounds[].streamSettings.realitySettings.dest) |= ($sni + ":443") | 
+        (.inbounds[].streamSettings.realitySettings.dest) |= ($sni + ":443") |
         (.inbounds[].streamSettings.realitySettings.serverNames) |= [$sni]
     ' "$CONFIG_FILE" > "$temp_config"
     mv "$temp_config" "$CONFIG_FILE"
@@ -706,9 +657,8 @@ change_sni_menu() {
     echo -e "${GREEN}✓ SNI успешно изменен на: ${YELLOW}$new_sni${NC}"
     echo ""
     echo -e "${MAGENTA}╔═══════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${MAGENTA}║  Теперь ОБЯЗАТЕЛЬНО получите новые ссылки!                ║${NC}"
+    echo -e "${MAGENTA}║         Теперь ОБЯЗАТЕЛЬНО получите новые ссылки!         ║${NC}"
     echo -e "${MAGENTA}╚═══════════════════════════════════════════════════════════╝${NC}"
-    
     echo ""
     echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
     read
@@ -718,19 +668,19 @@ change_sni_menu() {
 change_fingerprint_menu() {
     show_ascii
     echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
-    echo -e "${BLUE}    ПОДМЕНА FINGERPRINT (TLS БРАУЗЕР)          ${NC}"
+    echo -e "${BLUE}   ПОДМЕНА FINGERPRINT (TLS БРАУЗЕР)           ${NC}"
     echo -e "${BLUE}═══════════════════════════════════════════════${NC}\n"
     
     # Определение текущего fingerprint (берем из первого inbound)
     local current_fp=$(jq -r '.inbounds[0].streamSettings.realitySettings.fingerprint // "chrome"' "$CONFIG_FILE")
+    
     echo -e "${CYAN}Текущий fingerprint:${NC} ${GREEN}$current_fp${NC}\n"
     
     echo -e "${YELLOW}Доступные fingerprint (эмуляция браузера):${NC}\n"
-    
-    echo -e "${CYAN}  1)${NC} chrome   ${BLUE}(стандартный, широкая совместимость)${NC}"
-    echo -e "${CYAN}  2)${NC} firefox  ${GREEN}(рекомендуется при блокировках РКН)${NC}"
-    echo -e "${CYAN}  3)${NC} safari   ${BLUE}(для iOS/macOS клиентов)${NC}"
-    echo -e "${CYAN}  4)${NC} edge     ${BLUE}(альтернатива chrome)${NC}"
+    echo -e "${CYAN}  1)${NC} chrome ${BLUE}(стандартный, широкая совместимость)${NC}"
+    echo -e "${CYAN}  2)${NC} firefox ${GREEN}(рекомендуется при блокировках РКН)${NC}"
+    echo -e "${CYAN}  3)${NC} safari ${BLUE}(для iOS/macOS клиентов)${NC}"
+    echo -e "${CYAN}  4)${NC} edge ${BLUE}(альтернатива chrome)${NC}"
     echo -e "${CYAN}  0)${NC} Назад в главное меню\n"
     
     echo -n -e "${YELLOW}Выберите новый fingerprint: ${NC}"
@@ -755,7 +705,7 @@ change_fingerprint_menu() {
     # Критическое предупреждение
     echo ""
     echo -e "${RED}╔═══════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${RED}║         ⚠  КРИТИЧЕСКОЕ ПРЕДУПРЕЖДЕНИЕ  ⚠                  ║${NC}"
+    echo -e "${RED}║            ⚠ КРИТИЧЕСКОЕ ПРЕДУПРЕЖДЕНИЕ ⚠                ║${NC}"
     echo -e "${RED}╚═══════════════════════════════════════════════════════════╝${NC}"
     echo ""
     echo -e "${YELLOW}Смена fingerprint изменит TLS имитацию браузера.${NC}"
@@ -800,9 +750,8 @@ change_fingerprint_menu() {
     echo -e "${GREEN}✓ Fingerprint успешно изменен на: ${YELLOW}$new_fp${NC}"
     echo ""
     echo -e "${MAGENTA}╔═══════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${MAGENTA}║  Теперь ОБЯЗАТЕЛЬНО получите новые ссылки!                ║${NC}"
+    echo -e "${MAGENTA}║         Теперь ОБЯЗАТЕЛЬНО получите новые ссылки!         ║${NC}"
     echo -e "${MAGENTA}╚═══════════════════════════════════════════════════════════╝${NC}"
-    
     echo ""
     echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
     read
@@ -826,6 +775,7 @@ change_port_menu() {
     fi
     
     echo -e "${YELLOW}Выберите профиль для изменения порта:${NC}\n"
+    
     local i=1
     for profile in "${profiles[@]}"; do
         local transport=$(jq -r '.transport' "$PROFILES_DIR/$profile.json" 2>/dev/null)
@@ -833,8 +783,8 @@ change_port_menu() {
         echo -e "${CYAN}  $i)${NC} $profile ${BLUE}[$transport:$port]${NC}"
         ((i++))
     done
-    echo -e "${CYAN}  0)${NC} Назад в главное меню\n"
     
+    echo -e "${CYAN}  0)${NC} Назад в главное меню\n"
     echo -n -e "${YELLOW}Выберите профиль: ${NC}"
     read choice
     
@@ -879,7 +829,7 @@ change_port_menu() {
         6) new_port="2096" ;;
         7) new_port="8080" ;;
         8) new_port="9443" ;;
-        9) 
+        9)
             echo -n -e "${YELLOW}Введите номер порта (1-65535): ${NC}"
             read new_port
             ;;
@@ -911,7 +861,7 @@ change_port_menu() {
     # Критическое предупреждение
     echo ""
     echo -e "${RED}╔═══════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${RED}║         ⚠  КРИТИЧЕСКОЕ ПРЕДУПРЕЖДЕНИЕ  ⚠                  ║${NC}"
+    echo -e "${RED}║            ⚠ КРИТИЧЕСКОЕ ПРЕДУПРЕЖДЕНИЕ ⚠                ║${NC}"
     echo -e "${RED}╚═══════════════════════════════════════════════════════════╝${NC}"
     echo ""
     echo -e "${YELLOW}Смена порта изменит настройки подключения.${NC}"
@@ -953,9 +903,8 @@ change_port_menu() {
     echo -e "${GREEN}✓ Порт профиля '$profile_name' изменен: ${YELLOW}$old_port → $new_port${NC}"
     echo ""
     echo -e "${MAGENTA}╔═══════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${MAGENTA}║  Теперь ОБЯЗАТЕЛЬНО получите новую ссылку!                ║${NC}"
+    echo -e "${MAGENTA}║         Теперь ОБЯЗАТЕЛЬНО получите новую ссылку!         ║${NC}"
     echo -e "${MAGENTA}╚═══════════════════════════════════════════════════════════╝${NC}"
-    
     echo ""
     echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
     read
