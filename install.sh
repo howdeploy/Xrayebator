@@ -297,12 +297,12 @@ echo -e "${NC}\n"
 
 echo -e "${CYAN}Для управления профилями используйте команду:${NC}"
 echo -e "${YELLOW}╭──────────────────────────╮${NC}"
-echo -e "${YELLOW}│   ${GREEN}xrayebator${YELLOW}           │${NC}"
+echo -e "${YELLOW}│   ${GREEN}sudo xrayebator${YELLOW}      │${NC}"
 echo -e "${YELLOW}╰──────────────────────────╯${NC}\n"
 
 echo -e "${BLUE}Дополнительные команды:${NC}"
-echo -e "  ${CYAN}xrayebator-update${NC}     - обновить Xrayebator"
-echo -e "  ${CYAN}xrayebator-uninstall${NC}  - удалить Xrayebator"
+echo -e "  ${CYAN}sudo xrayebator-update${NC}     - обновить Xrayebator"
+echo -e "  ${CYAN}sudo xrayebator-uninstall${NC}  - удалить Xrayebator"
 echo ""
 
 echo -e "${BLUE}Скрипты находятся в:${NC}"
@@ -314,10 +314,4 @@ echo -e "${BLUE}Версия:${NC} 1.0"
 echo ""
 
 echo -e "${MAGENTA}════════════════════════════════════════════════════════════${NC}"
-echo -e "${CYAN}Нажмите Enter для запуска xrayebator...${NC}"
-read
-
-if command -v xrayebator &> /dev/null; then
-    xrayebator
-fi
 
