@@ -40,7 +40,7 @@
 
 ### Универсальная команда (работает для всех)
 
-`wget -qO- https://raw.githubusercontent.com/howdeploy/Xrayebator/main/install.sh | sudo bash`
+`wget -qO- https://raw.githubusercontent.com/howdeploy/Xrayebator/main/install.sh | sudo bash`  
 или
 `curl -fsSL https://raw.githubusercontent.com/howdeploy/Xrayebator/main/install.sh | sudo bash`
 
@@ -153,11 +153,11 @@ PubkeyAuthentication yes - вход через ssh ключ
 `sudo nano /etc/ssh/sshd_config` - редкактируем настройки
 
 
-# Отправлять keep-alive пакеты каждые 60 секунд
+#Отправлять keep-alive пакеты каждые 60 секунд
 ClientAliveInterval 60
-# Количество попыток (60 сек × 120 = 2 часа до отключения)
+#Количество попыток (60 сек × 120 = 2 часа до отключения)
 ClientAliveCountMax 120
-# Использовать TCP keep-alive
+#Использовать TCP keep-alive
 TCPKeepAlive yes
 
 Ctrl + O, Enter, Ctrl + X
@@ -192,9 +192,9 @@ Ctrl + O, Enter, Ctrl + X
 
 **Также можно подкинуть деньгу на эти адреса:**
 
-EVM: `0x7acE4442b92f2769c24484c78A13024B139E1A5b`
-Solana: `FS9RBrG5yXJty3WNWgkBkfai6BfNoYxGMFeH1LQEpRZr`
-TON: `UQA56zsOv3zvU5x-p7iNNDL8jHh9dt7Q7WlY_gfbaj4ZhcyT`
+EVM: `0x7acE4442b92f2769c24484c78A13024B139E1A5b`  
+Solana: `FS9RBrG5yXJty3WNWgkBkfai6BfNoYxGMFeH1LQEpRZr`  
+TON: `UQA56zsOv3zvU5x-p7iNNDL8jHh9dt7Q7WlY_gfbaj4ZhcyT`  
 BTC: `34EznmkBGpBu4dUnzoHL5GBnpg2Rq86v4H`
 
 ---
