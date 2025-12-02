@@ -86,15 +86,16 @@ mkdir -p "$SCRIPTS_DIR"
 echo -e "${GREEN}✓ Директории созданы${NC}\n"
 
 # ═══════════════════════════════════════════════════════════
-# [4/9] Генерация ключей Reality
+# [4/9] Генерация ключей Reality (ИСПРАВЛЕНО)
 # ═══════════════════════════════════════════════════════════
 echo -e "${BLUE}[4/9]${NC} ${YELLOW}Генерация ключей Reality...${NC}"
 KEYS=$(/usr/local/bin/xray x25519)
 PRIVATE_KEY=$(echo "$KEYS" | grep "Private key:" | awk '{print $3}')
 PUBLIC_KEY=$(echo "$KEYS" | grep "Public key:" | awk '{print $3}')
 
-echo "$PRIVATE_KEY" > "$PRIVATE_KEY_FILE"
-echo "$PUBLIC_KEY" > "$PUBLIC_KEY_FILE"
+# ИСПРАВЛЕНО: используем echo -n для записи БЕЗ переноса строки
+echo -n "$PRIVATE_KEY" > "$PRIVATE_KEY_FILE"
+echo -n "$PUBLIC_KEY" > "$PUBLIC_KEY_FILE"
 chmod 600 "$PRIVATE_KEY_FILE"
 chmod 644 "$PUBLIC_KEY_FILE"
 
