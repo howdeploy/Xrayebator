@@ -63,16 +63,16 @@ SERVER_IP=$(get_server_ip)
 # Показать ASCII арт
 show_ascii() {
     clear
-    
+
     # URL к ASCII файлу
     local ASCII_URL="https://raw.githubusercontent.com/howdeploy/Xrayebator/main/ascii_art.txt"
-    
+
     # Если локального файла нет - скачиваем один раз
     if [[ ! -f "$ASCII_ART" ]]; then
         mkdir -p "$(dirname "$ASCII_ART")"
         curl -fsSL "$ASCII_URL" -o "$ASCII_ART" 2>/dev/null || true
     fi
-    
+
     # Показываем ASCII или fallback
     if [[ -f "$ASCII_ART" ]] && [[ -s "$ASCII_ART" ]]; then
         echo -e "${CYAN}"
@@ -133,33 +133,33 @@ create_profile_menu() {
     echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
     echo -e "${BLUE}        СОЗДАНИЕ НОВОГО ПРОФИЛЯ                ${NC}"
     echo -e "${BLUE}═══════════════════════════════════════════════${NC}\n"
-    
+
     echo -n -e "${YELLOW}Введите имя профиля (или 0 для отмены): ${NC}"
     read profile_name
-    
+
     if [[ "$profile_name" == "0" ]]; then
         return
     fi
-    
+
     if [[ -z "$profile_name" ]]; then
         echo -e "${RED}✗ Имя не может быть пустым${NC}"
         sleep 2
         return
     fi
-    
+
     # Проверка допустимых символов
     if [[ ! "$profile_name" =~ ^[a-zA-Z0-9_-]+$ ]]; then
         echo -e "${RED}✗ Используйте только буквы, цифры, дефис и подчеркивание${NC}"
         sleep 2
         return
     fi
-    
+
     if [[ -f "$PROFILES_DIR/$profile_name.json" ]]; then
         echo -e "${RED}✗ Профиль с таким именем уже существует${NC}"
         sleep 2
         return
     fi
-    
+
     echo ""
     echo -e "${BLUE}╔════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${BLUE}║              ВЫБЕРИТЕ ТИП МАРШРУТА                         ║${NC}"
@@ -388,9 +388,9 @@ delete_profile_menu() {
     echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
     echo -e "${BLUE}        УДАЛЕНИЕ ПРОФИЛЯ                       ${NC}"
     echo -e "${BLUE}═══════════════════════════════════════════════${NC}\n"
-    
+
     local profiles=($(ls -1 "$PROFILES_DIR" 2>/dev/null | sed 's/.json//'))
-    
+
     if [[ ${#profiles[@]} -eq 0 ]]; then
         echo -e "${RED}✗ Нет созданных профилей${NC}"
         echo ""
@@ -398,9 +398,9 @@ delete_profile_menu() {
         read
         return
     fi
-    
+
     echo -e "${YELLOW}Доступные профили:${NC}\n"
-    
+
     local i=1
     for profile in "${profiles[@]}"; do
         local transport=$(jq -r '.transport' "$PROFILES_DIR/$profile.json" 2>/dev/null)
@@ -408,35 +408,35 @@ delete_profile_menu() {
         echo -e "${CYAN}  $i)${NC} $profile ${BLUE}[$transport:$port]${NC}"
         ((i++))
     done
-    
+
     echo -e "${CYAN}  0)${NC} Назад в главное меню\n"
     echo -n -e "${YELLOW}Выберите профиль для удаления: ${NC}"
     read choice
-    
+
     if [[ "$choice" == "0" ]]; then
         return
     fi
-    
+
     if [[ "$choice" =~ ^[0-9]+$ ]] && [[ $choice -ge 1 ]] && [[ $choice -le ${#profiles[@]} ]]; then
         local profile_name="${profiles[$((choice-1))]}"
-        
+
         echo ""
         echo -n -e "${RED}Вы уверены, что хотите удалить профиль '$profile_name'? (y/N): ${NC}"
         read confirm
-        
+
         if [[ "$confirm" =~ ^[yYдД]$ ]]; then
             local port=$(jq -r '.port' "$PROFILES_DIR/$profile_name.json")
-            
+
             # Удаление inbound из конфига
             local temp_config=$(mktemp)
             jq "del(.inbounds[] | select(.tag == \"inbound-$port\"))" "$CONFIG_FILE" > "$temp_config"
             mv "$temp_config" "$CONFIG_FILE"
-            
+
             # Удаление файла профиля
             rm "$PROFILES_DIR/$profile_name.json"
-            
+
             systemctl restart xray
-            
+
             echo ""
             echo -e "${GREEN}✓ Профиль '$profile_name' успешно удален${NC}"
         else
@@ -445,7 +445,7 @@ delete_profile_menu() {
     else
         echo -e "${RED}✗ Неверный выбор${NC}"
     fi
-    
+
     echo ""
     echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
     read
@@ -457,9 +457,9 @@ connect_profile_menu() {
     echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
     echo -e "${BLUE}        ПОДКЛЮЧЕНИЕ К ПРОФИЛЮ                  ${NC}"
     echo -e "${BLUE}═══════════════════════════════════════════════${NC}\n"
-    
+
     local profiles=($(ls -1 "$PROFILES_DIR" 2>/dev/null | sed 's/.json//'))
-    
+
     if [[ ${#profiles[@]} -eq 0 ]]; then
         echo -e "${RED}✗ Нет созданных профилей${NC}"
         echo -e "${CYAN}Создайте профиль через меню 'Создать новый профиль'${NC}"
@@ -468,9 +468,9 @@ connect_profile_menu() {
         read
         return
     fi
-    
+
     echo -e "${YELLOW}Доступные профили:${NC}\n"
-    
+
     local i=1
     for profile in "${profiles[@]}"; do
         local transport=$(jq -r '.transport' "$PROFILES_DIR/$profile.json" 2>/dev/null)
@@ -478,15 +478,15 @@ connect_profile_menu() {
         echo -e "${CYAN}  $i)${NC} $profile ${BLUE}[$transport:$port]${NC}"
         ((i++))
     done
-    
+
     echo -e "${CYAN}  0)${NC} Назад в главное меню\n"
     echo -n -e "${YELLOW}Выберите профиль: ${NC}"
     read choice
-    
+
     if [[ "$choice" == "0" ]]; then
         return
     fi
-    
+
     if [[ "$choice" =~ ^[0-9]+$ ]] && [[ $choice -ge 1 ]] && [[ $choice -le ${#profiles[@]} ]]; then
         local profile_name="${profiles[$((choice-1))]}"
         generate_connection "$profile_name"
@@ -565,10 +565,10 @@ change_sni_menu() {
     echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
     echo -e "${BLUE}    ПОДМЕНА SNI (МАСКИРОВКА ТРАФИКА)           ${NC}"
     echo -e "${BLUE}═══════════════════════════════════════════════${NC}\n"
-    
+
     local current_sni=$(cat "$CURRENT_SNI_FILE" 2>/dev/null || echo "www.microsoft.com")
     echo -e "${CYAN}Текущий SNI:${NC} ${GREEN}$current_sni${NC}\n"
-    
+
     if [[ ! -f "$SNI_LIST" ]]; then
         echo -e "${RED}✗ Файл списка SNI не найден${NC}"
         echo ""
@@ -576,9 +576,9 @@ change_sni_menu() {
         read
         return
     fi
-    
+
     echo -e "${YELLOW}Доступные домены для маскировки:${NC}\n"
-    
+
     local i=1
     while IFS= read -r sni; do
         if [[ "$sni" == "$current_sni" ]]; then
@@ -588,29 +588,29 @@ change_sni_menu() {
         fi
         ((i++))
     done < "$SNI_LIST"
-    
+
     echo -e "${CYAN}  0)${NC} Назад в главное меню\n"
     echo -n -e "${YELLOW}Выберите новый SNI: ${NC}"
     read choice
-    
+
     if [[ "$choice" == "0" ]]; then
         return
     fi
-    
+
     local new_sni=$(sed -n "${choice}p" "$SNI_LIST")
-    
+
     if [[ -z "$new_sni" ]]; then
         echo -e "${RED}✗ Неверный выбор${NC}"
         sleep 2
         return
     fi
-    
+
     if [[ "$new_sni" == "$current_sni" ]]; then
         echo -e "${YELLOW}⚠ Этот SNI уже используется${NC}"
         sleep 2
         return
     fi
-    
+
     # Критическое предупреждение
     echo ""
     echo -e "${RED}╔═══════════════════════════════════════════════════════════╗${NC}"
@@ -631,13 +631,13 @@ change_sni_menu() {
     echo ""
     echo -n -e "${YELLOW}Продолжить смену SNI? (y/N): ${NC}"
     read confirm
-    
+
     if [[ ! "$confirm" =~ ^[yYдД]$ ]]; then
         echo -e "${CYAN}✓ Отменено${NC}"
         sleep 1
         return
     fi
-    
+
     # Обновление SNI в конфиге
     local temp_config=$(mktemp)
     jq --arg sni "$new_sni" '
@@ -645,12 +645,12 @@ change_sni_menu() {
         (.inbounds[].streamSettings.realitySettings.serverNames) |= [$sni]
     ' "$CONFIG_FILE" > "$temp_config"
     mv "$temp_config" "$CONFIG_FILE"
-    
+
     # Сохранение нового SNI
     echo "$new_sni" > "$CURRENT_SNI_FILE"
-    
+
     systemctl restart xray
-    
+
     echo ""
     echo -e "${GREEN}✓ SNI успешно изменен на: ${YELLOW}$new_sni${NC}"
     echo ""
@@ -668,22 +668,22 @@ change_fingerprint_menu() {
     echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
     echo -e "${BLUE}   ПОДМЕНА FINGERPRINT (TLS БРАУЗЕР)           ${NC}"
     echo -e "${BLUE}═══════════════════════════════════════════════${NC}\n"
-    
+
     # Определение текущего fingerprint (берем из первого inbound)
     local current_fp=$(jq -r '.inbounds[0].streamSettings.realitySettings.fingerprint // "chrome"' "$CONFIG_FILE")
-    
+
     echo -e "${CYAN}Текущий fingerprint:${NC} ${GREEN}$current_fp${NC}\n"
-    
+
     echo -e "${YELLOW}Доступные fingerprint (эмуляция браузера):${NC}\n"
     echo -e "${CYAN}  1)${NC} chrome ${BLUE}(стандартный, широкая совместимость)${NC}"
     echo -e "${CYAN}  2)${NC} firefox ${GREEN}(рекомендуется при блокировках РКН)${NC}"
     echo -e "${CYAN}  3)${NC} safari ${BLUE}(для iOS/macOS клиентов)${NC}"
     echo -e "${CYAN}  4)${NC} edge ${BLUE}(альтернатива chrome)${NC}"
     echo -e "${CYAN}  0)${NC} Назад в главное меню\n"
-    
+
     echo -n -e "${YELLOW}Выберите новый fingerprint: ${NC}"
     read choice
-    
+
     local new_fp=""
     case $choice in
         1) new_fp="chrome" ;;
@@ -693,13 +693,13 @@ change_fingerprint_menu() {
         0) return ;;
         *) echo -e "${RED}✗ Неверный выбор${NC}"; sleep 2; return ;;
     esac
-    
+
     if [[ "$new_fp" == "$current_fp" ]]; then
         echo -e "${YELLOW}⚠ Этот fingerprint уже используется${NC}"
         sleep 2
         return
     fi
-    
+
     # Критическое предупреждение
     echo ""
     echo -e "${RED}╔═══════════════════════════════════════════════════════════╗${NC}"
@@ -719,20 +719,20 @@ change_fingerprint_menu() {
     echo ""
     echo -n -e "${YELLOW}Продолжить смену fingerprint? (y/N): ${NC}"
     read confirm
-    
+
     if [[ ! "$confirm" =~ ^[yYдД]$ ]]; then
         echo -e "${CYAN}✓ Отменено${NC}"
         sleep 1
         return
     fi
-    
+
     # Обновление fingerprint во всех inbound
     local temp_config=$(mktemp)
     jq --arg fp "$new_fp" '
         (.inbounds[].streamSettings.realitySettings.fingerprint) |= $fp
     ' "$CONFIG_FILE" > "$temp_config"
     mv "$temp_config" "$CONFIG_FILE"
-    
+
     # Обновление в файлах профилей
     for profile_file in "$PROFILES_DIR"/*.json; do
         if [[ -f "$profile_file" ]]; then
@@ -741,9 +741,9 @@ change_fingerprint_menu() {
             mv "$temp_profile" "$profile_file"
         fi
     done
-    
+
     systemctl restart xray
-    
+
     echo ""
     echo -e "${GREEN}✓ Fingerprint успешно изменен на: ${YELLOW}$new_fp${NC}"
     echo ""
@@ -761,9 +761,9 @@ change_port_menu() {
     echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
     echo -e "${BLUE}        ИЗМЕНЕНИЕ ПОРТА ПРОФИЛЯ                ${NC}"
     echo -e "${BLUE}═══════════════════════════════════════════════${NC}\n"
-    
+
     local profiles=($(ls -1 "$PROFILES_DIR" 2>/dev/null | sed 's/.json//'))
-    
+
     if [[ ${#profiles[@]} -eq 0 ]]; then
         echo -e "${RED}✗ Нет созданных профилей${NC}"
         echo ""
@@ -771,9 +771,9 @@ change_port_menu() {
         read
         return
     fi
-    
+
     echo -e "${YELLOW}Выберите профиль для изменения порта:${NC}\n"
-    
+
     local i=1
     for profile in "${profiles[@]}"; do
         local transport=$(jq -r '.transport' "$PROFILES_DIR/$profile.json" 2>/dev/null)
@@ -781,28 +781,28 @@ change_port_menu() {
         echo -e "${CYAN}  $i)${NC} $profile ${BLUE}[$transport:$port]${NC}"
         ((i++))
     done
-    
+
     echo -e "${CYAN}  0)${NC} Назад в главное меню\n"
     echo -n -e "${YELLOW}Выберите профиль: ${NC}"
     read choice
-    
+
     if [[ "$choice" == "0" ]]; then
         return
     fi
-    
+
     if [[ ! "$choice" =~ ^[0-9]+$ ]] || [[ $choice -lt 1 ]] || [[ $choice -gt ${#profiles[@]} ]]; then
         echo -e "${RED}✗ Неверный выбор${NC}"
         sleep 2
         return
     fi
-    
+
     local profile_name="${profiles[$((choice-1))]}"
     local profile_file="$PROFILES_DIR/$profile_name.json"
     local old_port=$(jq -r '.port' "$profile_file")
-    
+
     echo ""
     echo -e "${CYAN}Текущий порт профиля '$profile_name':${NC} ${GREEN}$old_port${NC}\n"
-    
+
     echo -e "${YELLOW}Популярные порты для обхода блокировок:${NC}\n"
     echo -e "  ${GREEN}1)${NC} 443   ${BLUE}- HTTPS (самый популярный, наименее подозрительный)${NC}"
     echo -e "  ${GREEN}2)${NC} 8443  ${BLUE}- HTTPS альтернативный (часто используется)${NC}"
@@ -813,10 +813,10 @@ change_port_menu() {
     echo -e "  ${GREEN}7)${NC} 8080  ${BLUE}- HTTP альтернативный прокси${NC}"
     echo -e "  ${GREEN}8)${NC} 9443  ${BLUE}- для XHTTP протокола${NC}"
     echo -e "  ${CYAN}9)${NC} Свой порт (введу вручную)\n"
-    
+
     echo -n -e "${YELLOW}Выберите порт: ${NC}"
     read port_choice
-    
+
     local new_port=""
     case $port_choice in
         1) new_port="443" ;;
@@ -834,20 +834,20 @@ change_port_menu() {
         0) return ;;
         *) echo -e "${RED}✗ Неверный выбор${NC}"; sleep 2; return ;;
     esac
-    
+
     # Валидация порта
     if [[ ! "$new_port" =~ ^[0-9]+$ ]] || [[ $new_port -lt 1 ]] || [[ $new_port -gt 65535 ]]; then
         echo -e "${RED}✗ Неверный порт. Используйте число от 1 до 65535${NC}"
         sleep 2
         return
     fi
-    
+
     if [[ "$new_port" == "$old_port" ]]; then
         echo -e "${YELLOW}⚠ Этот порт уже используется${NC}"
         sleep 2
         return
     fi
-    
+
     # Проверка занятости порта
     local port_in_use=$(jq -r --arg port "$new_port" '.inbounds[] | select(.port == ($port | tonumber)) | .tag' "$CONFIG_FILE" 2>/dev/null)
     if [[ -n "$port_in_use" ]]; then
@@ -855,7 +855,7 @@ change_port_menu() {
         sleep 2
         return
     fi
-    
+
     # Критическое предупреждение
     echo ""
     echo -e "${RED}╔═══════════════════════════════════════════════════════════╗${NC}"
@@ -875,13 +875,13 @@ change_port_menu() {
     echo ""
     echo -n -e "${YELLOW}Продолжить смену порта? (y/N): ${NC}"
     read confirm
-    
+
     if [[ ! "$confirm" =~ ^[yYдД]$ ]]; then
         echo -e "${CYAN}✓ Отменено${NC}"
         sleep 1
         return
     fi
-    
+
     # Обновление порта в конфиге
     local temp_config=$(mktemp)
     jq --arg old_tag "inbound-$old_port" --argjson new_port "$new_port" '
@@ -889,14 +889,14 @@ change_port_menu() {
         (.inbounds[] | select(.tag == $old_tag) | .tag) |= ("inbound-" + ($new_port | tostring))
     ' "$CONFIG_FILE" > "$temp_config"
     mv "$temp_config" "$CONFIG_FILE"
-    
+
     # Обновление в файле профиля
     local temp_profile=$(mktemp)
     jq --argjson port "$new_port" '.port = $port' "$profile_file" > "$temp_profile"
     mv "$temp_profile" "$profile_file"
-    
+
     systemctl restart xray
-    
+
     echo ""
     echo -e "${GREEN}✓ Порт профиля '$profile_name' изменен: ${YELLOW}$old_port → $new_port${NC}"
     echo ""
