@@ -32,10 +32,18 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-# Загрузка ключей (ИСПРАВЛЕНО: удаляем переносы строк)
+# Загрузка ключей
 if [[ -f "$PRIVATE_KEY_FILE" ]] && [[ -f "$PUBLIC_KEY_FILE" ]]; then
-    PRIVATE_KEY=$(cat "$PRIVATE_KEY_FILE" | tr -d '\n\r ')
-    PUBLIC_KEY=$(cat "$PUBLIC_KEY_FILE" | tr -d '\n\r ')
+    PRIVATE_KEY=$(cat "$PRIVATE_KEY_FILE")
+    PUBLIC_KEY=$(cat "$PUBLIC_KEY_FILE")
+
+    # Проверка что ключи не пустые
+    if [[ -z "$PRIVATE_KEY" ]] || [[ -z "$PUBLIC_KEY" ]]; then
+        echo -e "${RED}✗ Ключи Reality пусты.${NC}"
+        echo -e "${YELLOW}Пересоздайте ключи командой:${NC}"
+        echo "  cd /usr/local/etc/xray/ && sudo /usr/local/bin/xray x25519 2>&1"
+        exit 1
+    fi
 else
     echo -e "${RED}✗ Ключи Reality не найдены. Запустите install.sh${NC}"
     exit 1
@@ -237,13 +245,33 @@ EOF
     read
 }
 
-# Добавление inbound в конфиг
+# Добавление inbound в конфиг (ИСПРАВЛЕНО - добавляет клиента, а не дублирует inbound)
 add_inbound() {
     local uuid=$1
     local transport=$2
     local port=$3
     local sni=$4
     local fingerprint=${5:-"chrome"}
+
+    # Проверяем существует ли inbound на этом порту
+    local existing_tag=$(jq -r --argjson port "$port" '.inbounds[] | select(.port == $port) | .tag' "$CONFIG_FILE" 2>/dev/null)
+
+    if [[ -n "$existing_tag" ]]; then
+        # ИСПРАВЛЕНО: Добавляем клиента в существующий inbound
+        echo -e "${CYAN}Добавление клиента в существующий inbound на порту $port${NC}"
+
+        local temp_config=$(mktemp)
+        jq --arg uuid "$uuid" --argjson port "$port" '
+            (.inbounds[] | select(.port == $port) | .settings.clients) += [{
+                "id": $uuid,
+                "flow": (if .settings.clients[0].flow then .settings.clients[0].flow else "xtls-rprx-vision" end)
+            }]
+        ' "$CONFIG_FILE" > "$temp_config"
+        mv "$temp_config" "$CONFIG_FILE"
+        return
+    fi
+
+    # Создаём новый inbound только если порт свободен
     local inbound=""
 
     case $transport in
@@ -519,8 +547,8 @@ generate_connection() {
     local fingerprint=$(jq -r '.fingerprint // "chrome"' "$profile_file")
     local current_sni=$(cat "$CURRENT_SNI_FILE" 2>/dev/null || echo "www.microsoft.com")
 
-    # ИСПРАВЛЕНО: Очистка публичного ключа
-    local clean_public_key=$(echo "$PUBLIC_KEY" | tr -d '\n\r\t ')
+    # Читаем публичный ключ напрямую из файла
+    local clean_public_key=$(cat "$PUBLIC_KEY_FILE")
 
     show_ascii
     echo -e "${GREEN}═══════════════════════════════════════════════${NC}"
@@ -531,14 +559,14 @@ generate_connection() {
 
     case $transport in
         tcp|tcp-utls)
-            # ИСПРАВЛЕНО: добавлен sid и правильный порядок параметров
-            vless_link="vless://${uuid}@${SERVER_IP}:${port}?type=tcp&security=reality&pbk=${clean_public_key}&fp=${fingerprint}&sni=${current_sni}&sid=&spx=%2F&flow=xtls-rprx-vision#${profile_name}"
+            # ИСПРАВЛЕНО: Правильный порядок параметров для v2rayNG/Nekobox
+            vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=&type=tcp&headerType=none#${profile_name}"
             ;;
         grpc)
-            vless_link="vless://${uuid}@${SERVER_IP}:${port}?type=grpc&security=reality&pbk=${clean_public_key}&fp=${fingerprint}&sni=${current_sni}&sid=&serviceName=grpc#${profile_name}"
+            vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=&type=grpc&serviceName=grpc#${profile_name}"
             ;;
         xhttp)
-            vless_link="vless://${uuid}@${SERVER_IP}:${port}?type=xhttp&security=reality&pbk=${clean_public_key}&fp=${fingerprint}&sni=${current_sni}&sid=&path=%2Fxhttp#${profile_name}"
+            vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=&type=xhttp&path=/xhttp#${profile_name}"
             ;;
     esac
 
@@ -550,12 +578,22 @@ generate_connection() {
 
     echo ""
     echo -e "${GREEN}═══════════════════════════════════════════════${NC}"
-    echo -e "${CYAN}IP сервера:${NC} $SERVER_IP"
-    echo -e "${CYAN}Транспорт:${NC} $transport"
+    echo -e "${CYAN}Параметры для ручной настройки:${NC}"
+    echo ""
+    echo -e "${CYAN}Адрес:${NC} $SERVER_IP"
     echo -e "${CYAN}Порт:${NC} $port"
-    echo -e "${CYAN}Fingerprint:${NC} $fingerprint"
+    echo -e "${CYAN}UUID:${NC} $uuid"
+    echo -e "${CYAN}Flow:${NC} xtls-rprx-vision"
+    echo -e "${CYAN}Encryption:${NC} none"
+    echo -e "${CYAN}Transport:${NC} $transport"
+    echo -e "${CYAN}Security:${NC} reality"
     echo -e "${CYAN}SNI:${NC} $current_sni"
-    echo -e "${CYAN}Public Key:${NC} ${clean_public_key}"
+    echo -e "${CYAN}Fingerprint:${NC} $fingerprint"
+    echo -e "${CYAN}PublicKey:${NC} $clean_public_key"
+    echo -e "${CYAN}ShortID:${NC} (пустой)"
+    if [[ "$transport" == "tcp" ]] || [[ "$transport" == "tcp-utls" ]]; then
+        echo -e "${CYAN}SpiderX:${NC} /"
+    fi
     echo -e "${GREEN}═══════════════════════════════════════════════${NC}\n"
 
     echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"

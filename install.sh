@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ═══════════════════════════════════════════════════════════
-#  XRAYEBATOR INSTALLER v1.0
+#  XRAYEBATOR INSTALLER v1.1
 #  Автоматическая установка Xray Reality VPN
 #  GitHub: https://github.com/howdeploy/Xrayebator
 # ═══════════════════════════════════════════════════════════
@@ -40,7 +40,7 @@ clear
 echo -e "${CYAN}"
 echo '╔═══════════════════════════════════════════════════════════╗'
 echo '║                                                           ║'
-echo '║              XRAYEBATOR INSTALLER v1.0                    ║'
+echo '║              XRAYEBATOR INSTALLER v1.1                    ║'
 echo '║         Автоматическая установка Xray Reality VPN         ║'
 echo '║                                                           ║'
 echo '╚═══════════════════════════════════════════════════════════╝'
@@ -89,17 +89,32 @@ echo -e "${GREEN}✓ Директории созданы${NC}\n"
 # [4/9] Генерация ключей Reality (ИСПРАВЛЕНО)
 # ═══════════════════════════════════════════════════════════
 echo -e "${BLUE}[4/9]${NC} ${YELLOW}Генерация ключей Reality...${NC}"
-KEYS=$(/usr/local/bin/xray x25519)
-PRIVATE_KEY=$(echo "$KEYS" | grep "Private key:" | awk '{print $3}')
-PUBLIC_KEY=$(echo "$KEYS" | grep "Public key:" | awk '{print $3}')
 
-# ИСПРАВЛЕНО: используем echo -n для записи БЕЗ переноса строки
-echo -n "$PRIVATE_KEY" > "$PRIVATE_KEY_FILE"
-echo -n "$PUBLIC_KEY" > "$PUBLIC_KEY_FILE"
+# ИСПРАВЛЕНО: Xray 25.x выводит в stderr и использует формат PrivateKey:/Password:
+KEYS_OUTPUT=$(/usr/local/bin/xray x25519 2>&1)
+
+# ИСПРАВЛЕНО: Новый формат - PrivateKey: и Password: (не Public key:)
+PRIVATE_KEY=$(echo "$KEYS_OUTPUT" | grep "PrivateKey:" | cut -d' ' -f2)
+PUBLIC_KEY=$(echo "$KEYS_OUTPUT" | grep "Password:" | cut -d' ' -f2)
+
+# Проверка что ключи сгенерировались
+if [[ -z "$PRIVATE_KEY" ]] || [[ -z "$PUBLIC_KEY" ]]; then
+    echo -e "${RED}✗ Ошибка генерации ключей${NC}"
+    echo "Вывод xray x25519:"
+    echo "$KEYS_OUTPUT"
+    exit 1
+fi
+
+# ИСПРАВЛЕНО: используем printf вместо echo для записи БЕЗ переноса строки
+printf "%s" "$PRIVATE_KEY" > "$PRIVATE_KEY_FILE"
+printf "%s" "$PUBLIC_KEY" > "$PUBLIC_KEY_FILE"
+
 chmod 600 "$PRIVATE_KEY_FILE"
 chmod 644 "$PUBLIC_KEY_FILE"
 
-echo -e "${GREEN}✓ Ключи сгенерированы${NC}\n"
+echo -e "${GREEN}✓ Ключи сгенерированы${NC}"
+echo -e "${CYAN}  Private: ${PRIVATE_KEY:0:16}...${NC}"
+echo -e "${CYAN}  Public:  ${PUBLIC_KEY:0:16}...${NC}\n"
 
 # ═══════════════════════════════════════════════════════════
 # [5/9] Создание базовой конфигурации
@@ -150,7 +165,6 @@ echo "www.microsoft.com" > "$CURRENT_SNI_FILE"
 # ═══════════════════════════════════════════════════════════
 echo -e "${BLUE}[6/9]${NC} ${YELLOW}Настройка BBR TCP Congestion Control...${NC}"
 
-# Проверка, не включен ли уже BBR
 if ! grep -q "net.core.default_qdisc=fq" /etc/sysctl.conf; then
     cat >> /etc/sysctl.conf << 'EOF'
 
@@ -188,7 +202,6 @@ fi
 # ═══════════════════════════════════════════════════════════
 echo -e "${BLUE}[7/9]${NC} ${YELLOW}Загрузка данных приложения...${NC}"
 
-# Загрузка списка SNI
 curl -fsSL "${RAW_BASE_URL}/sni_list.txt" -o "${DATA_DIR}/sni_list.txt"
 
 if [[ $? -eq 0 ]] && [[ -s "${DATA_DIR}/sni_list.txt" ]]; then
@@ -209,7 +222,6 @@ speller.yandex.net
 EOF
 fi
 
-# Загрузка ASCII арта
 curl -fsSL "${RAW_BASE_URL}/ascii_art.txt" -o "${DATA_DIR}/ascii_art.txt" 2>/dev/null
 
 if [[ -s "${DATA_DIR}/ascii_art.txt" ]]; then
@@ -223,7 +235,6 @@ fi
 # ═══════════════════════════════════════════════════════════
 echo -e "${BLUE}[8/9]${NC} ${YELLOW}Установка управляющего приложения...${NC}"
 
-# Загрузка xrayebator
 curl -fsSL "${RAW_BASE_URL}/xrayebator" -o /usr/local/bin/xrayebator
 
 if [[ $? -eq 0 ]] && [[ -s /usr/local/bin/xrayebator ]]; then
@@ -239,34 +250,24 @@ fi
 # ═══════════════════════════════════════════════════════════
 echo -e "${BLUE}[9/9]${NC} ${YELLOW}Установка скриптов управления...${NC}"
 
-# Загрузка update.sh
 curl -fsSL "${RAW_BASE_URL}/update.sh" -o "${SCRIPTS_DIR}/update.sh"
 if [[ $? -eq 0 ]] && [[ -s "${SCRIPTS_DIR}/update.sh" ]]; then
     chmod +x "${SCRIPTS_DIR}/update.sh"
     echo -e "${GREEN}✓ update.sh установлен${NC}"
-else
-    echo -e "${YELLOW}⚠ Не удалось загрузить update.sh${NC}"
 fi
 
-# Загрузка uninstall.sh
 curl -fsSL "${RAW_BASE_URL}/uninstall.sh" -o "${SCRIPTS_DIR}/uninstall.sh"
 if [[ $? -eq 0 ]] && [[ -s "${SCRIPTS_DIR}/uninstall.sh" ]]; then
     chmod +x "${SCRIPTS_DIR}/uninstall.sh"
     echo -e "${GREEN}✓ uninstall.sh установлен${NC}"
-else
-    echo -e "${YELLOW}⚠ Не удалось загрузить uninstall.sh${NC}"
 fi
 
-# Загрузка install.sh (самого себя для переустановки)
 curl -fsSL "${RAW_BASE_URL}/install.sh" -o "${SCRIPTS_DIR}/install.sh"
 if [[ $? -eq 0 ]] && [[ -s "${SCRIPTS_DIR}/install.sh" ]]; then
     chmod +x "${SCRIPTS_DIR}/install.sh"
     echo -e "${GREEN}✓ install.sh сохранен${NC}"
-else
-    echo -e "${YELLOW}⚠ Не удалось сохранить install.sh${NC}"
 fi
 
-# Создание симлинков для удобного доступа
 ln -sf "${SCRIPTS_DIR}/update.sh" /usr/local/bin/xrayebator-update
 ln -sf "${SCRIPTS_DIR}/uninstall.sh" /usr/local/bin/xrayebator-uninstall
 
@@ -306,13 +307,8 @@ echo -e "  ${CYAN}sudo xrayebator-update${NC}     - обновить Xrayebator"
 echo -e "  ${CYAN}sudo xrayebator-uninstall${NC}  - удалить Xrayebator"
 echo ""
 
-echo -e "${BLUE}Скрипты находятся в:${NC}"
-echo -e "  ${YELLOW}/usr/local/etc/xray/scripts/${NC}"
-echo ""
-
 echo -e "${BLUE}GitHub:${NC} https://github.com/${GITHUB_USER}/${GITHUB_REPO}"
-echo -e "${BLUE}Версия:${NC} 1.0"
+echo -e "${BLUE}Версия:${NC} 1.1"
 echo ""
 
 echo -e "${MAGENTA}════════════════════════════════════════════════════════════${NC}"
-
