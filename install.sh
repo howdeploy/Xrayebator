@@ -137,6 +137,27 @@ cat > "$CONFIG_FILE" << 'EOF'
   "log": {
     "loglevel": "warning"
   },
+  "dns": {
+    "servers": [
+      {
+        "address": "https://dns.google/dns-query",
+        "domains": [
+          "domain:discord.com",
+          "domain:discordapp.com",
+          "domain:discord.gg",
+          "domain:discord.media",
+          "domain:gateway.discord.gg"
+        ]
+      },
+      {
+        "address": "1.1.1.1",
+        "domains": ["geosite:geolocation-!cn"]
+      },
+      "localhost"
+    ],
+    "queryStrategy": "UseIPv4",
+    "disableCache": false
+  },
   "routing": {
     "domainStrategy": "IPIfNonMatch",
     "rules": [
