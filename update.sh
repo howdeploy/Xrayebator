@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # ═══════════════════════════════════════════════════════════
-# XRAYEBATOR UPDATE SCRIPT v1.3.1 FIXED
+# XRAYEBATOR UPDATE SCRIPT v1.3.1 FINAL
 # Обновление Xrayebator до последней версии
+# GitHub: https://github.com/howdeploy/Xrayebator
 # ═══════════════════════════════════════════════════════════
 
 # Цвета
@@ -29,7 +30,7 @@ fi
 # ═══════════════════════════════════════════════════════════
 UPDATE_SESSION_FILE="/tmp/.xrayebator_update_session"
 
-# Если скрипт запущен с аргументом (ветка передана)
+# Если скрипт запущен с аргументом (ветка передана при restart)
 if [[ -n "$1" ]]; then
   GITHUB_BRANCH="$1"
   echo -e "${CYAN}Продолжаю обновление после рестарта скрипта...${NC}"
@@ -42,48 +43,54 @@ elif [[ -f "$UPDATE_SESSION_FILE" ]]; then
   echo -e "${BLUE}Ветка из сессии: ${MAGENTA}$GITHUB_BRANCH${NC}\n"
   sleep 1
 else
-  # Первый запуск - показываем меню
+  # Первый запуск - показываем меню выбора ветки
   clear
   echo -e "${CYAN}"
   echo '╔═══════════════════════════════════════════════════════════╗'
   echo '║                                                           ║'
   echo '║              XRAYEBATOR UPDATE SCRIPT                     ║'
+  echo '║              Обновление & Смена версии                    ║'
   echo '║                                                           ║'
   echo '╚═══════════════════════════════════════════════════════════╝'
   echo -e "${NC}\n"
 
-  # Выбор ветки для обновления
-  echo -e "${YELLOW}Выберите версию для обновления:${NC}\n"
+  # Показываем текущую ветку если она установлена
+  if [[ -f /usr/local/etc/xray/.current_branch ]]; then
+    CURRENT_BRANCH=$(cat /usr/local/etc/xray/.current_branch 2>/dev/null || echo "unknown")
+    echo -e "${YELLOW}Текущая версия: ${CYAN}$CURRENT_BRANCH${NC}\n"
+  fi
+
+  # Меню выбора ветки
+  echo -e "${YELLOW}Выберите версию для установки/обновления:${NC}\n"
 
   echo -e "${GREEN}╔════════════════════════════════════════════════════════════╗${NC}"
-  echo -e "${GREEN}║  1) Stable (main)                                          ║${NC}"
+  echo -e "${GREEN}║  1) Stable (main) - Стабильная версия                      ║${NC}"
   echo -e "${GREEN}╚════════════════════════════════════════════════════════════╝${NC}"
-  echo -e "   ${CYAN}→${NC} Стабильная версия"
-  echo -e "   ${CYAN}→${NC} Проверенный код, рекомендуется для продакшена"
+  echo -e "   ${CYAN}→${NC} Проверенный код для продакшена"
   echo -e "   ${CYAN}→${NC} Обновления раз в 1-2 месяца"
+  echo -e "   ${GREEN}✓${NC} Рекомендуется для серверов"
   echo ""
 
   echo -e "${BLUE}╔════════════════════════════════════════════════════════════╗${NC}"
-  echo -e "${BLUE}║  2) Dev                                                    ║${NC}"
+  echo -e "${BLUE}║  2) Dev - Версия с быстрыми фиксами                        ║${NC}"
   echo -e "${BLUE}╚════════════════════════════════════════════════════════════╝${NC}"
-  echo -e "   ${CYAN}→${NC} Версия с быстрыми фиксами"
-  echo -e "   ${CYAN}→${NC} Исправления багов, небольшие улучшения"
+  echo -e "   ${CYAN}→${NC} Свежие исправления багов"
   echo -e "   ${CYAN}→${NC} Обновления раз в 1-2 недели"
   echo -e "   ${YELLOW}⚠${NC} Может содержать мелкие баги"
   echo ""
 
   echo -e "${MAGENTA}╔════════════════════════════════════════════════════════════╗${NC}"
-  echo -e "${MAGENTA}║  3) Experimental                                           ║${NC}"
+  echo -e "${MAGENTA}║  3) Experimental - Экспериментальная (для тестирования)    ║${NC}"
   echo -e "${MAGENTA}╚════════════════════════════════════════════════════════════╝${NC}"
-  echo -e "   ${CYAN}→${NC} Экспериментальная версия (вайбкод)"
-  echo -e "   ${CYAN}→${NC} Новые функции, тестирование, альфа-фичи"
+  echo -e "   ${CYAN}→${NC} Новые функции и альфа-фичи"
+  echo -e "   ${CYAN}→${NC} Автоподбор связок, расширенная диагностика"
   echo -e "   ${CYAN}→${NC} Обновления несколько раз в неделю"
   echo -e "   ${RED}⚠${NC} Может быть нестабильной!"
   echo ""
 
   echo -e "${CYAN}  0)${NC} Отмена\n"
 
-  echo -n -e "${YELLOW}Ваш выбор: ${NC}"
+  echo -n -e "${YELLOW}Ваш выбор [1-3]: ${NC}"
   read branch_choice
 
   case $branch_choice in
@@ -140,7 +147,7 @@ echo ""
 echo -e "${BLUE}Обновление до версии: ${VERSION_COLOR}${VERSION_NAME}${NC}"
 echo -e "${BLUE}Ветка GitHub: ${VERSION_COLOR}${GITHUB_BRANCH}${NC}\n"
 
-# Предупреждение для experimental/dev
+# Предупреждение для experimental/dev (показываем один раз)
 if [[ "$GITHUB_BRANCH" != "main" ]] && [[ ! -f "$UPDATE_SESSION_FILE.warned" ]]; then
   echo -e "${YELLOW}╔═══════════════════════════════════════════════════════════╗${NC}"
   echo -e "${YELLOW}║                    ⚠ ВНИМАНИЕ ⚠                          ║${NC}"
@@ -180,21 +187,21 @@ cp /usr/local/etc/xray/config.json "$BACKUP_DIR/" 2>/dev/null
 cp /usr/local/etc/xray/.private_key "$BACKUP_DIR/" 2>/dev/null
 cp /usr/local/etc/xray/.public_key "$BACKUP_DIR/" 2>/dev/null
 cp /usr/local/etc/xray/scripts/update.sh "$BACKUP_DIR/update.sh.bak" 2>/dev/null
-echo -e "${GREEN}✓ Резервная копия создана: $BACKUP_DIR${NC}\n"
+echo -e "${GREEN}✓ Резервная копия: $BACKUP_DIR${NC}\n"
 
 # Сохранение информации о текущей ветке
 echo "$GITHUB_BRANCH" > /usr/local/etc/xray/.current_branch 2>/dev/null
 
 # ═══════════════════════════════════════════════════════════
-# СНАЧАЛА ОБНОВЛЯЕМ САМ СКРИПТ update.sh
+# ОБНОВЛЕНИЕ СКРИПТА update.sh
 # ═══════════════════════════════════════════════════════════
-echo -e "${YELLOW}Обновление скрипта update.sh...${NC}"
+echo -e "${YELLOW}Проверка обновлений update.sh...${NC}"
 curl -fsSL "${RAW_BASE_URL}/update.sh" -o /tmp/update_new.sh
 
 if [[ $? -eq 0 ]] && [[ -s /tmp/update_new.sh ]]; then
   chmod +x /tmp/update_new.sh
 
-  # Проверяем что скрипт валидный (содержит shebang)
+  # Проверяем что скрипт валидный
   if head -n 1 /tmp/update_new.sh | grep -q "^#!/bin/bash"; then
     mkdir -p /usr/local/etc/xray/scripts
 
@@ -202,28 +209,30 @@ if [[ $? -eq 0 ]] && [[ -s /tmp/update_new.sh ]]; then
     if ! cmp -s /tmp/update_new.sh /usr/local/etc/xray/scripts/update.sh 2>/dev/null; then
       mv /tmp/update_new.sh /usr/local/etc/xray/scripts/update.sh
       echo -e "${GREEN}✓ Скрипт update.sh обновлён${NC}"
-      echo -e "${YELLOW}⚠ Требуется перезапуск скрипта для применения изменений${NC}"
-      echo ""
-      echo -e "${CYAN}Перезапускаю скрипт обновления с сохранением выбора...${NC}"
+      echo -e "${YELLOW}⚠ Перезапуск для применения изменений${NC}"
       sleep 2
 
       # ИСПРАВЛЕНИЕ: Передаем ветку через аргумент
       exec /usr/local/etc/xray/scripts/update.sh "$GITHUB_BRANCH"
       exit 0
     else
-      echo -e "${GREEN}✓ Скрипт update.sh уже актуален${NC}"
+      echo -e "${GREEN}✓ update.sh актуален${NC}"
       rm /tmp/update_new.sh
     fi
   else
-    echo -e "${YELLOW}⚠ Скачанный скрипт некорректен, пропускаю${NC}"
+    echo -e "${YELLOW}⚠ Скачанный скрипт некорректен${NC}"
     rm /tmp/update_new.sh
   fi
 else
-  echo -e "${YELLOW}⚠ Не удалось обновить update.sh (продолжаю)${NC}"
+  echo -e "${YELLOW}⚠ Не удалось обновить update.sh${NC}"
 fi
 echo ""
 
-# Обновление основного скрипта
+# ═══════════════════════════════════════════════════════════
+# ОБНОВЛЕНИЕ ОСНОВНЫХ ФАЙЛОВ
+# ═══════════════════════════════════════════════════════════
+
+# Обновление xrayebator
 echo -e "${YELLOW}Обновление xrayebator...${NC}"
 curl -fsSL "${RAW_BASE_URL}/xrayebator" -o /tmp/xrayebator_new
 
@@ -233,7 +242,7 @@ if [[ $? -eq 0 ]] && [[ -s /tmp/xrayebator_new ]]; then
   echo -e "${GREEN}✓ xrayebator обновлён${NC}\n"
 else
   echo -e "${RED}✗ Ошибка загрузки xrayebator${NC}"
-  echo -e "${YELLOW}Возможно, ветка '${GITHUB_BRANCH}' ещё не создана на GitHub${NC}"
+  echo -e "${YELLOW}Проверьте доступность ветки '${GITHUB_BRANCH}' на GitHub${NC}"
   rm -f "$UPDATE_SESSION_FILE" "$UPDATE_SESSION_FILE.warned"
   exit 1
 fi
@@ -246,7 +255,7 @@ curl -fsSL "${RAW_BASE_URL}/sni_list.txt" -o /usr/local/etc/xray/data/sni_list.t
 if [[ $? -eq 0 ]]; then
   echo -e "${GREEN}✓ Список SNI обновлён${NC}\n"
 else
-  echo -e "${YELLOW}⚠ Не удалось обновить список SNI${NC}\n"
+  echo -e "${YELLOW}⚠ Не удалось обновить SNI список${NC}\n"
 fi
 
 # Обновление ASCII арта (опционально)
@@ -255,26 +264,28 @@ curl -fsSL "${RAW_BASE_URL}/ascii_art.txt" -o /usr/local/etc/xray/data/ascii_art
 # Проверка версии
 echo -e "${YELLOW}Проверка установленной версии...${NC}"
 VERSION_INFO=$(grep -m 1 "XRAYEBATOR v" /usr/local/bin/xrayebator | sed 's/.*XRAYEBATOR //' | sed 's/ .*//')
-echo -e "${GREEN}✓ Установлена версия: ${VERSION_INFO}${NC}\n"
+echo -e "${GREEN}✓ Версия: ${VERSION_INFO}${NC}\n"
 
-# Перезапуск Xray (если требуется)
+# Перезапуск Xray (если работает)
 if systemctl is-active --quiet xray; then
   echo -e "${YELLOW}Перезапуск Xray...${NC}"
   systemctl restart xray
   sleep 2
 
   if systemctl is-active --quiet xray; then
-    echo -e "${GREEN}✓ Xray успешно перезапущен${NC}\n"
+    echo -e "${GREEN}✓ Xray перезапущен${NC}\n"
   else
     echo -e "${RED}✗ Ошибка перезапуска Xray${NC}"
-    echo -e "${YELLOW}Проверьте логи: journalctl -u xray -n 50${NC}\n"
+    echo -e "${YELLOW}Логи: journalctl -u xray -n 50${NC}\n"
   fi
 fi
 
-# Очистка файлов сессии
+# Очистка временных файлов
 rm -f "$UPDATE_SESSION_FILE" "$UPDATE_SESSION_FILE.warned"
 
-# Финальное сообщение
+# ═══════════════════════════════════════════════════════════
+# ФИНАЛЬНОЕ СООБЩЕНИЕ
+# ═══════════════════════════════════════════════════════════
 clear
 echo -e "${VERSION_COLOR}"
 echo '╔═══════════════════════════════════════════════════════════╗'
@@ -284,66 +295,45 @@ echo '║                                                           ║'
 echo '╚═══════════════════════════════════════════════════════════╝'
 echo -e "${NC}\n"
 
-echo -e "${CYAN}Версия: ${VERSION_COLOR}${VERSION_NAME}${NC}"
-echo -e "${CYAN}Ветка: ${VERSION_COLOR}${GITHUB_BRANCH}${NC}"
+echo -e "${CYAN}Установленная версия: ${VERSION_COLOR}${VERSION_NAME} (${GITHUB_BRANCH})${NC}"
 echo -e "${CYAN}Релиз: ${VERSION_COLOR}${VERSION_INFO}${NC}"
 echo -e "${CYAN}Резервная копия: ${GREEN}${BACKUP_DIR}${NC}\n"
 
-# Специфичная информация по ветке
+# Информация по ветке
 case $GITHUB_BRANCH in
   main)
     echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
-    echo -e "${GREEN}  Вы используете стабильную версию${NC}"
+    echo -e "${GREEN}  Стабильная версия установлена${NC}"
     echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
-    echo -e "${CYAN}Рекомендации:${NC}"
-    echo -e "  ${GREEN}✓${NC} Используйте для продакшен-серверов"
-    echo -e "  ${GREEN}✓${NC} Проверенный и надёжный код"
-    echo -e "  ${GREEN}✓${NC} Следующее обновление через 1-2 месяца"
-    echo ""
+    echo -e "  ${GREEN}✓${NC} Проверенный код"
+    echo -e "  ${GREEN}✓${NC} Для продакшен-серверов"
     ;;
   dev)
     echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
-    echo -e "${BLUE}  Вы используете Dev версию${NC}"
+    echo -e "${BLUE}  Dev версия установлена${NC}"
     echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
-    echo -e "${CYAN}Что нового:${NC}"
-    echo -e "  ${GREEN}✓${NC} Свежие исправления багов"
-    echo -e "  ${GREEN}✓${NC} Небольшие улучшения производительности"
-    echo -e "  ${GREEN}✓${NC} Оптимизация кода"
-    echo ""
-    echo -e "${YELLOW}Внимание:${NC}"
-    echo -e "  ${YELLOW}⚠${NC} При возникновении проблем откатитесь на Stable:"
-    echo -e "    ${CYAN}sudo xrayebator-update${NC} → выберите ${GREEN}Stable${NC}"
-    echo ""
+    echo -e "  ${GREEN}✓${NC} Свежие исправления"
+    echo -e "  ${YELLOW}⚠${NC} Для отката: sudo xrayebator-update → Stable"
     ;;
   experimental)
     echo -e "${MAGENTA}═══════════════════════════════════════════════════════════${NC}"
-    echo -e "${MAGENTA}  ⚡ ВЫ ИСПОЛЬЗУЕТЕ ЭКСПЕРИМЕНТАЛЬНУЮ ВЕРСИЮ ⚡${NC}"
+    echo -e "${MAGENTA}  ⚡ Experimental версия установлена${NC}"
     echo -e "${MAGENTA}═══════════════════════════════════════════════════════════${NC}"
-    echo -e "${CYAN}Новые функции:${NC}"
-    echo -e "  ${GREEN}✓${NC} Автоподбор рабочих связок с динамическим портом"
-    echo -e "  ${GREEN}✓${NC} Индивидуальная смена SNI для каждого профиля"
-    echo -e "  ${GREEN}✓${NC} Индивидуальная смена fingerprint"
-    echo -e "  ${GREEN}✓${NC} Меню с топ-20 SNI и описаниями"
-    echo -e "  ${GREEN}✓${NC} Улучшенная диагностика соединений"
-    echo ""
-    echo -e "${RED}⚠ ВАЖНО:${NC}"
-    echo -e "  ${RED}•${NC} Эта версия может быть нестабильной"
-    echo -e "  ${RED}•${NC} Используйте только для тестирования"
-    echo -e "  ${RED}•${NC} Сообщайте о багах: ${CYAN}https://github.com/howdeploy/Xrayebator/issues${NC}"
-    echo ""
-    echo -e "${YELLOW}Для отката на стабильную версию:${NC}"
-    echo -e "  ${CYAN}sudo xrayebator-update${NC} → выберите ${GREEN}Stable${NC}"
-    echo ""
+    echo -e "  ${GREEN}✓${NC} Автоподбор связок с динамическими портами"
+    echo -e "  ${GREEN}✓${NC} Индивидуальная настройка SNI/fingerprint"
+    echo -e "  ${GREEN}✓${NC} Расширенная диагностика"
+    echo -e "  ${RED}⚠${NC} Тестовая версия!"
+    echo -e "  ${YELLOW}Для отката: sudo xrayebator-update → Stable${NC}"
     ;;
 esac
 
-echo -e "${BLUE}Для запуска используйте:${NC} ${GREEN}sudo xrayebator${NC}"
 echo ""
-
-# Дополнительная информация
-echo -e "${CYAN}Полезные команды:${NC}"
+echo -e "${BLUE}Команды:${NC}"
 echo -e "  ${YELLOW}sudo xrayebator${NC} - запустить менеджер"
-echo -e "  ${YELLOW}sudo xrayebator-update${NC} - обновить версию"
+echo -e "  ${YELLOW}sudo xrayebator-update${NC} - сменить/обновить версию"
 echo -e "  ${YELLOW}systemctl status xray${NC} - статус сервиса"
 echo -e "  ${YELLOW}journalctl -u xray -f${NC} - логи в реальном времени"
+echo ""
+
+echo -e "${MAGENTA}За свободу интернета! 🚀${NC}"
 echo ""
