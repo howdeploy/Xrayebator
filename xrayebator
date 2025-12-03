@@ -1073,7 +1073,6 @@ add_test_inbound() {
   # Проверяем валидность сгенерированного JSON
   if ! echo "$inbound" | jq empty 2>/dev/null; then
     echo -e "${RED}  ✗ Сгенерирован невалидный JSON inbound${NC}"
-    echo -e "${YELLOW}  Debug: $inbound${NC}" >&2
     return 1
   fi
 
@@ -1092,8 +1091,7 @@ add_test_inbound() {
   chown root:root "$CONFIG_FILE"
   chmod 644 "$CONFIG_FILE"
 }
-
-
+\n
 create_test_profile() {
   local sni=$1
   local transport=$2
@@ -1139,18 +1137,19 @@ test_connection_full() {
   echo -e "${CYAN}  → Проверка конфигурации...${NC}"
   if ! /usr/local/bin/xray -test -config "$CONFIG_FILE" >/dev/null 2>&1; then
     echo -e "${RED}  ✗ Конфигурация невалидна${NC}"
-    journalctl -u xray -n 10 --no-pager 2>/dev/null | tail -5
+    /usr/local/bin/xray -test -config "$CONFIG_FILE" 2>&1 | tail -5
     return 1
   fi
 
   echo -e "${CYAN}  → Перезапуск Xray...${NC}"
   systemctl restart xray >/dev/null 2>&1
 
-  # Ждем запуска с таймаутом
-  local timeout=15
+  # Ждем запуска с таймаутом и отображением процесса
+  local timeout=20
   local elapsed=0
   while [[ $elapsed -lt $timeout ]]; do
     if systemctl is-active --quiet xray; then
+      echo -e "${GREEN}  ✓ Xray запущен (за $elapsed сек)${NC}"
       break
     fi
     sleep 1
@@ -1159,59 +1158,85 @@ test_connection_full() {
 
   if ! systemctl is-active --quiet xray; then
     echo -e "${RED}  ✗ Xray не запустился за $timeout секунд${NC}"
-    journalctl -u xray -n 15 --no-pager 2>/dev/null | tail -10
+    echo -e "${YELLOW}  Последние 10 строк логов:${NC}"
+    journalctl -u xray -n 10 --no-pager 2>/dev/null | sed 's/^/    /'
     return 1
   fi
 
   # Дополнительная пауза для инициализации порта
   sleep 3
 
-  # Проверяем что порт слушается
+  # Проверяем что порт слушается (с несколькими попытками)
+  echo -e "${CYAN}  → Проверка порта $port...${NC}"
   local port_check=0
-  for i in {1..5}; do
+  for i in {1..8}; do
     if ss -tuln | grep -q ":${port}.*LISTEN"; then
       port_check=1
+      echo -e "${GREEN}  ✓ Порт $port слушается (попытка $i)${NC}"
       break
     fi
-    sleep 1
+    echo -e "${YELLOW}  ⏳ Ожидание порта $port (попытка $i/8)...${NC}"
+    sleep 2
   done
 
   if [[ $port_check -eq 0 ]]; then
-    echo -e "${RED}  ✗ Порт $port не слушается${NC}"
+    echo -e "${RED}  ✗ Порт $port не слушается после 8 попыток${NC}"
+    echo -e "${YELLOW}  Открытые порты Xray:${NC}"
+    ss -tuln | grep -E ":(443|8443|2053|9443)" | sed 's/^/    /'
+    echo -e "${YELLOW}  Проверка процессов на порту $port:${NC}"
+    lsof -i :$port 2>/dev/null | sed 's/^/    /' || echo "    (нет процессов)"
     return 1
   fi
 
-  echo -e "${GREEN}  ✓ Порт $port слушается${NC}"
+  # Проверяем что SOCKS5 прокси работает
+  if ! ss -tuln | grep -q ":10808.*LISTEN"; then
+    echo -e "${RED}  ✗ SOCKS5 прокси (10808) не запущен${NC}"
+    echo -e "${YELLOW}  Настройте SOCKS5 через setup_test_socks5${NC}"
+    return 1
+  fi
 
   # Тестируем подключение через SOCKS5 прокси
-  local http_code=$(timeout 10 curl -s --connect-timeout 5 \
-    --max-time 8 \
+  echo -e "${CYAN}  → Тестирование соединения через прокси...${NC}"
+  local http_code=$(timeout 15 curl -s --connect-timeout 8 \
+    --max-time 12 \
     --socks5 127.0.0.1:10808 \
     https://www.google.com \
     -o /dev/null -w "%{http_code}" 2>/dev/null)
 
   if [[ "$http_code" == "200" ]] || [[ "$http_code" == "301" ]] || [[ "$http_code" == "302" ]]; then
-    echo -e "${GREEN}  ✓ HTTP test passed (code: $http_code)${NC}"
+    echo -e "${GREEN}  ✓ Google test passed (HTTP $http_code)${NC}"
     return 0
   fi
 
   # Запасной тест на Яндекс
-  local yandex_test=$(timeout 10 curl -s --connect-timeout 5 \
-    --max-time 8 \
+  local yandex_test=$(timeout 15 curl -s --connect-timeout 8 \
+    --max-time 12 \
     --socks5 127.0.0.1:10808 \
     https://ya.ru \
     -o /dev/null -w "%{http_code}" 2>/dev/null)
 
   if [[ "$yandex_test" == "200" ]] || [[ "$yandex_test" == "301" ]]; then
-    echo -e "${GREEN}  ✓ Yandex test passed (code: $yandex_test)${NC}"
+    echo -e "${GREEN}  ✓ Yandex test passed (HTTP $yandex_test)${NC}"
     return 0
   fi
 
-  echo -e "${RED}  ✗ Все тесты провалены (http:$http_code, ya:$yandex_test)${NC}"
+  # Тест на Discord (часто работает даже если Google заблокирован)
+  local discord_test=$(timeout 15 curl -s --connect-timeout 8 \
+    --max-time 12 \
+    --socks5 127.0.0.1:10808 \
+    https://discord.com \
+    -o /dev/null -w "%{http_code}" 2>/dev/null)
+
+  if [[ "$discord_test" == "200" ]] || [[ "$discord_test" == "301" ]] || [[ "$discord_test" == "302" ]]; then
+    echo -e "${GREEN}  ✓ Discord test passed (HTTP $discord_test)${NC}"
+    return 0
+  fi
+
+  echo -e "${RED}  ✗ Все HTTP тесты провалены${NC}"
+  echo -e "${YELLOW}  Результаты: Google=$http_code, Yandex=$yandex_test, Discord=$discord_test${NC}"
   return 1
 }
-
-
+\n
 save_profile_from_test() {
   local sni=$1
   local transport=$2
