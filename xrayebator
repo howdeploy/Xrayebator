@@ -995,6 +995,7 @@ add_test_inbound() {
 
   echo -e "${CYAN} → Создание тестового inbound на порту $port${NC}"
 
+  # Очищаем старый тестовый inbound
   local temp_config=$(mktemp)
   jq 'del(.inbounds[] | select(.tag == "test-inbound"))' "$CONFIG_FILE" > "$temp_config"
   mv "$temp_config" "$CONFIG_FILE"
@@ -1002,84 +1003,96 @@ add_test_inbound() {
   local inbound=""
   case $transport in
     tcp|tcp-utls)
-      inbound=$(cat << 'TCPEOF'
-{
-  "listen": "0.0.0.0",
-  "port": PORT_PLACEHOLDER,
-  "protocol": "vless",
-  "settings": {
-    "clients": [{"id": "UUID_PLACEHOLDER", "flow": "xtls-rprx-vision"}],
-    "decryption": "none"
-  },
-  "streamSettings": {
-    "network": "tcp",
-    "security": "reality",
-    "realitySettings": {
-      "show": false,
-      "dest": "SNI_PLACEHOLDER:443",
-      "xver": 0,
-      "serverNames": ["SNI_PLACEHOLDER"],
-      "privateKey": "PRIVKEY_PLACEHOLDER",
-      "shortIds": [""],
-      "fingerprint": "FP_PLACEHOLDER"
-    }
-  },
-  "sniffing": {"enabled": true, "destOverride": ["http", "tls"]},
-  "tag": "test-inbound"
-}
-TCPEOF
-)
-      inbound="${inbound//PORT_PLACEHOLDER/$port}"
-      inbound="${inbound//UUID_PLACEHOLDER/$uuid}"
-      inbound="${inbound//SNI_PLACEHOLDER/$sni}"
-      inbound="${inbound//PRIVKEY_PLACEHOLDER/$PRIVATE_KEY}"
-      inbound="${inbound//FP_PLACEHOLDER/$fingerprint}"
+      # Создаем JSON напрямую через jq вместо heredoc с плейсхолдерами
+      inbound=$(jq -n \
+        --arg uuid "$uuid" \
+        --argjson port "$port" \
+        --arg sni "$sni" \
+        --arg privkey "$PRIVATE_KEY" \
+        --arg fp "$fingerprint" \
+        '{
+          "listen": "0.0.0.0",
+          "port": $port,
+          "protocol": "vless",
+          "settings": {
+            "clients": [{"id": $uuid, "flow": "xtls-rprx-vision"}],
+            "decryption": "none"
+          },
+          "streamSettings": {
+            "network": "tcp",
+            "security": "reality",
+            "realitySettings": {
+              "show": false,
+              "dest": ($sni + ":443"),
+              "xver": 0,
+              "serverNames": [$sni],
+              "privateKey": $privkey,
+              "shortIds": [""],
+              "fingerprint": $fp
+            }
+          },
+          "sniffing": {"enabled": true, "destOverride": ["http", "tls"]},
+          "tag": "test-inbound"
+        }')
       ;;
     grpc)
-      inbound=$(cat << 'GRPCEOF'
-{
-  "listen": "0.0.0.0",
-  "port": PORT_PLACEHOLDER,
-  "protocol": "vless",
-  "settings": {
-    "clients": [{"id": "UUID_PLACEHOLDER", "flow": ""}],
-    "decryption": "none"
-  },
-  "streamSettings": {
-    "network": "grpc",
-    "security": "reality",
-    "grpcSettings": {"serviceName": "grpc", "multiMode": false},
-    "realitySettings": {
-      "show": false,
-      "dest": "SNI_PLACEHOLDER:443",
-      "xver": 0,
-      "serverNames": ["SNI_PLACEHOLDER"],
-      "privateKey": "PRIVKEY_PLACEHOLDER",
-      "shortIds": [""],
-      "fingerprint": "FP_PLACEHOLDER"
-    }
-  },
-  "sniffing": {"enabled": true, "destOverride": ["http", "tls"]},
-  "tag": "test-inbound"
-}
-GRPCEOF
-)
-      inbound="${inbound//PORT_PLACEHOLDER/$port}"
-      inbound="${inbound//UUID_PLACEHOLDER/$uuid}"
-      inbound="${inbound//SNI_PLACEHOLDER/$sni}"
-      inbound="${inbound//PRIVKEY_PLACEHOLDER/$PRIVATE_KEY}"
-      inbound="${inbound//FP_PLACEHOLDER/$fingerprint}"
+      inbound=$(jq -n \
+        --arg uuid "$uuid" \
+        --argjson port "$port" \
+        --arg sni "$sni" \
+        --arg privkey "$PRIVATE_KEY" \
+        --arg fp "$fingerprint" \
+        '{
+          "listen": "0.0.0.0",
+          "port": $port,
+          "protocol": "vless",
+          "settings": {
+            "clients": [{"id": $uuid, "flow": ""}],
+            "decryption": "none"
+          },
+          "streamSettings": {
+            "network": "grpc",
+            "security": "reality",
+            "grpcSettings": {"serviceName": "grpc", "multiMode": false},
+            "realitySettings": {
+              "show": false,
+              "dest": ($sni + ":443"),
+              "xver": 0,
+              "serverNames": [$sni],
+              "privateKey": $privkey,
+              "shortIds": [""],
+              "fingerprint": $fp
+            }
+          },
+          "sniffing": {"enabled": true, "destOverride": ["http", "tls"]},
+          "tag": "test-inbound"
+        }')
       ;;
   esac
 
+  # Проверяем валидность сгенерированного JSON
+  if ! echo "$inbound" | jq empty 2>/dev/null; then
+    echo -e "${RED}  ✗ Сгенерирован невалидный JSON inbound${NC}"
+    echo -e "${YELLOW}  Debug: $inbound${NC}" >&2
+    return 1
+  fi
+
+  # Добавляем inbound корректно через jq
   temp_config=$(mktemp)
-  echo "$inbound" | jq -s '.[0]' > /tmp/test_inbound.json
-  jq ".inbounds += [$(cat /tmp/test_inbound.json)]" "$CONFIG_FILE" > "$temp_config"
+  echo "$inbound" | jq --slurp '.[0]' > /tmp/test_inbound.json
+
+  if ! jq --slurpfile new_inbound /tmp/test_inbound.json '.inbounds += $new_inbound' "$CONFIG_FILE" > "$temp_config"; then
+    echo -e "${RED}  ✗ Ошибка добавления inbound в конфиг${NC}"
+    rm -f "$temp_config" /tmp/test_inbound.json
+    return 1
+  fi
+
   mv "$temp_config" "$CONFIG_FILE"
-  rm /tmp/test_inbound.json
+  rm -f /tmp/test_inbound.json
   chown root:root "$CONFIG_FILE"
   chmod 644 "$CONFIG_FILE"
 }
+
 
 create_test_profile() {
   local sni=$1
@@ -1126,26 +1139,51 @@ test_connection_full() {
   echo -e "${CYAN}  → Проверка конфигурации...${NC}"
   if ! /usr/local/bin/xray -test -config "$CONFIG_FILE" >/dev/null 2>&1; then
     echo -e "${RED}  ✗ Конфигурация невалидна${NC}"
+    journalctl -u xray -n 10 --no-pager 2>/dev/null | tail -5
     return 1
   fi
 
   echo -e "${CYAN}  → Перезапуск Xray...${NC}"
   systemctl restart xray >/dev/null 2>&1
-  sleep 5
+
+  # Ждем запуска с таймаутом
+  local timeout=15
+  local elapsed=0
+  while [[ $elapsed -lt $timeout ]]; do
+    if systemctl is-active --quiet xray; then
+      break
+    fi
+    sleep 1
+    ((elapsed++))
+  done
 
   if ! systemctl is-active --quiet xray; then
-    echo -e "${RED}  ✗ Xray не запустился${NC}"
+    echo -e "${RED}  ✗ Xray не запустился за $timeout секунд${NC}"
+    journalctl -u xray -n 15 --no-pager 2>/dev/null | tail -10
     return 1
   fi
 
-  sleep 2
-  if ! ss -tuln | grep -q ":${port}.*LISTEN"; then
+  # Дополнительная пауза для инициализации порта
+  sleep 3
+
+  # Проверяем что порт слушается
+  local port_check=0
+  for i in {1..5}; do
+    if ss -tuln | grep -q ":${port}.*LISTEN"; then
+      port_check=1
+      break
+    fi
+    sleep 1
+  done
+
+  if [[ $port_check -eq 0 ]]; then
     echo -e "${RED}  ✗ Порт $port не слушается${NC}"
     return 1
   fi
 
   echo -e "${GREEN}  ✓ Порт $port слушается${NC}"
 
+  # Тестируем подключение через SOCKS5 прокси
   local http_code=$(timeout 10 curl -s --connect-timeout 5 \
     --max-time 8 \
     --socks5 127.0.0.1:10808 \
@@ -1157,6 +1195,7 @@ test_connection_full() {
     return 0
   fi
 
+  # Запасной тест на Яндекс
   local yandex_test=$(timeout 10 curl -s --connect-timeout 5 \
     --max-time 8 \
     --socks5 127.0.0.1:10808 \
@@ -1171,6 +1210,7 @@ test_connection_full() {
   echo -e "${RED}  ✗ Все тесты провалены (http:$http_code, ya:$yandex_test)${NC}"
   return 1
 }
+
 
 save_profile_from_test() {
   local sni=$1
