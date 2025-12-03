@@ -995,7 +995,7 @@ add_test_inbound() {
 
   echo -e "${CYAN} → Создание тестового inbound на порту $port${NC}"
 
-  # Очищаем старый тестовый inbound
+  # Очищаем старый тестовый inbound если есть
   local temp_config=$(mktemp)
   jq 'del(.inbounds[] | select(.tag == "test-inbound"))' "$CONFIG_FILE" > "$temp_config"
   mv "$temp_config" "$CONFIG_FILE"
@@ -1003,7 +1003,6 @@ add_test_inbound() {
   local inbound=""
   case $transport in
     tcp|tcp-utls)
-      # Создаем JSON напрямую через jq вместо heredoc с плейсхолдерами
       inbound=$(jq -n \
         --arg uuid "$uuid" \
         --argjson port "$port" \
@@ -1070,18 +1069,16 @@ add_test_inbound() {
       ;;
   esac
 
-  # Проверяем валидность сгенерированного JSON
   if ! echo "$inbound" | jq empty 2>/dev/null; then
-    echo -e "${RED}  ✗ Сгенерирован невалидный JSON inbound${NC}"
+    echo -e "${RED}  ✗ Невалидный JSON inbound${NC}"
     return 1
   fi
 
-  # Добавляем inbound корректно через jq
   temp_config=$(mktemp)
   echo "$inbound" | jq --slurp '.[0]' > /tmp/test_inbound.json
 
   if ! jq --slurpfile new_inbound /tmp/test_inbound.json '.inbounds += $new_inbound' "$CONFIG_FILE" > "$temp_config"; then
-    echo -e "${RED}  ✗ Ошибка добавления inbound в конфиг${NC}"
+    echo -e "${RED}  ✗ Ошибка добавления inbound${NC}"
     rm -f "$temp_config" /tmp/test_inbound.json
     return 1
   fi
@@ -1091,7 +1088,8 @@ add_test_inbound() {
   chown root:root "$CONFIG_FILE"
   chmod 644 "$CONFIG_FILE"
 }
-\n
+
+
 create_test_profile() {
   local sni=$1
   local transport=$2
@@ -1099,8 +1097,7 @@ create_test_profile() {
   local fp=$4
   local uuid=$(uuidgen)
 
-  cleanup_test_profile
-
+  # Сохраняем профиль для тестирования
   cat > "$PROFILES_DIR/_test.json" << EOF
 {
   "name": "_test",
@@ -1113,8 +1110,10 @@ create_test_profile() {
 }
 EOF
 
-  add_test_inbound "$uuid" "$transport" "$port" "$sni" "$fp"
+  # Возвращаем UUID для использования в update_test_inbound_client
+  echo "$uuid"
 }
+
 
 cleanup_test_profile() {
   rm -f "$PROFILES_DIR/_test.json" 2>/dev/null
@@ -1126,117 +1125,123 @@ cleanup_test_profile() {
   chmod 644 "$CONFIG_FILE"
 }
 
+update_test_inbound_client() {
+  local new_uuid=$1
+  local new_sni=$2
+  local fingerprint=${3:-"chrome"}
+
+  echo -e "${CYAN}  → Обновление тестового клиента (UUID и SNI)${NC}"
+
+  local temp_config=$(mktemp)
+
+  # Обновляем UUID клиента, SNI и fingerprint в существующем test-inbound
+  jq --arg uuid "$new_uuid" \
+     --arg sni "$new_sni" \
+     --arg fp "$fingerprint" '
+    (.inbounds[] | select(.tag == "test-inbound") | .settings.clients[0].id) |= $uuid |
+    (.inbounds[] | select(.tag == "test-inbound") | .streamSettings.realitySettings.dest) |= ($sni + ":443") |
+    (.inbounds[] | select(.tag == "test-inbound") | .streamSettings.realitySettings.serverNames) |= [$sni] |
+    (.inbounds[] | select(.tag == "test-inbound") | .streamSettings.realitySettings.fingerprint) |= $fp
+  ' "$CONFIG_FILE" > "$temp_config"
+
+  if [[ $? -ne 0 ]]; then
+    echo -e "${RED}  ✗ Ошибка обновления клиента${NC}"
+    rm -f "$temp_config"
+    return 1
+  fi
+
+  mv "$temp_config" "$CONFIG_FILE"
+  chown root:root "$CONFIG_FILE"
+  chmod 644 "$CONFIG_FILE"
+}
+
+
 test_connection_full() {
   local sni=$1
   local transport=$2
   local port=$3
   local fp=$4
 
-  create_test_profile "$sni" "$transport" "$port" "$fp"
+  # Создаем профиль и получаем UUID
+  local new_uuid=$(create_test_profile "$sni" "$transport" "$port" "$fp")
+
+  # Обновляем только клиента в существующем inbound (не пересоздаем!)
+  update_test_inbound_client "$new_uuid" "$sni" "$fp"
 
   echo -e "${CYAN}  → Проверка конфигурации...${NC}"
   if ! /usr/local/bin/xray -test -config "$CONFIG_FILE" >/dev/null 2>&1; then
     echo -e "${RED}  ✗ Конфигурация невалидна${NC}"
-    /usr/local/bin/xray -test -config "$CONFIG_FILE" 2>&1 | tail -5
+    /usr/local/bin/xray -test -config "$CONFIG_FILE" 2>&1 | tail -3
     return 1
   fi
 
-  echo -e "${CYAN}  → Перезапуск Xray...${NC}"
-  systemctl restart xray >/dev/null 2>&1
-
-  # Ждем запуска с таймаутом и отображением процесса
-  local timeout=20
-  local elapsed=0
-  while [[ $elapsed -lt $timeout ]]; do
-    if systemctl is-active --quiet xray; then
-      echo -e "${GREEN}  ✓ Xray запущен (за $elapsed сек)${NC}"
-      break
-    fi
+  echo -e "${CYAN}  → Перезагрузка конфига Xray...${NC}"
+  # Используем reload вместо restart для применения изменений БЕЗ разрыва соединений
+  if ! systemctl reload xray 2>/dev/null; then
+    # Если reload не поддерживается, используем restart
+    systemctl restart xray >/dev/null 2>&1
+    sleep 3
+  else
     sleep 1
-    ((elapsed++))
-  done
+  fi
 
   if ! systemctl is-active --quiet xray; then
-    echo -e "${RED}  ✗ Xray не запустился за $timeout секунд${NC}"
-    echo -e "${YELLOW}  Последние 10 строк логов:${NC}"
-    journalctl -u xray -n 10 --no-pager 2>/dev/null | sed 's/^/    /'
+    echo -e "${RED}  ✗ Xray не активен${NC}"
     return 1
   fi
 
-  # Дополнительная пауза для инициализации порта
-  sleep 3
-
-  # Проверяем что порт слушается (с несколькими попытками)
+  # ИСПРАВЛЕННАЯ проверка порта
   echo -e "${CYAN}  → Проверка порта $port...${NC}"
-  local port_check=0
-  for i in {1..8}; do
-    if ss -tuln | grep -q ":${port}.*LISTEN"; then
-      port_check=1
-      echo -e "${GREEN}  ✓ Порт $port слушается (попытка $i)${NC}"
-      break
-    fi
-    echo -e "${YELLOW}  ⏳ Ожидание порта $port (попытка $i/8)...${NC}"
-    sleep 2
-  done
 
-  if [[ $port_check -eq 0 ]]; then
-    echo -e "${RED}  ✗ Порт $port не слушается после 8 попыток${NC}"
+  # Проверяем что порт слушается (ПРАВИЛЬНЫЙ regex)
+  if ss -tuln | grep -qE ":${port}[[:space:]]"; then
+    echo -e "${GREEN}  ✓ Порт $port слушается${NC}"
+  else
+    echo -e "${RED}  ✗ Порт $port не найден${NC}"
     echo -e "${YELLOW}  Открытые порты Xray:${NC}"
     ss -tuln | grep -E ":(443|8443|2053|9443)" | sed 's/^/    /'
-    echo -e "${YELLOW}  Проверка процессов на порту $port:${NC}"
-    lsof -i :$port 2>/dev/null | sed 's/^/    /' || echo "    (нет процессов)"
     return 1
   fi
 
-  # Проверяем что SOCKS5 прокси работает
-  if ! ss -tuln | grep -q ":10808.*LISTEN"; then
-    echo -e "${RED}  ✗ SOCKS5 прокси (10808) не запущен${NC}"
-    echo -e "${YELLOW}  Настройте SOCKS5 через setup_test_socks5${NC}"
+  # Проверяем SOCKS5 прокси
+  if ! ss -tuln | grep -qE ":10808[[:space:]]"; then
+    echo -e "${RED}  ✗ SOCKS5 прокси не запущен${NC}"
     return 1
   fi
 
-  # Тестируем подключение через SOCKS5 прокси
-  echo -e "${CYAN}  → Тестирование соединения через прокси...${NC}"
-  local http_code=$(timeout 15 curl -s --connect-timeout 8 \
-    --max-time 12 \
+  # Даём время на инициализацию соединения
+  sleep 2
+
+  # Тестируем подключение
+  echo -e "${CYAN}  → Тест соединения...${NC}"
+
+  local http_code=$(timeout 12 curl -s --connect-timeout 6 \
+    --max-time 10 \
     --socks5 127.0.0.1:10808 \
     https://www.google.com \
     -o /dev/null -w "%{http_code}" 2>/dev/null)
 
-  if [[ "$http_code" == "200" ]] || [[ "$http_code" == "301" ]] || [[ "$http_code" == "302" ]]; then
-    echo -e "${GREEN}  ✓ Google test passed (HTTP $http_code)${NC}"
+  if [[ "$http_code" =~ ^(200|301|302)$ ]]; then
+    echo -e "${GREEN}  ✓ Google: $http_code${NC}"
     return 0
   fi
 
-  # Запасной тест на Яндекс
-  local yandex_test=$(timeout 15 curl -s --connect-timeout 8 \
-    --max-time 12 \
+  local yandex_test=$(timeout 12 curl -s --connect-timeout 6 \
+    --max-time 10 \
     --socks5 127.0.0.1:10808 \
     https://ya.ru \
     -o /dev/null -w "%{http_code}" 2>/dev/null)
 
-  if [[ "$yandex_test" == "200" ]] || [[ "$yandex_test" == "301" ]]; then
-    echo -e "${GREEN}  ✓ Yandex test passed (HTTP $yandex_test)${NC}"
+  if [[ "$yandex_test" =~ ^(200|301|302)$ ]]; then
+    echo -e "${GREEN}  ✓ Yandex: $yandex_test${NC}"
     return 0
   fi
 
-  # Тест на Discord (часто работает даже если Google заблокирован)
-  local discord_test=$(timeout 15 curl -s --connect-timeout 8 \
-    --max-time 12 \
-    --socks5 127.0.0.1:10808 \
-    https://discord.com \
-    -o /dev/null -w "%{http_code}" 2>/dev/null)
-
-  if [[ "$discord_test" == "200" ]] || [[ "$discord_test" == "301" ]] || [[ "$discord_test" == "302" ]]; then
-    echo -e "${GREEN}  ✓ Discord test passed (HTTP $discord_test)${NC}"
-    return 0
-  fi
-
-  echo -e "${RED}  ✗ Все HTTP тесты провалены${NC}"
-  echo -e "${YELLOW}  Результаты: Google=$http_code, Yandex=$yandex_test, Discord=$discord_test${NC}"
+  echo -e "${RED}  ✗ Тесты провалены (Google=$http_code, Ya=$yandex_test)${NC}"
   return 1
 }
-\n
+
+
 save_profile_from_test() {
   local sni=$1
   local transport=$2
@@ -1350,6 +1355,47 @@ auto_profile_setup_menu() {
   echo -e "${CYAN}════════════════════════════════════════════════════════════${NC}\n"
 
   setup_test_socks5
+
+  # Создаем тестовый inbound ОДИН РАЗ в начале
+  echo -e "${CYAN}Создание тестового inbound на порту $test_port...${NC}"
+  local first_sni="${sni_tier1[0]:-ozone.ru}"
+  local test_uuid=$(uuidgen)
+
+  # Создаем начальный профиль
+  cat > "$PROFILES_DIR/_test.json" << TESTEOF
+{
+  "name": "_test",
+  "uuid": "$test_uuid",
+  "transport": "tcp",
+  "port": "$test_port",
+  "fingerprint": "chrome",
+  "sni": "$first_sni",
+  "created": "$(date +%Y-%m-%d\ %H:%M:%S)"
+}
+TESTEOF
+
+  # Создаем test-inbound один раз
+  add_test_inbound "$test_uuid" "tcp" "$test_port" "$first_sni" "chrome"
+
+  # Перезапускаем Xray для применения нового inbound
+  echo -e "${CYAN}Запуск Xray с тестовым inbound...${NC}"
+  systemctl restart xray >/dev/null 2>&1
+  sleep 4
+
+  if ! systemctl is-active --quiet xray; then
+    echo -e "${RED}✗ Xray не запустился${NC}"
+    remove_test_socks
+    return 1
+  fi
+
+  # Проверяем что тестовый порт поднялся
+  if ! ss -tuln | grep -qE ":${test_port}[[:space:]]"; then
+    echo -e "${RED}✗ Тестовый порт $test_port не поднялся${NC}"
+    remove_test_socks
+    return 1
+  fi
+
+  echo -e "${GREEN}✓ Тестовый inbound готов на порту $test_port${NC}\n"
 
   local sni_tier1=($(get_sni_by_category "ru_whitelist" 5))
   local sni_tier2=($(get_sni_by_category "yandex_cdn" 5))
