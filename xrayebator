@@ -218,6 +218,12 @@ create_profile_menu() {
   echo -e "    ${GREEN}✓${NC} Минимизирует обнаружение DPI"
   echo -e "    ${YELLOW}⚠${NC} Требует клиенты с поддержкой XHTTP"
   echo ""
+  echo -e "${CYAN} 5)${NC} VLESS + TCP + Reality + Vision + XUDP ${GREEN}(порт 443, anti-Tele2)${NC}"
+  echo -e "    ${GREEN}✓${NC} Обходит жесткие блокировки Tele2"
+  echo -e "    ${GREEN}✓${NC} xtls-rprx-vision + xudp"
+  echo -e "    ${GREEN}✓${NC} SNI: api-maps.yandex.ru по умолчанию"
+  echo -e "    ${BLUE}ℹ${NC} Специальная конфигурация против DPI"
+  echo ""
   echo -e "${CYAN} 0)${NC} Назад в главное меню"
   echo ""
   echo -e "${BLUE}╚════════════════════════════════════════════════════════════╝${NC}"
@@ -228,6 +234,7 @@ create_profile_menu() {
     2) create_profile "$profile_name" "tcp-utls" "8443" "firefox" ;;
     3) create_profile "$profile_name" "grpc" "2053" "chrome" ;;
     4) create_profile "$profile_name" "xhttp" "9443" "chrome" ;;
+    5) create_profile "$profile_name" "tcp-xudp" "443" "chrome" "api-maps.yandex.ru" ;;
     0) return ;;
     *) echo -e "${RED}Неверный выбор${NC}"; sleep 2; return ;;
   esac
@@ -239,10 +246,16 @@ create_profile() {
   local transport=$2
   local port=$3
   local fingerprint=$4
+
+local custom_sni=$5  # Опциональный кастомный SNI
   local uuid=$(uuidgen)
 
   local default_sni=$(head -n 1 "$SNI_LIST" 2>/dev/null | cut -d'|' -f1)
   [[ -z "$default_sni" ]] && default_sni="www.microsoft.com"
+
+# Используем кастомный SNI если передан
+
+[[ -n "$custom_sni" ]] && default_sni="$custom_sni"
 
   cat > "$PROFILES_DIR/$name.json" << EOF
 {
@@ -303,7 +316,7 @@ add_inbound() {
   echo -e "${CYAN} → Создание нового inbound на порту $port${NC}"
   local inbound=""
   case $transport in
-    tcp|tcp-utls)
+    tcp|tcp-utls|tcp-xudp)
       inbound=$(cat << TCPEOF
 {
   "listen": "0.0.0.0",
@@ -513,7 +526,7 @@ generate_connection() {
   echo -e "${GREEN}═══════════════════════════════════════════════${NC}\n"
   local vless_link=""
   case $transport in
-    tcp|tcp-utls)
+    tcp|tcp-utls|tcp-xudp)
       vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=&type=tcp&headerType=none#${profile_name}"
       ;;
     grpc)
@@ -1030,7 +1043,7 @@ add_test_inbound() {
 
   local inbound=""
   case $transport in
-    tcp|tcp-utls)
+    tcp|tcp-utls|tcp-xudp)
       inbound=$(jq -n \
         --arg uuid "$uuid" \
         --argjson port "$port" \
