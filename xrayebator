@@ -58,6 +58,34 @@ get_server_ip() {
 
 SERVER_IP=$(get_server_ip)
 
+# Инициализация DNS конфигурации (надежные DNS без рекламы)
+init_dns_config() {
+    local temp_config=$(mktemp)
+    local has_dns=$(jq -r '.dns // empty' "$CONFIG_FILE" 2>/dev/null)
+
+    if [[ -z "$has_dns" ]]; then
+        jq '. + {
+            "dns": {
+                "servers": [
+                    {"address": "1.1.1.1", "domains": [], "expectIPs": []},
+                    {"address": "1.0.0.1", "domains": [], "expectIPs": []},
+                    {"address": "8.8.8.8", "domains": [], "expectIPs": []},
+                    {"address": "9.9.9.9", "domains": [], "expectIPs": []}
+                ],
+                "queryStrategy": "UseIPv4"
+            }
+        }' "$CONFIG_FILE" > "$temp_config" 2>/dev/null
+
+        if [[ $? -eq 0 ]]; then
+            mv "$temp_config" "$CONFIG_FILE"
+            chown root:root "$CONFIG_FILE"
+            chmod 644 "$CONFIG_FILE"
+        else
+            rm -f "$temp_config"
+        fi
+    fi
+}
+
 # Показать ASCII арт
 show_ascii() {
   clear
@@ -514,7 +542,7 @@ generate_connection() {
   echo -e "${CYAN}Fingerprint:${NC} $fingerprint"
   echo -e "${CYAN}PublicKey:${NC} $clean_public_key"
   echo -e "${CYAN}ShortID:${NC} (пустой)"
-  if [[ "$transport" == "tcp" ]] || [[ "$transport" == "tcp-utls" ]]; then
+  if [[ "$transport" == "tcp" ]] || [[ "$transport" == "tcp-utls" ]] || [[ "$transport" == "tcp-xudp" ]]; then
     echo -e "${CYAN}SpiderX:${NC} /"
   fi
   echo -e "${GREEN}═══════════════════════════════════════════════${NC}\n"

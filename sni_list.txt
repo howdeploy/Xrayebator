@@ -57,6 +57,7 @@ cdncommunity2025team.svc.cdn.yandex.net|yandex_cdn|2
 cdnstability5000fast1.svc.cdn.yandex.net|yandex_cdn|2
 
 speller.yandex.net|yandex_cdn|2
+api-maps.yandex.ru|yandex_cdn|2
 spell.yandex.net|yandex_cdn|2
 advapi.yandex.net|yandex_cdn|2
 
@@ -100,4 +101,3 @@ debian.org|fallback|4
 # 6. Используйте режим DNS — Auto (DoH → TCP) для наилучшей устойчивости (см. инструкции в документации)
 #
 # Обновляйте список! РКН реагирует на популярные SNI — актуальность максимум месяц
-
