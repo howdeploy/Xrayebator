@@ -414,7 +414,8 @@ create_profile() {
   local fingerprint=$4
   local uuid=$(uuidgen)
 
-  local default_sni=$(head -n 1 "$SNI_LIST" 2>/dev/null | cut -d'|' -f1)
+  # Read first valid SNI (skip comments and empty lines)
+  local default_sni=$(grep -v '^#' "$SNI_LIST" 2>/dev/null | grep -v '^[[:space:]]*$' | head -n 1 | cut -d'|' -f1)
   [[ -z "$default_sni" ]] && default_sni="www.microsoft.com"
 
   cat > "$PROFILES_DIR/$name.json" << EOF
@@ -459,6 +460,49 @@ add_inbound() {
 
   local existing_tag=$(jq -r --argjson port "$port" '.inbounds[] | select(.port == $port) | .tag' "$CONFIG_FILE" 2>/dev/null)
   if [[ -n "$existing_tag" ]]; then
+    # Check existing inbound's SNI
+    local existing_sni=$(jq -r --argjson port "$port" \
+      '.inbounds[] | select(.port == $port) | .streamSettings.realitySettings.serverNames[0]' \
+      "$CONFIG_FILE" 2>/dev/null)
+
+    if [[ -n "$existing_sni" ]] && [[ "$existing_sni" != "$sni" ]]; then
+      echo ""
+      echo -e "${RED}╔═══════════════════════════════════════════════════════════╗${NC}"
+      echo -e "${RED}║         ⚠ КОНФЛИКТ SNI НА ПОРТУ $port                    ║${NC}"
+      echo -e "${RED}╚═══════════════════════════════════════════════════════════╝${NC}"
+      echo ""
+      echo -e "${YELLOW}Порт $port уже используется с SNI: ${MAGENTA}$existing_sni${NC}"
+      echo -e "${YELLOW}Новый профиль пытается использовать SNI: ${MAGENTA}$sni${NC}"
+      echo ""
+      echo -e "${CYAN}Xray Reality не поддерживает разные SNI на одном порту.${NC}"
+      echo -e "${CYAN}Профиль будет создан с SNI: ${YELLOW}$existing_sni${NC}"
+      echo ""
+      sleep 3
+
+      # Override sni to match existing inbound
+      sni="$existing_sni"
+
+      # Update profile JSON with correct SNI
+      # Note: Profile name extracted from caller context via create_profile
+      # We need to update the just-created profile.json
+      local profile_name=$(jq -r --arg uuid "$uuid" \
+        '.name' \
+        "$PROFILES_DIR"/*.json 2>/dev/null | head -1)
+
+      if [[ -n "$profile_name" ]]; then
+        local profile_files=("$PROFILES_DIR"/*.json)
+        for pf in "${profile_files[@]}"; do
+          local pf_uuid=$(jq -r '.uuid' "$pf" 2>/dev/null)
+          if [[ "$pf_uuid" == "$uuid" ]]; then
+            local temp_profile=$(mktemp)
+            jq --arg sni "$existing_sni" '.sni = $sni' "$pf" > "$temp_profile"
+            mv "$temp_profile" "$pf"
+            break
+          fi
+        done
+      fi
+    fi
+
     echo -e "${CYAN} → Добавление клиента в существующий inbound на порту $port${NC}"
     local temp_config=$(mktemp)
     jq --arg uuid "$uuid" --argjson port "$port" '
@@ -809,8 +853,11 @@ change_sni_menu() {
   local idx=1
   local sni_array=()
   while IFS='|' read -r domain category priority || [[ -n "$domain" ]]; do
+    # Skip comments and empty lines
     [[ "$domain" =~ ^#.*$ ]] && continue
+    [[ "$domain" =~ ^[[:space:]]*$ ]] && continue
     [[ -z "$domain" ]] && continue
+
     sni_array[$idx]="$domain"
     local desc="${sni_desc[$domain]}"
     [[ -z "$desc" ]] && desc="Дополнительный вариант"
