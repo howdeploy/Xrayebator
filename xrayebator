@@ -861,13 +861,17 @@ generate_connection() {
   local vless_link=""
   case $transport in
     tcp|tcp-utls)
-      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=&type=tcp&headerType=none#${profile_name}"
+      # TCP Reality + Vision - максимальная совместимость
+      # spx=/ для SpiderX, sid пустой (shortId)
+      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid&spx=%2F&type=tcp&headerType=none#${profile_name}"
       ;;
     grpc)
-      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=&type=grpc&serviceName=grpc&mode=gun#${profile_name}"
+      # gRPC Reality - широкая совместимость
+      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid&type=grpc&serviceName=grpc#${profile_name}"
       ;;
     xhttp)
-      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=&type=xhttp&path=%2Fxhttp&host=${current_sni}&mode=auto#${profile_name}"
+      # XHTTP Reality - требует современные клиенты (sing-box 1.8+, v2rayN 6.x+)
+      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid&type=xhttp&path=%2Fxhttp&host=${current_sni}#${profile_name}"
       ;;
   esac
   echo -e "${BLUE}Ссылка для подключения:${NC}"
@@ -900,11 +904,13 @@ generate_connection() {
     echo -e "${CYAN}SpiderX:${NC} /"
   elif [[ "$transport" == "grpc" ]]; then
     echo -e "${CYAN}serviceName:${NC} grpc"
-    echo -e "${CYAN}Mode:${NC} gun"
   elif [[ "$transport" == "xhttp" ]]; then
     echo -e "${CYAN}Path:${NC} /xhttp"
     echo -e "${CYAN}Host:${NC} $current_sni"
-    echo -e "${CYAN}Mode:${NC} auto"
+    echo ""
+    echo -e "${YELLOW}⚠ XHTTP требует современные клиенты:${NC}"
+    echo -e "  ${GREEN}✓${NC} sing-box 1.8+, v2rayN 6.x+, v2rayNG 1.8.x+"
+    echo -e "  ${RED}✗${NC} Clash Meta, старые версии клиентов"
   fi
   echo -e "${GREEN}═══════════════════════════════════════════════${NC}\n"
   echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
@@ -1343,16 +1349,58 @@ change_port_menu() {
     return
   fi
   if [[ "$new_port" == "$old_port" ]]; then
-    echo -e "${YELLOW}⚠ Этот порт уже используется${NC}"
+    echo -e "${YELLOW}⚠ Профиль уже использует этот порт${NC}"
     sleep 2
     return
   fi
-  local port_in_use=$(jq -r --arg port "$new_port" '.inbounds[] | select(.port == ($port | tonumber)) | .tag' "$CONFIG_FILE" 2>/dev/null)
-  if [[ -n "$port_in_use" ]]; then
-    echo -e "${RED}✗ Порт $new_port уже используется другим профилем${NC}"
-    sleep 2
-    return
+
+  # Get profile transport and UUID
+  local profile_transport=$(jq -r '.transport' "$profile_file")
+  local profile_uuid=$(jq -r '.uuid' "$profile_file")
+
+  # Check if target port is already in use
+  local target_inbound_tag=$(jq -r --argjson port "$new_port" '.inbounds[] | select(.port == $port) | .tag' "$CONFIG_FILE" 2>/dev/null)
+  local target_inbound_transport=""
+  local target_inbound_sni=""
+  local move_to_existing=false
+
+  if [[ -n "$target_inbound_tag" ]]; then
+    # Port is in use - check transport compatibility
+    target_inbound_transport=$(jq -r --argjson port "$new_port" '.inbounds[] | select(.port == $port) | .streamSettings.network' "$CONFIG_FILE")
+    target_inbound_sni=$(jq -r --argjson port "$new_port" '.inbounds[] | select(.port == $port) | .streamSettings.realitySettings.serverNames[0]' "$CONFIG_FILE")
+
+    # Normalize transport for comparison (tcp-utls uses tcp network)
+    local profile_network="$profile_transport"
+    [[ "$profile_transport" == "tcp-utls" ]] && profile_network="tcp"
+
+    if [[ "$profile_network" != "$target_inbound_transport" ]]; then
+      echo -e "${RED}╔═══════════════════════════════════════════════════════════╗${NC}"
+      echo -e "${RED}║            ✗ НЕСОВМЕСТИМЫЙ ТРАНСПОРТ                     ║${NC}"
+      echo -e "${RED}╚═══════════════════════════════════════════════════════════╝${NC}"
+      echo ""
+      echo -e "${YELLOW}Порт $new_port уже занят профилем с транспортом: ${MAGENTA}$target_inbound_transport${NC}"
+      echo -e "${YELLOW}Ваш профиль использует транспорт: ${MAGENTA}$profile_transport${NC}"
+      echo ""
+      echo -e "${CYAN}Нельзя объединить разные транспорты на одном порту.${NC}"
+      echo ""
+      echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
+      read
+      return
+    fi
+
+    move_to_existing=true
+    echo -e "${YELLOW}╔═══════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${YELLOW}║           ПОРТ УЖЕ ИСПОЛЬЗУЕТСЯ                          ║${NC}"
+    echo -e "${YELLOW}╚═══════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${CYAN}Порт $new_port уже занят профилем с транспортом: ${GREEN}$target_inbound_transport${NC}"
+    echo -e "${CYAN}SNI на этом порту: ${GREEN}$target_inbound_sni${NC}"
+    echo ""
+    echo -e "${MAGENTA}Профиль '$profile_name' будет перемещен на этот порт.${NC}"
+    echo -e "${MAGENTA}SNI профиля изменится на: ${YELLOW}$target_inbound_sni${NC}"
+    echo ""
   fi
+
   echo ""
   echo -e "${RED}╔═══════════════════════════════════════════════════════════╗${NC}"
   echo -e "${RED}║            ⚠ КРИТИЧЕСКОЕ ПРЕДУПРЕЖДЕНИЕ ⚠               ║${NC}"
@@ -1376,20 +1424,63 @@ change_port_menu() {
     sleep 1
     return
   fi
+
   local temp_config=$(mktemp)
-  jq --arg old_tag "inbound-$old_port" --argjson new_port "$new_port" '
-    (.inbounds[] | select(.tag == $old_tag) | .port) |= $new_port |
-    (.inbounds[] | select(.tag == $old_tag) | .tag) |= ("inbound-" + ($new_port | tostring))
-  ' "$CONFIG_FILE" > "$temp_config"
-  mv "$temp_config" "$CONFIG_FILE"
-  local temp_profile=$(mktemp)
-  jq --argjson port "$new_port" '.port = $port' "$profile_file" > "$temp_profile"
-  mv "$temp_profile" "$profile_file"
 
-  # Update firewall
-  open_firewall_port "$new_port"
-  close_firewall_port "$old_port"
+  if [[ "$move_to_existing" == "true" ]]; then
+    # Move client to existing inbound on target port
+    echo -e "${CYAN}  → Перемещение клиента на порт $new_port...${NC}"
 
+    # Get flow from target inbound
+    local target_flow=$(jq -r --argjson port "$new_port" '.inbounds[] | select(.port == $port) | .settings.clients[0].flow // ""' "$CONFIG_FILE")
+
+    # Add client to target inbound
+    jq --arg uuid "$profile_uuid" --argjson port "$new_port" --arg flow "$target_flow" '
+      (.inbounds[] | select(.port == $port) | .settings.clients) += [{"id": $uuid, "flow": $flow}]
+    ' "$CONFIG_FILE" > "$temp_config"
+    mv "$temp_config" "$CONFIG_FILE"
+
+    # Remove client from old inbound
+    temp_config=$(mktemp)
+    jq --arg uuid "$profile_uuid" --argjson port "$old_port" '
+      (.inbounds[] | select(.port == $port) | .settings.clients) |= map(select(.id != $uuid))
+    ' "$CONFIG_FILE" > "$temp_config"
+    mv "$temp_config" "$CONFIG_FILE"
+
+    # Check if old inbound has no clients left - remove it
+    local old_clients_count=$(jq -r --argjson port "$old_port" '.inbounds[] | select(.port == $port) | .settings.clients | length' "$CONFIG_FILE")
+    if [[ "$old_clients_count" == "0" ]]; then
+      echo -e "${CYAN}  → Удаление пустого inbound на порту $old_port...${NC}"
+      temp_config=$(mktemp)
+      jq --argjson port "$old_port" 'del(.inbounds[] | select(.port == $port))' "$CONFIG_FILE" > "$temp_config"
+      mv "$temp_config" "$CONFIG_FILE"
+      close_firewall_port "$old_port"
+    fi
+
+    # Update profile with new port and SNI
+    local temp_profile=$(mktemp)
+    jq --argjson port "$new_port" --arg sni "$target_inbound_sni" '.port = $port | .sni = $sni' "$profile_file" > "$temp_profile"
+    mv "$temp_profile" "$profile_file"
+
+  else
+    # Move entire inbound to new port (original logic)
+    jq --arg old_tag "inbound-$old_port" --argjson new_port "$new_port" '
+      (.inbounds[] | select(.tag == $old_tag) | .port) |= $new_port |
+      (.inbounds[] | select(.tag == $old_tag) | .tag) |= ("inbound-" + ($new_port | tostring))
+    ' "$CONFIG_FILE" > "$temp_config"
+    mv "$temp_config" "$CONFIG_FILE"
+
+    local temp_profile=$(mktemp)
+    jq --argjson port "$new_port" '.port = $port' "$profile_file" > "$temp_profile"
+    mv "$temp_profile" "$profile_file"
+
+    # Update firewall
+    open_firewall_port "$new_port"
+    close_firewall_port "$old_port"
+  fi
+
+  chown root:root "$CONFIG_FILE"
+  chmod 644 "$CONFIG_FILE"
   systemctl restart xray
   echo ""
   echo -e "${GREEN}✓ Порт профиля '$profile_name' изменен: ${YELLOW}$old_port → $new_port${NC}"
