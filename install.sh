@@ -173,6 +173,12 @@ cat > "$CONFIG_FILE" << 'EOF'
       },
       {
         "type": "field",
+        "network": "udp",
+        "port": 443,
+        "outboundTag": "block"
+      },
+      {
+        "type": "field",
         "network": "tcp,udp",
         "outboundTag": "direct"
       }

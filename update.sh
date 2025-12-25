@@ -318,6 +318,66 @@ else
   echo -e "${YELLOW}⚠ Geo-базы не обновлены (используются существующие)${NC}\n"
 fi
 
+# ═══════════════════════════════════════════════════════════
+# МИГРАЦИЯ DNS (AdGuard для блокировки рекламы)
+# ═══════════════════════════════════════════════════════════
+CONFIG_FILE="/usr/local/etc/xray/config.json"
+if [[ -f "$CONFIG_FILE" ]]; then
+  echo -e "${YELLOW}Проверка настроек DNS...${NC}"
+
+  # Проверяем есть ли уже AdGuard DNS
+  if ! grep -q "dns.adguard-dns.com" "$CONFIG_FILE" 2>/dev/null; then
+    echo -e "${CYAN}  → Миграция на AdGuard DNS (блокировка рекламы)${NC}"
+
+    # Создаём новую конфигурацию DNS
+    NEW_DNS='{
+      "servers": [
+        "https://dns.adguard-dns.com/dns-query",
+        {
+          "address": "1.1.1.1",
+          "domains": ["geosite:geolocation-!cn"]
+        },
+        "localhost"
+      ],
+      "queryStrategy": "UseIPv4",
+      "disableCache": false
+    }'
+
+    # Обновляем DNS секцию в конфиге
+    if jq --argjson dns "$NEW_DNS" '.dns = $dns' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" 2>/dev/null; then
+      mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+      echo -e "${GREEN}  ✓ DNS обновлён на AdGuard (реклама будет блокироваться)${NC}"
+    else
+      rm -f "${CONFIG_FILE}.tmp"
+      echo -e "${YELLOW}  ⚠ Не удалось обновить DNS (конфиг без изменений)${NC}"
+    fi
+  else
+    echo -e "${GREEN}  ✓ AdGuard DNS уже настроен${NC}"
+  fi
+
+  # Миграция: блокировка QUIC (UDP/443) для эффективной блокировки рекламы
+  echo -e "${YELLOW}Проверка блокировки QUIC...${NC}"
+  if ! jq -e '.routing.rules[] | select(.network == "udp" and .port == 443)' "$CONFIG_FILE" > /dev/null 2>&1; then
+    echo -e "${CYAN}  → Добавление блокировки QUIC (UDP/443)${NC}"
+
+    # Добавляем правило блокировки QUIC перед последним правилом (direct)
+    QUIC_RULE='{"type": "field", "network": "udp", "port": 443, "outboundTag": "block"}'
+
+    if jq --argjson rule "$QUIC_RULE" '
+      .routing.rules = [.routing.rules[:-1][], $rule, .routing.rules[-1]]
+    ' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" 2>/dev/null; then
+      mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+      echo -e "${GREEN}  ✓ QUIC заблокирован (реклама не сможет обойти DNS)${NC}"
+    else
+      rm -f "${CONFIG_FILE}.tmp"
+      echo -e "${YELLOW}  ⚠ Не удалось добавить правило QUIC${NC}"
+    fi
+  else
+    echo -e "${GREEN}  ✓ QUIC уже заблокирован${NC}"
+  fi
+  echo ""
+fi
+
 # Перезапуск Xray (если работает)
 if systemctl is-active --quiet xray; then
   echo -e "${YELLOW}Перезапуск Xray...${NC}"
