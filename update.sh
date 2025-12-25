@@ -30,13 +30,21 @@ fi
 # ═══════════════════════════════════════════════════════════
 UPDATE_SESSION_FILE="/tmp/.xrayebator_update_session"
 
+# Удаляем старые файлы сессии (старше 5 минут)
+if [[ -f "$UPDATE_SESSION_FILE" ]]; then
+  file_age=$(($(date +%s) - $(stat -c %Y "$UPDATE_SESSION_FILE" 2>/dev/null || echo 0)))
+  if [[ $file_age -gt 300 ]]; then
+    rm -f "$UPDATE_SESSION_FILE" "$UPDATE_SESSION_FILE.warned"
+  fi
+fi
+
 # Если скрипт запущен с аргументом (ветка передана при restart)
 if [[ -n "$1" ]]; then
   GITHUB_BRANCH="$1"
   echo -e "${CYAN}Продолжаю обновление после рестарта скрипта...${NC}"
   echo -e "${BLUE}Выбранная ветка: ${MAGENTA}$GITHUB_BRANCH${NC}\n"
   sleep 1
-# Если есть файл сессии (скрипт был перезапущен через exec)
+# Если есть файл сессии (скрипт был перезапущен через exec, в течение 5 минут)
 elif [[ -f "$UPDATE_SESSION_FILE" ]]; then
   GITHUB_BRANCH=$(cat "$UPDATE_SESSION_FILE")
   echo -e "${CYAN}Восстанавливаю прерванное обновление...${NC}"
