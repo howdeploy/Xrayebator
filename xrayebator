@@ -873,17 +873,16 @@ generate_connection() {
   local vless_link=""
   case $transport in
     tcp|tcp-utls)
-      # TCP Reality + Vision - максимальная совместимость
-      # spx=/ для SpiderX, sid пустой (shortId)
-      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid&spx=%2F&type=tcp&headerType=none#${profile_name}"
+      # TCP Reality + Vision
+      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=&type=tcp&headerType=none#${profile_name}"
       ;;
     grpc)
-      # gRPC Reality - authority нужен для sing-box
-      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid&type=grpc&serviceName=grpc&authority=${current_sni}#${profile_name}"
+      # gRPC Reality
+      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=&type=grpc&serviceName=grpc#${profile_name}"
       ;;
     xhttp)
       # XHTTP Reality - требует современные клиенты (sing-box 1.8+, v2rayN 6.x+)
-      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid&type=xhttp&path=%2Fxhttp&host=${current_sni}#${profile_name}"
+      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=&type=xhttp&path=%2Fxhttp&host=${current_sni}#${profile_name}"
       ;;
   esac
   echo -e "${BLUE}Ссылка для подключения:${NC}"
