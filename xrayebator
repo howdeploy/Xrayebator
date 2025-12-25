@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ═══════════════════════════════════════════════════════════
-# XRAYEBATOR v1.3 EXP - Xray Reality VPN Manager
+# XRAYEBATOR v1.3.2 EXP - Xray Reality VPN Manager
 # GitHub: https://github.com/howdeploy/Xrayebator
 # License: MIT
-# Экспериментальная версия с индивидуальными настройками
+# Экспериментальная версия с исправлениями маршрутизации
 # ═══════════════════════════════════════════════════════════
 
 # Цвета
@@ -247,6 +247,43 @@ migrate_xhttp_profiles() {
   fi
 }
 
+# Migration function for routing configuration (v1.3.2)
+# Adds default "direct" rule if missing
+migrate_routing_config() {
+  echo -e "${CYAN}Проверка конфигурации маршрутизации...${NC}"
+
+  # Check if default direct rule exists
+  local has_direct_rule=$(jq -r '
+    .routing.rules[] | select(.outboundTag == "direct" and .network == "tcp,udp") | .outboundTag
+  ' "$CONFIG_FILE" 2>/dev/null)
+
+  if [[ -z "$has_direct_rule" ]]; then
+    echo -e "${YELLOW}  → Добавляю default direct rule...${NC}"
+
+    local temp_config=$(mktemp)
+    jq '.routing.rules += [{
+      "type": "field",
+      "network": "tcp,udp",
+      "outboundTag": "direct"
+    }]' "$CONFIG_FILE" > "$temp_config"
+
+    if [[ $? -eq 0 ]] && [[ -s "$temp_config" ]]; then
+      mv "$temp_config" "$CONFIG_FILE"
+      chown root:root "$CONFIG_FILE"
+      chmod 644 "$CONFIG_FILE"
+      echo -e "${GREEN}  ✓ Маршрутизация исправлена${NC}"
+      return 0  # Needs restart
+    else
+      rm -f "$temp_config"
+      echo -e "${RED}  ✗ Ошибка миграции маршрутизации${NC}"
+      return 1
+    fi
+  else
+    echo -e "${GREEN}✓ Маршрутизация в порядке${NC}"
+    return 1  # No restart needed
+  fi
+}
+
 # ═══════════════════════════════════════════════════════════
 # END HELPER FUNCTIONS
 # ═══════════════════════════════════════════════════════════
@@ -269,7 +306,7 @@ show_ascii() {
     echo -e "${CYAN}"
     echo ' ╔═══════════════════════════════════╗'
     echo ' ║                                   ║'
-    echo ' ║     XRAYEBATOR v1.3 EXP          ║'
+    echo ' ║     XRAYEBATOR v1.3.2 EXP        ║'
     echo ' ║   Xray Reality VPN Manager       ║'
     echo ' ║                                   ║'
     echo ' ╚═══════════════════════════════════╝'
@@ -280,10 +317,27 @@ show_ascii() {
 
 # Главное меню
 main_menu() {
-  # Run XHTTP migration on first launch after upgrade
+  # Run migrations on first launch after upgrade
+  local needs_restart=false
+
   if [[ ! -f /usr/local/etc/xray/.xhttp_migrated ]]; then
     migrate_xhttp_profiles
     touch /usr/local/etc/xray/.xhttp_migrated
+    needs_restart=true
+  fi
+
+  # v1.3.2: Routing migration
+  if [[ ! -f /usr/local/etc/xray/.routing_v132_migrated ]]; then
+    if migrate_routing_config; then
+      needs_restart=true
+    fi
+    touch /usr/local/etc/xray/.routing_v132_migrated
+  fi
+
+  if [[ "$needs_restart" == "true" ]]; then
+    echo -e "${CYAN}Перезапуск Xray после миграций...${NC}"
+    systemctl restart xray
+    sleep 2
   fi
 
   while true; do
@@ -660,12 +714,26 @@ delete_profile_menu() {
     read confirm
     if [[ "$confirm" =~ ^[yYдД]$ ]]; then
       local port=$(jq -r '.port' "$PROFILES_DIR/$profile_name.json")
+      local uuid=$(jq -r '.uuid' "$PROFILES_DIR/$profile_name.json")
+      local profiles_on_port=($(get_profiles_on_port "$port"))
       local temp_config=$(mktemp)
-      jq "del(.inbounds[] | select(.tag == \"inbound-$port\"))" "$CONFIG_FILE" > "$temp_config"
+
+      if [[ ${#profiles_on_port[@]} -le 1 ]]; then
+        # Единственный профиль на порту - удаляем весь inbound
+        jq "del(.inbounds[] | select(.tag == \"inbound-$port\"))" "$CONFIG_FILE" > "$temp_config"
+        echo -e "${CYAN}  → Удаление inbound на порту $port${NC}"
+      else
+        # Есть другие профили на порту - удаляем только клиента
+        jq --arg uuid "$uuid" '
+          (.inbounds[].settings.clients) |= map(select(.id != $uuid))
+        ' "$CONFIG_FILE" > "$temp_config"
+        echo -e "${CYAN}  → Удаление клиента из inbound (порт $port используется другими профилями)${NC}"
+      fi
+
       mv "$temp_config" "$CONFIG_FILE"
       rm "$PROFILES_DIR/$profile_name.json"
 
-      # Close firewall port if not used
+      # Close firewall port if not used by other profiles
       close_firewall_port "$port"
 
       systemctl restart xray
@@ -741,10 +809,10 @@ generate_connection() {
       vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=&type=tcp&headerType=none#${profile_name}"
       ;;
     grpc)
-      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=&type=grpc&serviceName=grpc#${profile_name}"
+      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&flow=&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=&type=grpc&serviceName=grpc&mode=gun#${profile_name}"
       ;;
     xhttp)
-      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=&type=xhttp&path=/xhttp#${profile_name}"
+      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&flow=&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=&type=xhttp&path=/xhttp&host=${current_sni}&mode=stream#${profile_name}"
       ;;
   esac
   echo -e "${BLUE}Ссылка для подключения:${NC}"
@@ -758,7 +826,14 @@ generate_connection() {
   echo -e "${CYAN}Адрес:${NC} $SERVER_IP"
   echo -e "${CYAN}Порт:${NC} $port"
   echo -e "${CYAN}UUID:${NC} $uuid"
-  echo -e "${CYAN}Flow:${NC} xtls-rprx-vision"
+  case $transport in
+    tcp|tcp-utls)
+      echo -e "${CYAN}Flow:${NC} xtls-rprx-vision"
+      ;;
+    grpc|xhttp)
+      echo -e "${CYAN}Flow:${NC} (пустой)"
+      ;;
+  esac
   echo -e "${CYAN}Encryption:${NC} none"
   echo -e "${CYAN}Transport:${NC} $transport"
   echo -e "${CYAN}Security:${NC} reality"
@@ -768,6 +843,13 @@ generate_connection() {
   echo -e "${CYAN}ShortID:${NC} (пустой)"
   if [[ "$transport" == "tcp" ]] || [[ "$transport" == "tcp-utls" ]]; then
     echo -e "${CYAN}SpiderX:${NC} /"
+  elif [[ "$transport" == "grpc" ]]; then
+    echo -e "${CYAN}serviceName:${NC} grpc"
+    echo -e "${CYAN}Mode:${NC} gun"
+  elif [[ "$transport" == "xhttp" ]]; then
+    echo -e "${CYAN}Path:${NC} /xhttp"
+    echo -e "${CYAN}Host:${NC} $current_sni"
+    echo -e "${CYAN}Mode:${NC} stream"
   fi
   echo -e "${GREEN}═══════════════════════════════════════════════${NC}\n"
   echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
@@ -1699,11 +1781,20 @@ auto_profile_setup_menu() {
   echo -e "${CYAN}           НАЧИНАЮ ТЕСТИРОВАНИЕ КОМБИНАЦИЙ                ${NC}"
   echo -e "${CYAN}════════════════════════════════════════════════════════════${NC}\n"
 
+  # Загружаем SNI списки ПЕРЕД созданием inbound
+  local sni_tier1=($(get_sni_by_category "ru_whitelist" 5))
+  local sni_tier2=($(get_sni_by_category "yandex_cdn" 5))
+  local sni_tier3=($(get_sni_by_category "foreign" 3))
+
+  [[ ${#sni_tier1[@]} -eq 0 ]] && sni_tier1=("ozone.ru" "sberbank.ru" "gosuslugi.ru")
+  [[ ${#sni_tier2[@]} -eq 0 ]] && sni_tier2=("speller.yandex.net")
+  [[ ${#sni_tier3[@]} -eq 0 ]] && sni_tier3=("www.microsoft.com" "cloudflare.com")
+
   setup_test_socks5
 
   # Создаем тестовый inbound ОДИН РАЗ в начале
   echo -e "${CYAN}Создание тестового inbound на порту $test_port...${NC}"
-  local first_sni="${sni_tier1[0]:-ozone.ru}"
+  local first_sni="${sni_tier1[0]}"
   local test_uuid=$(uuidgen)
 
   # Создаем начальный профиль
@@ -1741,14 +1832,6 @@ TESTEOF
   fi
 
   echo -e "${GREEN}✓ Тестовый inbound готов на порту $test_port${NC}\n"
-
-  local sni_tier1=($(get_sni_by_category "ru_whitelist" 5))
-  local sni_tier2=($(get_sni_by_category "yandex_cdn" 5))
-  local sni_tier3=($(get_sni_by_category "foreign" 3))
-
-  [[ ${#sni_tier1[@]} -eq 0 ]] && sni_tier1=("ozone.ru" "sberbank.ru" "gosuslugi.ru")
-  [[ ${#sni_tier2[@]} -eq 0 ]] && sni_tier2=("speller.yandex.net")
-  [[ ${#sni_tier3[@]} -eq 0 ]] && sni_tier3=("www.microsoft.com" "cloudflare.com")
 
   local test_num=1
   local found=0
