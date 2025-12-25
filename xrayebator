@@ -501,10 +501,10 @@ create_profile_menu() {
   echo -e "    ${GREEN}✓${NC} TCP BBR congestion control"
   echo -e "    ${BLUE}ℹ${NC} Идеален для обхода продвинутой DPI фильтрации"
   echo ""
-  echo -e "${CYAN} 3)${NC} VLESS + gRPC + Reality ${GREEN}(порт 2053)${NC}"
-  echo -e "    ${GREEN}✓${NC} Эффективен при активных блокировках РКН"
-  echo -e "    ${GREEN}✓${NC} Хорошо работает в корпоративных сетях"
-  echo -e "    ${YELLOW}⚠${NC} Может быть медленнее TCP"
+  echo -e "${CYAN} 3)${NC} VLESS + gRPC + Reality ${YELLOW}(порт 2053)${NC}"
+  echo -e "    ${YELLOW}⚠${NC} Требует SNI с поддержкой HTTP/2 (google.com, cloudflare.com)"
+  echo -e "    ${YELLOW}⚠${NC} РУ-домены (госуслуги, сбер) часто НЕ работают!"
+  echo -e "    ${YELLOW}⚠${NC} Проблемы совместимости с sing-box"
   echo ""
   echo -e "${CYAN} 4)${NC} VLESS + XHTTP + Reality ${GREEN}(порт 9443)${NC}"
   echo -e "    ${GREEN}✓${NC} Современный протокол с низкой задержкой"
@@ -682,7 +682,7 @@ TCPEOF
   "streamSettings": {
     "network": "grpc",
     "security": "reality",
-    "grpcSettings": {"serviceName": "grpc", "multiMode": false},
+    "grpcSettings": {"serviceName": "grpc"},
     "realitySettings": {
       "show": false,
       "dest": "$sni:443",
@@ -1619,7 +1619,7 @@ add_test_inbound() {
           "streamSettings": {
             "network": "grpc",
             "security": "reality",
-            "grpcSettings": {"serviceName": "grpc", "multiMode": false},
+            "grpcSettings": {"serviceName": "grpc"},
             "realitySettings": {
               "show": false,
               "dest": ($sni + ":443"),

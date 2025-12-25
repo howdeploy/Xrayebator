@@ -148,16 +148,7 @@ cat > "$CONFIG_FILE" << 'EOF'
   },
   "dns": {
     "servers": [
-      {
-        "address": "https://dns.google/dns-query",
-        "domains": [
-          "domain:discord.com",
-          "domain:discordapp.com",
-          "domain:discord.gg",
-          "domain:discord.media",
-          "domain:gateway.discord.gg"
-        ]
-      },
+      "https://dns.adguard-dns.com/dns-query",
       {
         "address": "1.1.1.1",
         "domains": ["geosite:geolocation-!cn"]
