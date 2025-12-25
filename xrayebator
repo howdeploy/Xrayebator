@@ -633,10 +633,16 @@ add_inbound() {
 
     echo -e "${CYAN} → Добавление клиента в существующий inbound на порту $port${NC}"
     local temp_config=$(mktemp)
+    # Определяем flow по типу транспорта: TCP = xtls-rprx-vision, gRPC/XHTTP = пустой
     jq --arg uuid "$uuid" --argjson port "$port" '
       (.inbounds[] | select(.port == $port) | .settings.clients) += [{
         "id": $uuid,
-        "flow": (if .settings.clients[0].flow then .settings.clients[0].flow else "xtls-rprx-vision" end)
+        "flow": (
+          if (.inbounds[] | select(.port == $port) | .streamSettings.network) == "tcp"
+          then "xtls-rprx-vision"
+          else ""
+          end
+        )
       }]
     ' "$CONFIG_FILE" > "$temp_config"
     mv "$temp_config" "$CONFIG_FILE"
