@@ -284,6 +284,52 @@ migrate_routing_config() {
   fi
 }
 
+# Migration function for XHTTP mode (stream -> auto)
+# Fixes sing-box compatibility issues
+migrate_xhttp_mode() {
+  echo -e "${CYAN}Проверка XHTTP mode для миграции...${NC}"
+
+  local migrated=0
+
+  # Check all inbounds with xhttp transport
+  local xhttp_ports=$(jq -r '.inbounds[] | select(.streamSettings.network == "xhttp") | .port' "$CONFIG_FILE" 2>/dev/null)
+
+  for port in $xhttp_ports; do
+    [[ -z "$port" ]] && continue
+
+    local current_mode=$(jq -r --argjson port "$port" \
+      '.inbounds[] | select(.port == $port) | .streamSettings.xhttpSettings.mode' \
+      "$CONFIG_FILE" 2>/dev/null)
+
+    if [[ "$current_mode" == "stream" ]]; then
+      echo -e "${YELLOW}  → Миграция XHTTP mode на порту $port: stream → auto${NC}"
+
+      local temp_config=$(mktemp)
+      jq --argjson port "$port" '
+        (.inbounds[] | select(.port == $port) | .streamSettings.xhttpSettings.mode) = "auto" |
+        (.inbounds[] | select(.port == $port) | .streamSettings.xhttpSettings.extra) = {}
+      ' "$CONFIG_FILE" > "$temp_config"
+
+      if [[ $? -eq 0 ]] && [[ -s "$temp_config" ]]; then
+        mv "$temp_config" "$CONFIG_FILE"
+        ((migrated++))
+      else
+        rm -f "$temp_config"
+      fi
+    fi
+  done
+
+  if [[ $migrated -gt 0 ]]; then
+    chown root:root "$CONFIG_FILE"
+    chmod 644 "$CONFIG_FILE"
+    echo -e "${GREEN}✓ Мигрировано $migrated XHTTP inbound(ов)${NC}"
+    return 0  # Needs restart
+  else
+    echo -e "${GREEN}✓ XHTTP mode миграция не требуется${NC}"
+    return 1  # No restart needed
+  fi
+}
+
 # ═══════════════════════════════════════════════════════════
 # END HELPER FUNCTIONS
 # ═══════════════════════════════════════════════════════════
@@ -332,6 +378,14 @@ main_menu() {
       needs_restart=true
     fi
     touch /usr/local/etc/xray/.routing_v132_migrated
+  fi
+
+  # XHTTP mode migration (stream -> auto for sing-box compatibility)
+  if [[ ! -f /usr/local/etc/xray/.xhttp_mode_migrated ]]; then
+    if migrate_xhttp_mode; then
+      needs_restart=true
+    fi
+    touch /usr/local/etc/xray/.xhttp_mode_migrated
   fi
 
   if [[ "$needs_restart" == "true" ]]; then
@@ -647,9 +701,10 @@ GRPCEOF
     "network": "xhttp",
     "security": "reality",
     "xhttpSettings": {
-      "mode": "stream",
+      "mode": "auto",
       "path": "/xhttp",
-      "host": "$sni"
+      "host": "$sni",
+      "extra": {}
     },
     "realitySettings": {
       "show": false,
@@ -809,10 +864,10 @@ generate_connection() {
       vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=&type=tcp&headerType=none#${profile_name}"
       ;;
     grpc)
-      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&flow=&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=&type=grpc&serviceName=grpc&mode=gun#${profile_name}"
+      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=&type=grpc&serviceName=grpc&mode=gun#${profile_name}"
       ;;
     xhttp)
-      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&flow=&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=&type=xhttp&path=/xhttp&host=${current_sni}&mode=stream#${profile_name}"
+      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=&type=xhttp&path=%2Fxhttp&host=${current_sni}&mode=auto#${profile_name}"
       ;;
   esac
   echo -e "${BLUE}Ссылка для подключения:${NC}"
@@ -849,7 +904,7 @@ generate_connection() {
   elif [[ "$transport" == "xhttp" ]]; then
     echo -e "${CYAN}Path:${NC} /xhttp"
     echo -e "${CYAN}Host:${NC} $current_sni"
-    echo -e "${CYAN}Mode:${NC} stream"
+    echo -e "${CYAN}Mode:${NC} auto"
   fi
   echo -e "${GREEN}═══════════════════════════════════════════════${NC}\n"
   echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
@@ -1463,6 +1518,44 @@ add_test_inbound() {
             "network": "grpc",
             "security": "reality",
             "grpcSettings": {"serviceName": "grpc", "multiMode": false},
+            "realitySettings": {
+              "show": false,
+              "dest": ($sni + ":443"),
+              "xver": 0,
+              "serverNames": [$sni],
+              "privateKey": $privkey,
+              "shortIds": [""],
+              "fingerprint": $fp
+            }
+          },
+          "sniffing": {"enabled": true, "destOverride": ["http", "tls"]},
+          "tag": "test-inbound"
+        }')
+      ;;
+    xhttp)
+      inbound=$(jq -n \
+        --arg uuid "$uuid" \
+        --argjson port "$port" \
+        --arg sni "$sni" \
+        --arg privkey "$PRIVATE_KEY" \
+        --arg fp "$fingerprint" \
+        '{
+          "listen": "0.0.0.0",
+          "port": $port,
+          "protocol": "vless",
+          "settings": {
+            "clients": [{"id": $uuid, "flow": ""}],
+            "decryption": "none"
+          },
+          "streamSettings": {
+            "network": "xhttp",
+            "security": "reality",
+            "xhttpSettings": {
+              "mode": "auto",
+              "path": "/xhttp",
+              "host": $sni,
+              "extra": {}
+            },
             "realitySettings": {
               "show": false,
               "dest": ($sni + ":443"),
