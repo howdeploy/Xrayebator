@@ -266,6 +266,50 @@ echo -e "${YELLOW}Проверка установленной версии...${N
 VERSION_INFO=$(grep -m 1 "XRAYEBATOR v" /usr/local/bin/xrayebator | sed 's/.*XRAYEBATOR //' | sed 's/ .*//')
 echo -e "${GREEN}✓ Версия: ${VERSION_INFO}${NC}\n"
 
+# Обновление geo-баз (Loyalsoldier enhanced)
+echo -e "${YELLOW}Обновление geo-баз (Loyalsoldier)...${NC}"
+XRAY_DAT_DIR="/usr/local/share/xray"
+LOYALSOLDIER_URL="https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download"
+GEO_UPDATED=false
+
+mkdir -p "$XRAY_DAT_DIR"
+
+# Update geoip.dat
+if curl -fsSL --connect-timeout 10 "${LOYALSOLDIER_URL}/geoip.dat" -o "${XRAY_DAT_DIR}/geoip.dat.tmp" 2>/dev/null; then
+  if [[ -s "${XRAY_DAT_DIR}/geoip.dat.tmp" ]]; then
+    mv "${XRAY_DAT_DIR}/geoip.dat.tmp" "${XRAY_DAT_DIR}/geoip.dat"
+    echo -e "${GREEN}  ✓ geoip.dat обновлен${NC}"
+    GEO_UPDATED=true
+  else
+    rm -f "${XRAY_DAT_DIR}/geoip.dat.tmp"
+    echo -e "${YELLOW}  ⚠ geoip.dat: пустой ответ${NC}"
+  fi
+else
+  rm -f "${XRAY_DAT_DIR}/geoip.dat.tmp"
+  echo -e "${YELLOW}  ⚠ geoip.dat: недоступен (GitHub?)${NC}"
+fi
+
+# Update geosite.dat
+if curl -fsSL --connect-timeout 10 "${LOYALSOLDIER_URL}/geosite.dat" -o "${XRAY_DAT_DIR}/geosite.dat.tmp" 2>/dev/null; then
+  if [[ -s "${XRAY_DAT_DIR}/geosite.dat.tmp" ]]; then
+    mv "${XRAY_DAT_DIR}/geosite.dat.tmp" "${XRAY_DAT_DIR}/geosite.dat"
+    echo -e "${GREEN}  ✓ geosite.dat обновлен${NC}"
+    GEO_UPDATED=true
+  else
+    rm -f "${XRAY_DAT_DIR}/geosite.dat.tmp"
+    echo -e "${YELLOW}  ⚠ geosite.dat: пустой ответ${NC}"
+  fi
+else
+  rm -f "${XRAY_DAT_DIR}/geosite.dat.tmp"
+  echo -e "${YELLOW}  ⚠ geosite.dat: недоступен (GitHub?)${NC}"
+fi
+
+if [[ "$GEO_UPDATED" == "true" ]]; then
+  echo -e "${GREEN}✓ Geo-базы обновлены${NC}\n"
+else
+  echo -e "${YELLOW}⚠ Geo-базы не обновлены (используются существующие)${NC}\n"
+fi
+
 # Перезапуск Xray (если работает)
 if systemctl is-active --quiet xray; then
   echo -e "${YELLOW}Перезапуск Xray...${NC}"
