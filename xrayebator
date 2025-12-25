@@ -67,29 +67,41 @@ update_transport_settings_for_sni() {
   local new_sni=$2
   local config_file=$3
 
+  # Convert port to number for jq
+  local port_num=$((port))
+
   # Detect transport type
-  local transport=$(jq -r --argjson port "$port" \
+  local transport=$(jq -r --argjson port "$port_num" \
     '.inbounds[] | select(.port == $port) | .streamSettings.network' \
     "$config_file")
 
+  echo -e "${CYAN}  → Обновление SNI на порту $port (транспорт: $transport)...${NC}"
+
   local temp_config=$(mktemp)
 
-  # Base updates (ALL transports)
-  jq --arg tag "inbound-$port" --arg sni "$new_sni" '
-    (.inbounds[] | select(.tag == $tag) | .streamSettings.realitySettings.dest) |= ($sni + ":443") |
-    (.inbounds[] | select(.tag == $tag) | .streamSettings.realitySettings.serverNames) |= [$sni]
+  # Base updates (ALL transports) - search by port number, not tag
+  jq --argjson port "$port_num" --arg sni "$new_sni" '
+    (.inbounds[] | select(.port == $port) | .streamSettings.realitySettings.dest) |= ($sni + ":443") |
+    (.inbounds[] | select(.port == $port) | .streamSettings.realitySettings.serverNames) |= [$sni]
   ' "$config_file" > "$temp_config"
 
+  if [[ $? -ne 0 ]] || [[ ! -s "$temp_config" ]]; then
+    echo -e "${RED}  ✗ Ошибка обновления SNI${NC}"
+    rm -f "$temp_config"
+    return 1
+  fi
+
   mv "$temp_config" "$config_file"
+  echo -e "${GREEN}  ✓ Reality SNI обновлен → $new_sni${NC}"
 
   # Transport-specific updates
   if [[ "$transport" == "xhttp" ]]; then
     temp_config=$(mktemp)
-    jq --arg tag "inbound-$port" --arg sni "$new_sni" '
-      (.inbounds[] | select(.tag == $tag) | .streamSettings.xhttpSettings.host) |= $sni
+    jq --argjson port "$port_num" --arg sni "$new_sni" '
+      (.inbounds[] | select(.port == $port) | .streamSettings.xhttpSettings.host) |= $sni
     ' "$config_file" > "$temp_config"
     mv "$temp_config" "$config_file"
-    echo -e "${CYAN}  → XHTTP: обновлен host → $new_sni${NC}"
+    echo -e "${GREEN}  ✓ XHTTP host обновлен → $new_sni${NC}"
   fi
 
   chown root:root "$config_file"
@@ -866,8 +878,8 @@ generate_connection() {
       vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid&spx=%2F&type=tcp&headerType=none#${profile_name}"
       ;;
     grpc)
-      # gRPC Reality - широкая совместимость
-      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid&type=grpc&serviceName=grpc#${profile_name}"
+      # gRPC Reality - authority нужен для sing-box
+      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid&type=grpc&serviceName=grpc&authority=${current_sni}#${profile_name}"
       ;;
     xhttp)
       # XHTTP Reality - требует современные клиенты (sing-box 1.8+, v2rayN 6.x+)
