@@ -534,9 +534,17 @@ create_profile() {
   local fingerprint=$4
   local uuid=$(uuidgen)
 
-  # Read first valid SNI (skip comments and empty lines)
-  local default_sni=$(grep -v '^#' "$SNI_LIST" 2>/dev/null | grep -v '^[[:space:]]*$' | head -n 1 | cut -d'|' -f1)
-  [[ -z "$default_sni" ]] && default_sni="www.microsoft.com"
+  local default_sni=""
+
+  # gRPC требует SNI с поддержкой HTTP/2 (только зарубежные!)
+  if [[ "$transport" == "grpc" ]]; then
+    default_sni="www.google.com"
+    echo -e "${YELLOW}⚠ gRPC: используется SNI ${CYAN}$default_sni${YELLOW} (требуется HTTP/2)${NC}"
+  else
+    # Read first valid SNI (skip comments and empty lines)
+    default_sni=$(grep -v '^#' "$SNI_LIST" 2>/dev/null | grep -v '^[[:space:]]*$' | head -n 1 | cut -d'|' -f1)
+    [[ -z "$default_sni" ]] && default_sni="www.microsoft.com"
+  fi
 
   cat > "$PROFILES_DIR/$name.json" << EOF
 {
@@ -969,9 +977,83 @@ change_sni_menu() {
 
   local selected="${profiles[$((choice-1))]}"
   local current_sni=$(jq -r '.sni // "www.microsoft.com"' "$PROFILES_DIR/$selected.json")
+  local transport=$(jq -r '.transport // "tcp"' "$PROFILES_DIR/$selected.json")
 
   echo ""
-  echo -e "${CYAN}Текущий SNI профиля '$selected':${NC} ${GREEN}$current_sni${NC}\n"
+  echo -e "${CYAN}Текущий SNI профиля '$selected':${NC} ${GREEN}$current_sni${NC}"
+  echo -e "${CYAN}Транспорт:${NC} ${YELLOW}$transport${NC}\n"
+
+  # gRPC требует HTTP/2, российские сайты не поддерживают
+  if [[ "$transport" == "grpc" ]]; then
+    echo -e "${RED}╔═══════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${RED}║     ⚠ gRPC ТРЕБУЕТ ЗАРУБЕЖНЫЕ SNI (HTTP/2)              ║${NC}"
+    echo -e "${RED}╚═══════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${YELLOW}gRPC работает только с сайтами поддерживающими HTTP/2.${NC}"
+    echo -e "${YELLOW}Российские сайты (Ozon, WB, Sber и др.) НЕ поддерживают HTTP/2.${NC}"
+    echo ""
+    echo -e "${GREEN}Рекомендуемые SNI для gRPC:${NC}"
+    echo -e "  ${CYAN}1)${NC} www.google.com ${BLUE}(рекомендуется)${NC}"
+    echo -e "  ${CYAN}2)${NC} www.cloudflare.com"
+    echo -e "  ${CYAN}3)${NC} www.microsoft.com"
+    echo -e "  ${CYAN}4)${NC} github.com"
+    echo -e "  ${CYAN}0)${NC} Назад\n"
+    echo -n -e "${YELLOW}Выберите SNI для gRPC: ${NC}"
+    read grpc_choice
+
+    case $grpc_choice in
+      1) new_sni="www.google.com" ;;
+      2) new_sni="www.cloudflare.com" ;;
+      3) new_sni="www.microsoft.com" ;;
+      4) new_sni="github.com" ;;
+      0|*) return ;;
+    esac
+
+    if [[ "$new_sni" == "$current_sni" ]]; then
+      echo -e "${YELLOW}⚠ Этот SNI уже используется${NC}"
+      sleep 2
+      return
+    fi
+
+    # Переходим к обновлению SNI (пропускаем общий список)
+    local port=$(jq -r '.port' "$PROFILES_DIR/$selected.json")
+    local profiles_on_port=($(get_profiles_on_port "$port"))
+
+    if [[ ${#profiles_on_port[@]} -gt 1 ]]; then
+      echo ""
+      echo -e "${RED}⚠ На порту $port есть другие профили:${NC}"
+      for p in "${profiles_on_port[@]}"; do
+        echo -e "  ${CYAN}•${NC} $p"
+      done
+      echo -e "${YELLOW}Все они будут обновлены на SNI: ${MAGENTA}$new_sni${NC}"
+    fi
+
+    echo ""
+    echo -n -e "${YELLOW}Применить SNI '$new_sni'? (y/N): ${NC}"
+    read confirm
+    if [[ "$confirm" =~ ^[yYдД]$ ]]; then
+      # Update profile JSON
+      local temp_profile=$(mktemp)
+      jq --arg sni "$new_sni" '.sni = $sni' "$PROFILES_DIR/$selected.json" > "$temp_profile"
+      mv "$temp_profile" "$PROFILES_DIR/$selected.json"
+
+      # Update all profiles on port if shared
+      if [[ ${#profiles_on_port[@]} -gt 1 ]]; then
+        update_all_profiles_on_port "$port" "sni" "$new_sni"
+      fi
+
+      # Update config
+      update_transport_settings_for_sni "$port" "$new_sni" "$CONFIG_FILE"
+      systemctl restart xray
+
+      echo ""
+      echo -e "${GREEN}✓ SNI профиля '$selected' изменен на: ${YELLOW}$new_sni${NC}"
+      echo ""
+      echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
+      read
+    fi
+    return
+  fi
 
   if [[ ! -f "$SNI_LIST" ]]; then
     echo -e "${RED}✗ Файл списка SNI не найден${NC}"

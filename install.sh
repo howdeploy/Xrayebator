@@ -18,7 +18,7 @@ NC='\033[0m'
 # GitHub репозиторий
 GITHUB_USER="howdeploy"
 GITHUB_REPO="Xrayebator"
-GITHUB_BRANCH="main"
+GITHUB_BRANCH="experimental"
 RAW_BASE_URL="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/${GITHUB_BRANCH}"
 
 # Пути
