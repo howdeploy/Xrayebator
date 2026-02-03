@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ═══════════════════════════════════════════════════════════
-# XRAYEBATOR v1.3 EXP - Xray Reality VPN Manager
+# XRAYEBATOR v1.3.2 EXP - Xray Reality VPN Manager
 # GitHub: https://github.com/howdeploy/Xrayebator
 # License: MIT
-# Экспериментальная версия с индивидуальными настройками
+# Экспериментальная версия с исправлениями маршрутизации
 # ═══════════════════════════════════════════════════════════
 
 # Цвета
@@ -56,6 +56,296 @@ get_server_ip() {
   echo "$ip"
 }
 
+# ═══════════════════════════════════════════════════════════
+# HELPER FUNCTIONS
+# ═══════════════════════════════════════════════════════════
+
+# Update SNI for all transport types (transport-aware)
+# Args: $1=port, $2=new_sni, $3=config_file
+update_transport_settings_for_sni() {
+  local port=$1
+  local new_sni=$2
+  local config_file=$3
+
+  # Convert port to number for jq
+  local port_num=$((port))
+
+  # Detect transport type
+  local transport=$(jq -r --argjson port "$port_num" \
+    '.inbounds[] | select(.port == $port) | .streamSettings.network' \
+    "$config_file")
+
+  echo -e "${CYAN}  → Обновление SNI на порту $port (транспорт: $transport)...${NC}"
+
+  local temp_config=$(mktemp)
+
+  # Base updates (ALL transports) - search by port number, not tag
+  jq --argjson port "$port_num" --arg sni "$new_sni" '
+    (.inbounds[] | select(.port == $port) | .streamSettings.realitySettings.dest) |= ($sni + ":443") |
+    (.inbounds[] | select(.port == $port) | .streamSettings.realitySettings.serverNames) |= [$sni]
+  ' "$config_file" > "$temp_config"
+
+  if [[ $? -ne 0 ]] || [[ ! -s "$temp_config" ]]; then
+    echo -e "${RED}  ✗ Ошибка обновления SNI${NC}"
+    rm -f "$temp_config"
+    return 1
+  fi
+
+  mv "$temp_config" "$config_file"
+  echo -e "${GREEN}  ✓ Reality SNI обновлен → $new_sni${NC}"
+
+  # Transport-specific updates
+  if [[ "$transport" == "xhttp" ]]; then
+    temp_config=$(mktemp)
+    jq --argjson port "$port_num" --arg sni "$new_sni" '
+      (.inbounds[] | select(.port == $port) | .streamSettings.xhttpSettings.host) |= $sni
+    ' "$config_file" > "$temp_config"
+    mv "$temp_config" "$config_file"
+    echo -e "${GREEN}  ✓ XHTTP host обновлен → $new_sni${NC}"
+  fi
+
+  chown root:root "$config_file"
+  chmod 644 "$config_file"
+}
+
+# Open port in UFW firewall (idempotent)
+# Args: $1=port, $2=protocol (default: tcp)
+# Returns: 0=success, 1=failure
+open_firewall_port() {
+  local port=$1
+  local protocol=${2:-tcp}
+
+  # Validate port number
+  if [[ ! "$port" =~ ^[0-9]+$ ]] || [[ $port -lt 1 ]] || [[ $port -gt 65535 ]]; then
+    echo -e "${RED}  ✗ Неверный порт: $port${NC}" >&2
+    return 1
+  fi
+
+  # Check if UFW is installed and active
+  if ! command -v ufw &>/dev/null; then
+    echo -e "${YELLOW}  ⚠ UFW не установлен${NC}" >&2
+    return 1
+  fi
+
+  # Check if port already open (idempotent)
+  if ufw status | grep -qE "^${port}/${protocol}.*ALLOW"; then
+    echo -e "${CYAN}  → Порт ${port}/${protocol} уже открыт${NC}"
+    return 0
+  fi
+
+  # Open port
+  echo -e "${CYAN}  → Открываю порт ${port}/${protocol}...${NC}"
+  if ufw allow "${port}/${protocol}" >/dev/null 2>&1; then
+    echo -e "${GREEN}  ✓ Порт ${port}/${protocol} открыт${NC}"
+    ufw reload >/dev/null 2>&1
+    return 0
+  else
+    echo -e "${RED}  ✗ Ошибка открытия порта${NC}" >&2
+    return 1
+  fi
+}
+
+# Close port in UFW if not used by other profiles
+# Args: $1=port, $2=protocol (default: tcp)
+close_firewall_port() {
+  local port=$1
+  local protocol=${2:-tcp}
+
+  # Check if port is still used by any inbound
+  local port_in_use=$(jq -r --argjson port "$port" \
+    '.inbounds[] | select(.port == $port) | .tag' \
+    "$CONFIG_FILE" 2>/dev/null)
+
+  if [[ -n "$port_in_use" ]]; then
+    return 0  # Still in use, don't close
+  fi
+
+  # Never close default ports
+  local default_ports=(22 80 443 8443 2053 8080 2096 8880 9443)
+  for dp in "${default_ports[@]}"; do
+    [[ "$port" == "$dp" ]] && return 0
+  done
+
+  # Close port
+  if ufw status | grep -qE "^${port}/${protocol}.*ALLOW"; then
+    echo -e "${CYAN}  → Закрываю порт ${port}/${protocol}...${NC}"
+    ufw delete allow "${port}/${protocol}" >/dev/null 2>&1
+    ufw reload >/dev/null 2>&1
+    echo -e "${GREEN}  ✓ Порт закрыт${NC}"
+  fi
+
+  return 0
+}
+
+# Get list of profile names using a specific port
+# Args: $1=port
+# Returns: space-separated profile names
+get_profiles_on_port() {
+  local port=$1
+  local profiles=()
+
+  for pf in "$PROFILES_DIR"/*.json; do
+    [[ ! -f "$pf" ]] && continue
+    [[ "$pf" == *"_test.json" ]] && continue
+
+    local pp=$(jq -r '.port' "$pf" 2>/dev/null)
+    if [[ "$pp" == "$port" ]]; then
+      profiles+=("$(basename "$pf" .json)")
+    fi
+  done
+
+  echo "${profiles[@]}"
+}
+
+# Update field for all profiles on a specific port
+# Args: $1=port, $2=field, $3=value
+update_all_profiles_on_port() {
+  local port=$1
+  local field=$2
+  local value=$3
+
+  local profiles=($(get_profiles_on_port "$port"))
+
+  for pname in "${profiles[@]}"; do
+    local pfile="$PROFILES_DIR/$pname.json"
+    local temp=$(mktemp)
+
+    jq --arg f "$field" --arg v "$value" \
+      '.[$f] = $v' "$pfile" > "$temp"
+
+    mv "$temp" "$pfile"
+    echo -e "${CYAN}  → Обновлен: ${YELLOW}$pname${NC}"
+  done
+}
+
+# Migration function for existing XHTTP profiles
+migrate_xhttp_profiles() {
+  local migrated=0
+
+  echo -e "${CYAN}Проверка XHTTP профилей для миграции...${NC}"
+
+  for profile_file in "$PROFILES_DIR"/*.json; do
+    [[ ! -f "$profile_file" ]] && continue
+
+    local transport=$(jq -r '.transport' "$profile_file")
+    [[ "$transport" != "xhttp" ]] && continue
+
+    local profile_sni=$(jq -r '.sni' "$profile_file")
+    local port=$(jq -r '.port' "$profile_file")
+
+    # Check if xhttpSettings.host matches profile SNI
+    local config_host=$(jq -r --argjson port "$port" \
+      '.inbounds[] | select(.port == $port) | .streamSettings.xhttpSettings.host' \
+      "$CONFIG_FILE" 2>/dev/null)
+
+    if [[ "$config_host" != "$profile_sni" ]]; then
+      echo -e "${YELLOW}  → Миграция XHTTP: $(basename "$profile_file" .json)${NC}"
+
+      local temp_config=$(mktemp)
+      jq --argjson port "$port" --arg sni "$profile_sni" '
+        (.inbounds[] | select(.port == $port) | .streamSettings.xhttpSettings.host) |= $sni
+      ' "$CONFIG_FILE" > "$temp_config"
+
+      mv "$temp_config" "$CONFIG_FILE"
+      ((migrated++))
+    fi
+  done
+
+  if [[ $migrated -gt 0 ]]; then
+    echo -e "${GREEN}✓ Мигрировано $migrated XHTTP профилей${NC}"
+    systemctl restart xray
+  else
+    echo -e "${GREEN}✓ Миграция не требуется${NC}"
+  fi
+}
+
+# Migration function for routing configuration (v1.3.2)
+# Adds default "direct" rule if missing
+migrate_routing_config() {
+  echo -e "${CYAN}Проверка конфигурации маршрутизации...${NC}"
+
+  # Check if default direct rule exists
+  local has_direct_rule=$(jq -r '
+    .routing.rules[] | select(.outboundTag == "direct" and .network == "tcp,udp") | .outboundTag
+  ' "$CONFIG_FILE" 2>/dev/null)
+
+  if [[ -z "$has_direct_rule" ]]; then
+    echo -e "${YELLOW}  → Добавляю default direct rule...${NC}"
+
+    local temp_config=$(mktemp)
+    jq '.routing.rules += [{
+      "type": "field",
+      "network": "tcp,udp",
+      "outboundTag": "direct"
+    }]' "$CONFIG_FILE" > "$temp_config"
+
+    if [[ $? -eq 0 ]] && [[ -s "$temp_config" ]]; then
+      mv "$temp_config" "$CONFIG_FILE"
+      chown root:root "$CONFIG_FILE"
+      chmod 644 "$CONFIG_FILE"
+      echo -e "${GREEN}  ✓ Маршрутизация исправлена${NC}"
+      return 0  # Needs restart
+    else
+      rm -f "$temp_config"
+      echo -e "${RED}  ✗ Ошибка миграции маршрутизации${NC}"
+      return 1
+    fi
+  else
+    echo -e "${GREEN}✓ Маршрутизация в порядке${NC}"
+    return 1  # No restart needed
+  fi
+}
+
+# Migration function for XHTTP mode (stream -> auto)
+# Fixes sing-box compatibility issues
+migrate_xhttp_mode() {
+  echo -e "${CYAN}Проверка XHTTP mode для миграции...${NC}"
+
+  local migrated=0
+
+  # Check all inbounds with xhttp transport
+  local xhttp_ports=$(jq -r '.inbounds[] | select(.streamSettings.network == "xhttp") | .port' "$CONFIG_FILE" 2>/dev/null)
+
+  for port in $xhttp_ports; do
+    [[ -z "$port" ]] && continue
+
+    local current_mode=$(jq -r --argjson port "$port" \
+      '.inbounds[] | select(.port == $port) | .streamSettings.xhttpSettings.mode' \
+      "$CONFIG_FILE" 2>/dev/null)
+
+    if [[ "$current_mode" == "stream" ]]; then
+      echo -e "${YELLOW}  → Миграция XHTTP mode на порту $port: stream → auto${NC}"
+
+      local temp_config=$(mktemp)
+      jq --argjson port "$port" '
+        (.inbounds[] | select(.port == $port) | .streamSettings.xhttpSettings.mode) = "auto" |
+        (.inbounds[] | select(.port == $port) | .streamSettings.xhttpSettings.extra) = {}
+      ' "$CONFIG_FILE" > "$temp_config"
+
+      if [[ $? -eq 0 ]] && [[ -s "$temp_config" ]]; then
+        mv "$temp_config" "$CONFIG_FILE"
+        ((migrated++))
+      else
+        rm -f "$temp_config"
+      fi
+    fi
+  done
+
+  if [[ $migrated -gt 0 ]]; then
+    chown root:root "$CONFIG_FILE"
+    chmod 644 "$CONFIG_FILE"
+    echo -e "${GREEN}✓ Мигрировано $migrated XHTTP inbound(ов)${NC}"
+    return 0  # Needs restart
+  else
+    echo -e "${GREEN}✓ XHTTP mode миграция не требуется${NC}"
+    return 1  # No restart needed
+  fi
+}
+
+# ═══════════════════════════════════════════════════════════
+# END HELPER FUNCTIONS
+# ═══════════════════════════════════════════════════════════
+
 SERVER_IP=$(get_server_ip)
 
 # Инициализация DNS конфигурации (надежные DNS без рекламы)
@@ -102,7 +392,7 @@ show_ascii() {
     echo -e "${CYAN}"
     echo ' ╔═══════════════════════════════════╗'
     echo ' ║                                   ║'
-    echo ' ║     XRAYEBATOR v1.3 EXP          ║'
+    echo ' ║     XRAYEBATOR v1.3.2 EXP        ║'
     echo ' ║   Xray Reality VPN Manager       ║'
     echo ' ║                                   ║'
     echo ' ╚═══════════════════════════════════╝'
@@ -113,6 +403,37 @@ show_ascii() {
 
 # Главное меню
 main_menu() {
+  # Run migrations on first launch after upgrade
+  local needs_restart=false
+
+  if [[ ! -f /usr/local/etc/xray/.xhttp_migrated ]]; then
+    migrate_xhttp_profiles
+    touch /usr/local/etc/xray/.xhttp_migrated
+    needs_restart=true
+  fi
+
+  # v1.3.2: Routing migration
+  if [[ ! -f /usr/local/etc/xray/.routing_v132_migrated ]]; then
+    if migrate_routing_config; then
+      needs_restart=true
+    fi
+    touch /usr/local/etc/xray/.routing_v132_migrated
+  fi
+
+  # XHTTP mode migration (stream -> auto for sing-box compatibility)
+  if [[ ! -f /usr/local/etc/xray/.xhttp_mode_migrated ]]; then
+    if migrate_xhttp_mode; then
+      needs_restart=true
+    fi
+    touch /usr/local/etc/xray/.xhttp_mode_migrated
+  fi
+
+  if [[ "$needs_restart" == "true" ]]; then
+    echo -e "${CYAN}Перезапуск Xray после миграций...${NC}"
+    systemctl restart xray
+    sleep 2
+  fi
+
   while true; do
     show_ascii
 
@@ -208,10 +529,10 @@ create_profile_menu() {
   echo -e "    ${GREEN}✓${NC} TCP BBR congestion control"
   echo -e "    ${BLUE}ℹ${NC} Идеален для обхода продвинутой DPI фильтрации"
   echo ""
-  echo -e "${CYAN} 3)${NC} VLESS + gRPC + Reality ${GREEN}(порт 2053)${NC}"
-  echo -e "    ${GREEN}✓${NC} Эффективен при активных блокировках РКН"
-  echo -e "    ${GREEN}✓${NC} Хорошо работает в корпоративных сетях"
-  echo -e "    ${YELLOW}⚠${NC} Может быть медленнее TCP"
+  echo -e "${CYAN} 3)${NC} VLESS + gRPC + Reality ${YELLOW}(порт 2053)${NC}"
+  echo -e "    ${YELLOW}⚠${NC} Требует SNI с поддержкой HTTP/2 (google.com, cloudflare.com)"
+  echo -e "    ${YELLOW}⚠${NC} РУ-домены (госуслуги, сбер) часто НЕ работают!"
+  echo -e "    ${YELLOW}⚠${NC} Проблемы совместимости с sing-box"
   echo ""
   echo -e "${CYAN} 4)${NC} VLESS + XHTTP + Reality ${GREEN}(порт 9443)${NC}"
   echo -e "    ${GREEN}✓${NC} Современный протокол с низкой задержкой"
@@ -250,8 +571,17 @@ create_profile() {
 local custom_sni=$5  # Опциональный кастомный SNI
   local uuid=$(uuidgen)
 
-  local default_sni=$(head -n 1 "$SNI_LIST" 2>/dev/null | cut -d'|' -f1)
-  [[ -z "$default_sni" ]] && default_sni="www.microsoft.com"
+  local default_sni=""
+
+  # gRPC требует SNI с поддержкой HTTP/2 (только зарубежные!)
+  if [[ "$transport" == "grpc" ]]; then
+    default_sni="www.google.com"
+    echo -e "${YELLOW}⚠ gRPC: используется SNI ${CYAN}$default_sni${YELLOW} (требуется HTTP/2)${NC}"
+  else
+    # Read first valid SNI (skip comments and empty lines)
+    default_sni=$(grep -v '^#' "$SNI_LIST" 2>/dev/null | grep -v '^[[:space:]]*$' | head -n 1 | cut -d'|' -f1)
+    [[ -z "$default_sni" ]] && default_sni="www.microsoft.com"
+  fi
 
 # Используем кастомный SNI если передан
 
@@ -299,12 +629,61 @@ add_inbound() {
 
   local existing_tag=$(jq -r --argjson port "$port" '.inbounds[] | select(.port == $port) | .tag' "$CONFIG_FILE" 2>/dev/null)
   if [[ -n "$existing_tag" ]]; then
+    # Check existing inbound's SNI
+    local existing_sni=$(jq -r --argjson port "$port" \
+      '.inbounds[] | select(.port == $port) | .streamSettings.realitySettings.serverNames[0]' \
+      "$CONFIG_FILE" 2>/dev/null)
+
+    if [[ -n "$existing_sni" ]] && [[ "$existing_sni" != "$sni" ]]; then
+      echo ""
+      echo -e "${RED}╔═══════════════════════════════════════════════════════════╗${NC}"
+      echo -e "${RED}║         ⚠ КОНФЛИКТ SNI НА ПОРТУ $port                    ║${NC}"
+      echo -e "${RED}╚═══════════════════════════════════════════════════════════╝${NC}"
+      echo ""
+      echo -e "${YELLOW}Порт $port уже используется с SNI: ${MAGENTA}$existing_sni${NC}"
+      echo -e "${YELLOW}Новый профиль пытается использовать SNI: ${MAGENTA}$sni${NC}"
+      echo ""
+      echo -e "${CYAN}Xray Reality не поддерживает разные SNI на одном порту.${NC}"
+      echo -e "${CYAN}Профиль будет создан с SNI: ${YELLOW}$existing_sni${NC}"
+      echo ""
+      sleep 3
+
+      # Override sni to match existing inbound
+      sni="$existing_sni"
+
+      # Update profile JSON with correct SNI
+      # Note: Profile name extracted from caller context via create_profile
+      # We need to update the just-created profile.json
+      local profile_name=$(jq -r --arg uuid "$uuid" \
+        '.name' \
+        "$PROFILES_DIR"/*.json 2>/dev/null | head -1)
+
+      if [[ -n "$profile_name" ]]; then
+        local profile_files=("$PROFILES_DIR"/*.json)
+        for pf in "${profile_files[@]}"; do
+          local pf_uuid=$(jq -r '.uuid' "$pf" 2>/dev/null)
+          if [[ "$pf_uuid" == "$uuid" ]]; then
+            local temp_profile=$(mktemp)
+            jq --arg sni "$existing_sni" '.sni = $sni' "$pf" > "$temp_profile"
+            mv "$temp_profile" "$pf"
+            break
+          fi
+        done
+      fi
+    fi
+
     echo -e "${CYAN} → Добавление клиента в существующий inbound на порту $port${NC}"
     local temp_config=$(mktemp)
+    # Определяем flow по типу транспорта: TCP = xtls-rprx-vision, gRPC/XHTTP = пустой
     jq --arg uuid "$uuid" --argjson port "$port" '
       (.inbounds[] | select(.port == $port) | .settings.clients) += [{
         "id": $uuid,
-        "flow": (if .settings.clients[0].flow then .settings.clients[0].flow else "xtls-rprx-vision" end)
+        "flow": (
+          if (.inbounds[] | select(.port == $port) | .streamSettings.network) == "tcp"
+          then "xtls-rprx-vision"
+          else ""
+          end
+        )
       }]
     ' "$CONFIG_FILE" > "$temp_config"
     mv "$temp_config" "$CONFIG_FILE"
@@ -339,7 +718,7 @@ add_inbound() {
       "fingerprint": "$fingerprint"
     }
   },
-  "sniffing": {"enabled": true, "destOverride": ["http", "tls"]},
+  "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]},
   "tag": "inbound-$port"
 }
 TCPEOF
@@ -358,7 +737,7 @@ TCPEOF
   "streamSettings": {
     "network": "grpc",
     "security": "reality",
-    "grpcSettings": {"serviceName": "grpc", "multiMode": false},
+    "grpcSettings": {"serviceName": "grpc"},
     "realitySettings": {
       "show": false,
       "dest": "$sni:443",
@@ -369,7 +748,7 @@ TCPEOF
       "fingerprint": "$fingerprint"
     }
   },
-  "sniffing": {"enabled": true, "destOverride": ["http", "tls"]},
+  "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]},
   "tag": "inbound-$port"
 }
 GRPCEOF
@@ -389,9 +768,10 @@ GRPCEOF
     "network": "xhttp",
     "security": "reality",
     "xhttpSettings": {
-      "mode": "stream",
+      "mode": "auto",
       "path": "/xhttp",
-      "host": "$sni"
+      "host": "$sni",
+      "extra": {}
     },
     "realitySettings": {
       "show": false,
@@ -403,7 +783,7 @@ GRPCEOF
       "fingerprint": "$fingerprint"
     }
   },
-  "sniffing": {"enabled": true, "destOverride": ["http", "tls"]},
+  "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]},
   "tag": "inbound-$port"
 }
 XHTTPEOF
@@ -416,6 +796,9 @@ XHTTPEOF
   mv "$temp_config" "$CONFIG_FILE"
   chown root:root "$CONFIG_FILE"
   chmod 644 "$CONFIG_FILE"
+
+  # Open firewall port
+  open_firewall_port "$port"
 }
 
 # Удаление профиля
@@ -453,10 +836,28 @@ delete_profile_menu() {
     read confirm
     if [[ "$confirm" =~ ^[yYдД]$ ]]; then
       local port=$(jq -r '.port' "$PROFILES_DIR/$profile_name.json")
+      local uuid=$(jq -r '.uuid' "$PROFILES_DIR/$profile_name.json")
+      local profiles_on_port=($(get_profiles_on_port "$port"))
       local temp_config=$(mktemp)
-      jq "del(.inbounds[] | select(.tag == \"inbound-$port\"))" "$CONFIG_FILE" > "$temp_config"
+
+      if [[ ${#profiles_on_port[@]} -le 1 ]]; then
+        # Единственный профиль на порту - удаляем весь inbound
+        jq "del(.inbounds[] | select(.tag == \"inbound-$port\"))" "$CONFIG_FILE" > "$temp_config"
+        echo -e "${CYAN}  → Удаление inbound на порту $port${NC}"
+      else
+        # Есть другие профили на порту - удаляем только клиента
+        jq --arg uuid "$uuid" '
+          (.inbounds[].settings.clients) |= map(select(.id != $uuid))
+        ' "$CONFIG_FILE" > "$temp_config"
+        echo -e "${CYAN}  → Удаление клиента из inbound (порт $port используется другими профилями)${NC}"
+      fi
+
       mv "$temp_config" "$CONFIG_FILE"
       rm "$PROFILES_DIR/$profile_name.json"
+
+      # Close firewall port if not used by other profiles
+      close_firewall_port "$port"
+
       systemctl restart xray
       echo ""
       echo -e "${GREEN}✓ Профиль '$profile_name' успешно удален${NC}"
@@ -526,14 +927,17 @@ generate_connection() {
   echo -e "${GREEN}═══════════════════════════════════════════════${NC}\n"
   local vless_link=""
   case $transport in
-    tcp|tcp-utls|tcp-xudp)
+    tcp|tcp-utls)
+      # TCP Reality + Vision
       vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=&type=tcp&headerType=none#${profile_name}"
       ;;
     grpc)
+      # gRPC Reality
       vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=&type=grpc&serviceName=grpc#${profile_name}"
       ;;
     xhttp)
-      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=&type=xhttp&path=/xhttp#${profile_name}"
+      # XHTTP Reality - требует современные клиенты (sing-box 1.8+, v2rayN 6.x+)
+      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=&type=xhttp&path=%2Fxhttp&host=${current_sni}#${profile_name}"
       ;;
   esac
   echo -e "${BLUE}Ссылка для подключения:${NC}"
@@ -547,7 +951,14 @@ generate_connection() {
   echo -e "${CYAN}Адрес:${NC} $SERVER_IP"
   echo -e "${CYAN}Порт:${NC} $port"
   echo -e "${CYAN}UUID:${NC} $uuid"
-  echo -e "${CYAN}Flow:${NC} xtls-rprx-vision"
+  case $transport in
+    tcp|tcp-utls)
+      echo -e "${CYAN}Flow:${NC} xtls-rprx-vision"
+      ;;
+    grpc|xhttp)
+      echo -e "${CYAN}Flow:${NC} (пустой)"
+      ;;
+  esac
   echo -e "${CYAN}Encryption:${NC} none"
   echo -e "${CYAN}Transport:${NC} $transport"
   echo -e "${CYAN}Security:${NC} reality"
@@ -557,6 +968,15 @@ generate_connection() {
   echo -e "${CYAN}ShortID:${NC} (пустой)"
   if [[ "$transport" == "tcp" ]] || [[ "$transport" == "tcp-utls" ]] || [[ "$transport" == "tcp-xudp" ]]; then
     echo -e "${CYAN}SpiderX:${NC} /"
+  elif [[ "$transport" == "grpc" ]]; then
+    echo -e "${CYAN}serviceName:${NC} grpc"
+  elif [[ "$transport" == "xhttp" ]]; then
+    echo -e "${CYAN}Path:${NC} /xhttp"
+    echo -e "${CYAN}Host:${NC} $current_sni"
+    echo ""
+    echo -e "${YELLOW}⚠ XHTTP требует современные клиенты:${NC}"
+    echo -e "  ${GREEN}✓${NC} sing-box 1.8+, v2rayN 6.x+, v2rayNG 1.8.x+"
+    echo -e "  ${RED}✗${NC} Clash Meta, старые версии клиентов"
   fi
   echo -e "${GREEN}═══════════════════════════════════════════════${NC}\n"
   echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
@@ -604,9 +1024,83 @@ change_sni_menu() {
 
   local selected="${profiles[$((choice-1))]}"
   local current_sni=$(jq -r '.sni // "www.microsoft.com"' "$PROFILES_DIR/$selected.json")
+  local transport=$(jq -r '.transport // "tcp"' "$PROFILES_DIR/$selected.json")
 
   echo ""
-  echo -e "${CYAN}Текущий SNI профиля '$selected':${NC} ${GREEN}$current_sni${NC}\n"
+  echo -e "${CYAN}Текущий SNI профиля '$selected':${NC} ${GREEN}$current_sni${NC}"
+  echo -e "${CYAN}Транспорт:${NC} ${YELLOW}$transport${NC}\n"
+
+  # gRPC требует HTTP/2, российские сайты не поддерживают
+  if [[ "$transport" == "grpc" ]]; then
+    echo -e "${RED}╔═══════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${RED}║     ⚠ gRPC ТРЕБУЕТ ЗАРУБЕЖНЫЕ SNI (HTTP/2)              ║${NC}"
+    echo -e "${RED}╚═══════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${YELLOW}gRPC работает только с сайтами поддерживающими HTTP/2.${NC}"
+    echo -e "${YELLOW}Российские сайты (Ozon, WB, Sber и др.) НЕ поддерживают HTTP/2.${NC}"
+    echo ""
+    echo -e "${GREEN}Рекомендуемые SNI для gRPC:${NC}"
+    echo -e "  ${CYAN}1)${NC} www.google.com ${BLUE}(рекомендуется)${NC}"
+    echo -e "  ${CYAN}2)${NC} www.cloudflare.com"
+    echo -e "  ${CYAN}3)${NC} www.microsoft.com"
+    echo -e "  ${CYAN}4)${NC} github.com"
+    echo -e "  ${CYAN}0)${NC} Назад\n"
+    echo -n -e "${YELLOW}Выберите SNI для gRPC: ${NC}"
+    read grpc_choice
+
+    case $grpc_choice in
+      1) new_sni="www.google.com" ;;
+      2) new_sni="www.cloudflare.com" ;;
+      3) new_sni="www.microsoft.com" ;;
+      4) new_sni="github.com" ;;
+      0|*) return ;;
+    esac
+
+    if [[ "$new_sni" == "$current_sni" ]]; then
+      echo -e "${YELLOW}⚠ Этот SNI уже используется${NC}"
+      sleep 2
+      return
+    fi
+
+    # Переходим к обновлению SNI (пропускаем общий список)
+    local port=$(jq -r '.port' "$PROFILES_DIR/$selected.json")
+    local profiles_on_port=($(get_profiles_on_port "$port"))
+
+    if [[ ${#profiles_on_port[@]} -gt 1 ]]; then
+      echo ""
+      echo -e "${RED}⚠ На порту $port есть другие профили:${NC}"
+      for p in "${profiles_on_port[@]}"; do
+        echo -e "  ${CYAN}•${NC} $p"
+      done
+      echo -e "${YELLOW}Все они будут обновлены на SNI: ${MAGENTA}$new_sni${NC}"
+    fi
+
+    echo ""
+    echo -n -e "${YELLOW}Применить SNI '$new_sni'? (y/N): ${NC}"
+    read confirm
+    if [[ "$confirm" =~ ^[yYдД]$ ]]; then
+      # Update profile JSON
+      local temp_profile=$(mktemp)
+      jq --arg sni "$new_sni" '.sni = $sni' "$PROFILES_DIR/$selected.json" > "$temp_profile"
+      mv "$temp_profile" "$PROFILES_DIR/$selected.json"
+
+      # Update all profiles on port if shared
+      if [[ ${#profiles_on_port[@]} -gt 1 ]]; then
+        update_all_profiles_on_port "$port" "sni" "$new_sni"
+      fi
+
+      # Update config
+      update_transport_settings_for_sni "$port" "$new_sni" "$CONFIG_FILE"
+      systemctl restart xray
+
+      echo ""
+      echo -e "${GREEN}✓ SNI профиля '$selected' изменен на: ${YELLOW}$new_sni${NC}"
+      echo ""
+      echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
+      read
+    fi
+    return
+  fi
 
   if [[ ! -f "$SNI_LIST" ]]; then
     echo -e "${RED}✗ Файл списка SNI не найден${NC}"
@@ -642,8 +1136,11 @@ change_sni_menu() {
   local idx=1
   local sni_array=()
   while IFS='|' read -r domain category priority || [[ -n "$domain" ]]; do
+    # Skip comments and empty lines
     [[ "$domain" =~ ^#.*$ ]] && continue
+    [[ "$domain" =~ ^[[:space:]]*$ ]] && continue
     [[ -z "$domain" ]] && continue
+
     sni_array[$idx]="$domain"
     local desc="${sni_desc[$domain]}"
     [[ -z "$desc" ]] && desc="Дополнительный вариант"
@@ -680,6 +1177,36 @@ change_sni_menu() {
     return
   fi
 
+  # Check for shared inbound
+  local port=$(jq -r '.port' "$PROFILES_DIR/$selected.json")
+  local profiles_on_port=($(get_profiles_on_port "$port"))
+  local shared_inbound=false
+
+  if [[ ${#profiles_on_port[@]} -gt 1 ]]; then
+    shared_inbound=true
+
+    echo ""
+    echo -e "${RED}╔═══════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${RED}║         ⚠ ВНИМАНИЕ: ОБЩИЙ INBOUND НА ПОРТУ $port        ║${NC}"
+    echo -e "${RED}╚═══════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${YELLOW}Следующие профили используют порт $port:${NC}"
+    echo ""
+
+    for p in "${profiles_on_port[@]}"; do
+      local psni=$(jq -r '.sni' "$PROFILES_DIR/$p.json")
+      echo -e "  ${CYAN}•${NC} ${YELLOW}$p${NC} (текущий SNI: $psni)"
+    done
+
+    echo ""
+    echo -e "${MAGENTA}Смена SNI обновит ВСЕ эти профили!${NC}"
+    echo -e "${YELLOW}Все профили на порту $port будут использовать SNI: ${MAGENTA}$new_sni${NC}"
+    echo ""
+    echo -e "${CYAN}Xray Reality: SNI привязан к порту, а не к профилю.${NC}"
+    echo -e "${CYAN}Для разных SNI используйте разные порты.${NC}"
+    echo ""
+  fi
+
   echo ""
   echo -e "${RED}╔═══════════════════════════════════════════════════════════╗${NC}"
   echo -e "${RED}║            ⚠ КРИТИЧЕСКОЕ ПРЕДУПРЕЖДЕНИЕ ⚠               ║${NC}"
@@ -704,17 +1231,19 @@ change_sni_menu() {
     return
   fi
 
+  # Update selected profile
   local temp_profile=$(mktemp)
   jq --arg sni "$new_sni" '.sni = $sni' "$PROFILES_DIR/$selected.json" > "$temp_profile"
   mv "$temp_profile" "$PROFILES_DIR/$selected.json"
 
-  local port=$(jq -r '.port' "$PROFILES_DIR/$selected.json")
-  local temp_config=$(mktemp)
-  jq --arg tag "inbound-$port" --arg sni "$new_sni" '
-    (.inbounds[] | select(.tag == $tag) | .streamSettings.realitySettings.dest) |= ($sni + ":443") |
-    (.inbounds[] | select(.tag == $tag) | .streamSettings.realitySettings.serverNames) |= [$sni]
-  ' "$CONFIG_FILE" > "$temp_config"
-  mv "$temp_config" "$CONFIG_FILE"
+  # If shared inbound, update ALL profiles on port
+  if [[ "$shared_inbound" == "true" ]]; then
+    echo -e "${CYAN}Обновление всех профилей на порту $port...${NC}"
+    update_all_profiles_on_port "$port" "sni" "$new_sni"
+  fi
+
+  # Update config (transport-aware)
+  update_transport_settings_for_sni "$port" "$new_sni" "$CONFIG_FILE"
 
   systemctl restart xray
 
@@ -803,6 +1332,35 @@ change_fingerprint_menu() {
     return
   fi
 
+  # Check for shared inbound
+  local port=$(jq -r '.port' "$PROFILES_DIR/$selected.json")
+  local profiles_on_port=($(get_profiles_on_port "$port"))
+  local shared_inbound=false
+
+  if [[ ${#profiles_on_port[@]} -gt 1 ]]; then
+    shared_inbound=true
+
+    echo ""
+    echo -e "${RED}╔═══════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${RED}║         ⚠ ВНИМАНИЕ: ОБЩИЙ INBOUND НА ПОРТУ $port        ║${NC}"
+    echo -e "${RED}╚═══════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${YELLOW}Следующие профили используют порт $port:${NC}"
+    echo ""
+
+    for p in "${profiles_on_port[@]}"; do
+      local pfp=$(jq -r '.fingerprint' "$PROFILES_DIR/$p.json")
+      echo -e "  ${CYAN}•${NC} ${YELLOW}$p${NC} (текущий fingerprint: $pfp)"
+    done
+
+    echo ""
+    echo -e "${MAGENTA}Смена fingerprint обновит ВСЕ эти профили!${NC}"
+    echo -e "${YELLOW}Все профили на порту $port будут использовать fingerprint: ${MAGENTA}$new_fp${NC}"
+    echo ""
+    echo -e "${CYAN}Xray Reality: fingerprint привязан к порту, а не к профилю.${NC}"
+    echo ""
+  fi
+
   echo ""
   echo -e "${RED}╔═══════════════════════════════════════════════════════════╗${NC}"
   echo -e "${RED}║            ⚠ КРИТИЧЕСКОЕ ПРЕДУПРЕЖДЕНИЕ ⚠               ║${NC}"
@@ -827,11 +1385,18 @@ change_fingerprint_menu() {
     return
   fi
 
+  # Update selected profile
   local temp_profile=$(mktemp)
   jq --arg fp "$new_fp" '.fingerprint = $fp' "$PROFILES_DIR/$selected.json" > "$temp_profile"
   mv "$temp_profile" "$PROFILES_DIR/$selected.json"
 
-  local port=$(jq -r '.port' "$PROFILES_DIR/$selected.json")
+  # If shared inbound, update ALL profiles on port
+  if [[ "$shared_inbound" == "true" ]]; then
+    echo -e "${CYAN}Обновление всех профилей на порту $port...${NC}"
+    update_all_profiles_on_port "$port" "fingerprint" "$new_fp"
+  fi
+
+  # Update config
   local temp_config=$(mktemp)
   jq --arg tag "inbound-$port" --arg fp "$new_fp" '
     (.inbounds[] | select(.tag == $tag) | .streamSettings.realitySettings.fingerprint) |= $fp
@@ -924,16 +1489,58 @@ change_port_menu() {
     return
   fi
   if [[ "$new_port" == "$old_port" ]]; then
-    echo -e "${YELLOW}⚠ Этот порт уже используется${NC}"
+    echo -e "${YELLOW}⚠ Профиль уже использует этот порт${NC}"
     sleep 2
     return
   fi
-  local port_in_use=$(jq -r --arg port "$new_port" '.inbounds[] | select(.port == ($port | tonumber)) | .tag' "$CONFIG_FILE" 2>/dev/null)
-  if [[ -n "$port_in_use" ]]; then
-    echo -e "${RED}✗ Порт $new_port уже используется другим профилем${NC}"
-    sleep 2
-    return
+
+  # Get profile transport and UUID
+  local profile_transport=$(jq -r '.transport' "$profile_file")
+  local profile_uuid=$(jq -r '.uuid' "$profile_file")
+
+  # Check if target port is already in use
+  local target_inbound_tag=$(jq -r --argjson port "$new_port" '.inbounds[] | select(.port == $port) | .tag' "$CONFIG_FILE" 2>/dev/null)
+  local target_inbound_transport=""
+  local target_inbound_sni=""
+  local move_to_existing=false
+
+  if [[ -n "$target_inbound_tag" ]]; then
+    # Port is in use - check transport compatibility
+    target_inbound_transport=$(jq -r --argjson port "$new_port" '.inbounds[] | select(.port == $port) | .streamSettings.network' "$CONFIG_FILE")
+    target_inbound_sni=$(jq -r --argjson port "$new_port" '.inbounds[] | select(.port == $port) | .streamSettings.realitySettings.serverNames[0]' "$CONFIG_FILE")
+
+    # Normalize transport for comparison (tcp-utls uses tcp network)
+    local profile_network="$profile_transport"
+    [[ "$profile_transport" == "tcp-utls" ]] && profile_network="tcp"
+
+    if [[ "$profile_network" != "$target_inbound_transport" ]]; then
+      echo -e "${RED}╔═══════════════════════════════════════════════════════════╗${NC}"
+      echo -e "${RED}║            ✗ НЕСОВМЕСТИМЫЙ ТРАНСПОРТ                     ║${NC}"
+      echo -e "${RED}╚═══════════════════════════════════════════════════════════╝${NC}"
+      echo ""
+      echo -e "${YELLOW}Порт $new_port уже занят профилем с транспортом: ${MAGENTA}$target_inbound_transport${NC}"
+      echo -e "${YELLOW}Ваш профиль использует транспорт: ${MAGENTA}$profile_transport${NC}"
+      echo ""
+      echo -e "${CYAN}Нельзя объединить разные транспорты на одном порту.${NC}"
+      echo ""
+      echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
+      read
+      return
+    fi
+
+    move_to_existing=true
+    echo -e "${YELLOW}╔═══════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${YELLOW}║           ПОРТ УЖЕ ИСПОЛЬЗУЕТСЯ                          ║${NC}"
+    echo -e "${YELLOW}╚═══════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${CYAN}Порт $new_port уже занят профилем с транспортом: ${GREEN}$target_inbound_transport${NC}"
+    echo -e "${CYAN}SNI на этом порту: ${GREEN}$target_inbound_sni${NC}"
+    echo ""
+    echo -e "${MAGENTA}Профиль '$profile_name' будет перемещен на этот порт.${NC}"
+    echo -e "${MAGENTA}SNI профиля изменится на: ${YELLOW}$target_inbound_sni${NC}"
+    echo ""
   fi
+
   echo ""
   echo -e "${RED}╔═══════════════════════════════════════════════════════════╗${NC}"
   echo -e "${RED}║            ⚠ КРИТИЧЕСКОЕ ПРЕДУПРЕЖДЕНИЕ ⚠               ║${NC}"
@@ -957,15 +1564,63 @@ change_port_menu() {
     sleep 1
     return
   fi
+
   local temp_config=$(mktemp)
-  jq --arg old_tag "inbound-$old_port" --argjson new_port "$new_port" '
-    (.inbounds[] | select(.tag == $old_tag) | .port) |= $new_port |
-    (.inbounds[] | select(.tag == $old_tag) | .tag) |= ("inbound-" + ($new_port | tostring))
-  ' "$CONFIG_FILE" > "$temp_config"
-  mv "$temp_config" "$CONFIG_FILE"
-  local temp_profile=$(mktemp)
-  jq --argjson port "$new_port" '.port = $port' "$profile_file" > "$temp_profile"
-  mv "$temp_profile" "$profile_file"
+
+  if [[ "$move_to_existing" == "true" ]]; then
+    # Move client to existing inbound on target port
+    echo -e "${CYAN}  → Перемещение клиента на порт $new_port...${NC}"
+
+    # Get flow from target inbound
+    local target_flow=$(jq -r --argjson port "$new_port" '.inbounds[] | select(.port == $port) | .settings.clients[0].flow // ""' "$CONFIG_FILE")
+
+    # Add client to target inbound
+    jq --arg uuid "$profile_uuid" --argjson port "$new_port" --arg flow "$target_flow" '
+      (.inbounds[] | select(.port == $port) | .settings.clients) += [{"id": $uuid, "flow": $flow}]
+    ' "$CONFIG_FILE" > "$temp_config"
+    mv "$temp_config" "$CONFIG_FILE"
+
+    # Remove client from old inbound
+    temp_config=$(mktemp)
+    jq --arg uuid "$profile_uuid" --argjson port "$old_port" '
+      (.inbounds[] | select(.port == $port) | .settings.clients) |= map(select(.id != $uuid))
+    ' "$CONFIG_FILE" > "$temp_config"
+    mv "$temp_config" "$CONFIG_FILE"
+
+    # Check if old inbound has no clients left - remove it
+    local old_clients_count=$(jq -r --argjson port "$old_port" '.inbounds[] | select(.port == $port) | .settings.clients | length' "$CONFIG_FILE")
+    if [[ "$old_clients_count" == "0" ]]; then
+      echo -e "${CYAN}  → Удаление пустого inbound на порту $old_port...${NC}"
+      temp_config=$(mktemp)
+      jq --argjson port "$old_port" 'del(.inbounds[] | select(.port == $port))' "$CONFIG_FILE" > "$temp_config"
+      mv "$temp_config" "$CONFIG_FILE"
+      close_firewall_port "$old_port"
+    fi
+
+    # Update profile with new port and SNI
+    local temp_profile=$(mktemp)
+    jq --argjson port "$new_port" --arg sni "$target_inbound_sni" '.port = $port | .sni = $sni' "$profile_file" > "$temp_profile"
+    mv "$temp_profile" "$profile_file"
+
+  else
+    # Move entire inbound to new port (original logic)
+    jq --arg old_tag "inbound-$old_port" --argjson new_port "$new_port" '
+      (.inbounds[] | select(.tag == $old_tag) | .port) |= $new_port |
+      (.inbounds[] | select(.tag == $old_tag) | .tag) |= ("inbound-" + ($new_port | tostring))
+    ' "$CONFIG_FILE" > "$temp_config"
+    mv "$temp_config" "$CONFIG_FILE"
+
+    local temp_profile=$(mktemp)
+    jq --argjson port "$new_port" '.port = $port' "$profile_file" > "$temp_profile"
+    mv "$temp_profile" "$profile_file"
+
+    # Update firewall
+    open_firewall_port "$new_port"
+    close_firewall_port "$old_port"
+  fi
+
+  chown root:root "$CONFIG_FILE"
+  chmod 644 "$CONFIG_FILE"
   systemctl restart xray
   echo ""
   echo -e "${GREEN}✓ Порт профиля '$profile_name' изменен: ${YELLOW}$old_port → $new_port${NC}"
@@ -1071,7 +1726,7 @@ add_test_inbound() {
               "fingerprint": $fp
             }
           },
-          "sniffing": {"enabled": true, "destOverride": ["http", "tls"]},
+          "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]},
           "tag": "test-inbound"
         }')
       ;;
@@ -1093,7 +1748,7 @@ add_test_inbound() {
           "streamSettings": {
             "network": "grpc",
             "security": "reality",
-            "grpcSettings": {"serviceName": "grpc", "multiMode": false},
+            "grpcSettings": {"serviceName": "grpc"},
             "realitySettings": {
               "show": false,
               "dest": ($sni + ":443"),
@@ -1104,7 +1759,45 @@ add_test_inbound() {
               "fingerprint": $fp
             }
           },
-          "sniffing": {"enabled": true, "destOverride": ["http", "tls"]},
+          "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]},
+          "tag": "test-inbound"
+        }')
+      ;;
+    xhttp)
+      inbound=$(jq -n \
+        --arg uuid "$uuid" \
+        --argjson port "$port" \
+        --arg sni "$sni" \
+        --arg privkey "$PRIVATE_KEY" \
+        --arg fp "$fingerprint" \
+        '{
+          "listen": "0.0.0.0",
+          "port": $port,
+          "protocol": "vless",
+          "settings": {
+            "clients": [{"id": $uuid, "flow": ""}],
+            "decryption": "none"
+          },
+          "streamSettings": {
+            "network": "xhttp",
+            "security": "reality",
+            "xhttpSettings": {
+              "mode": "auto",
+              "path": "/xhttp",
+              "host": $sni,
+              "extra": {}
+            },
+            "realitySettings": {
+              "show": false,
+              "dest": ($sni + ":443"),
+              "xver": 0,
+              "serverNames": [$sni],
+              "privateKey": $privkey,
+              "shortIds": [""],
+              "fingerprint": $fp
+            }
+          },
+          "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]},
           "tag": "test-inbound"
         }')
       ;;
@@ -1173,6 +1866,9 @@ update_test_inbound_client() {
 
   echo -e "${CYAN}  → Обновление тестового клиента (UUID и SNI)${NC}"
 
+  # Detect transport type
+  local transport=$(jq -r '.inbounds[] | select(.tag == "test-inbound") | .streamSettings.network' "$CONFIG_FILE")
+
   local temp_config=$(mktemp)
 
   # Обновляем UUID клиента, SNI и fingerprint в существующем test-inbound
@@ -1192,6 +1888,17 @@ update_test_inbound_client() {
   fi
 
   mv "$temp_config" "$CONFIG_FILE"
+
+  # Transport-specific update for XHTTP
+  if [[ "$transport" == "xhttp" ]]; then
+    temp_config=$(mktemp)
+    jq --arg sni "$new_sni" '
+      (.inbounds[] | select(.tag == "test-inbound") | .streamSettings.xhttpSettings.host) |= $sni
+    ' "$CONFIG_FILE" > "$temp_config"
+    mv "$temp_config" "$CONFIG_FILE"
+    echo -e "${CYAN}  → XHTTP: обновлен host → $new_sni${NC}"
+  fi
+
   chown root:root "$CONFIG_FILE"
   chmod 644 "$CONFIG_FILE"
 }
@@ -1391,15 +2098,27 @@ auto_profile_setup_menu() {
   fi
   echo -e "${GREEN}✓ Тестовый порт: $test_port${NC}\n"
 
+  # Open firewall port for testing
+  open_firewall_port "$test_port"
+
   echo -e "${CYAN}════════════════════════════════════════════════════════════${NC}"
   echo -e "${CYAN}           НАЧИНАЮ ТЕСТИРОВАНИЕ КОМБИНАЦИЙ                ${NC}"
   echo -e "${CYAN}════════════════════════════════════════════════════════════${NC}\n"
+
+  # Загружаем SNI списки ПЕРЕД созданием inbound
+  local sni_tier1=($(get_sni_by_category "ru_whitelist" 5))
+  local sni_tier2=($(get_sni_by_category "yandex_cdn" 5))
+  local sni_tier3=($(get_sni_by_category "foreign" 3))
+
+  [[ ${#sni_tier1[@]} -eq 0 ]] && sni_tier1=("ozone.ru" "sberbank.ru" "gosuslugi.ru")
+  [[ ${#sni_tier2[@]} -eq 0 ]] && sni_tier2=("speller.yandex.net")
+  [[ ${#sni_tier3[@]} -eq 0 ]] && sni_tier3=("www.microsoft.com" "cloudflare.com")
 
   setup_test_socks5
 
   # Создаем тестовый inbound ОДИН РАЗ в начале
   echo -e "${CYAN}Создание тестового inbound на порту $test_port...${NC}"
-  local first_sni="${sni_tier1[0]:-ozone.ru}"
+  local first_sni="${sni_tier1[0]}"
   local test_uuid=$(uuidgen)
 
   # Создаем начальный профиль
@@ -1437,14 +2156,6 @@ TESTEOF
   fi
 
   echo -e "${GREEN}✓ Тестовый inbound готов на порту $test_port${NC}\n"
-
-  local sni_tier1=($(get_sni_by_category "ru_whitelist" 5))
-  local sni_tier2=($(get_sni_by_category "yandex_cdn" 5))
-  local sni_tier3=($(get_sni_by_category "foreign" 3))
-
-  [[ ${#sni_tier1[@]} -eq 0 ]] && sni_tier1=("ozone.ru" "sberbank.ru" "gosuslugi.ru")
-  [[ ${#sni_tier2[@]} -eq 0 ]] && sni_tier2=("speller.yandex.net")
-  [[ ${#sni_tier3[@]} -eq 0 ]] && sni_tier3=("www.microsoft.com" "cloudflare.com")
 
   local test_num=1
   local found=0
