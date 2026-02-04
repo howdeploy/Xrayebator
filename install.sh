@@ -205,20 +205,35 @@ echo -e "${GREEN}✓ Конфигурация создана${NC}\n"
 # [7/10] Настройка Firewall
 echo -e "${BLUE}[7/10]${NC} ${YELLOW}Настройка firewall...${NC}"
 if ! ufw status | grep -q "Status: active"; then
-  ufw --force enable > /dev/null 2>&1
+  if ! ufw --force enable > /dev/null 2>&1; then
+    echo -e "${RED}✗ Не удалось включить UFW${NC}"
+    echo -e "${YELLOW}⚠ Порты нужно будет открыть вручную${NC}"
+  fi
 fi
-ufw allow 22/tcp > /dev/null 2>&1
-ufw allow 80/tcp > /dev/null 2>&1
-ufw allow 443/tcp > /dev/null 2>&1
-ufw allow 8443/tcp > /dev/null 2>&1
-ufw allow 2053/tcp > /dev/null 2>&1
-ufw allow 8080/tcp > /dev/null 2>&1
-ufw allow 2096/tcp > /dev/null 2>&1
-ufw allow 8880/tcp > /dev/null 2>&1
-ufw allow 9443/tcp > /dev/null 2>&1
+
+UFW_ERRORS=0
+for ufw_port in 22 80 443 8443 2053 8080 2096 8880 9443; do
+  if ! ufw allow "${ufw_port}/tcp" > /dev/null 2>&1; then
+    echo -e "${YELLOW}  ⚠ Не удалось открыть порт ${ufw_port}/tcp${NC}"
+    ((UFW_ERRORS++))
+  fi
+done
+
 ufw reload > /dev/null 2>&1
-echo -e "${GREEN}✓ Firewall настроен${NC}"
-echo -e "${CYAN}  Открытые порты: 443, 2053, 2096, 8080, 8443, 8880, 9443${NC}\n"
+
+if [[ $UFW_ERRORS -eq 0 ]]; then
+  echo -e "${GREEN}✓ Firewall настроен${NC}"
+else
+  echo -e "${YELLOW}⚠ Firewall настроен с ошибками ($UFW_ERRORS портов не открылись)${NC}"
+fi
+
+# Verify UFW is actually active and ports are open
+if ufw status | grep -q "Status: active"; then
+  echo -e "${CYAN}  Открытые порты: 443, 2053, 2096, 8080, 8443, 8880, 9443${NC}\n"
+else
+  echo -e "${RED}  ⚠ UFW неактивен! Порты могут быть закрыты.${NC}"
+  echo -e "${YELLOW}  Выполните вручную: sudo ufw --force enable${NC}\n"
+fi
 
 # [8/10] Оптимизация TCP (BBR)
 echo -e "${BLUE}[8/10]${NC} ${YELLOW}Настройка BBR TCP Congestion Control...${NC}"

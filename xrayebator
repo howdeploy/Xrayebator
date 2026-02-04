@@ -121,10 +121,15 @@ open_firewall_port() {
     return 1
   fi
 
-  # Check if UFW is installed and active
+  # Check if UFW is installed
   if ! command -v ufw &>/dev/null; then
     echo -e "${YELLOW}  ⚠ UFW не установлен${NC}" >&2
     return 1
+  fi
+
+  # Ensure UFW is active
+  if ! ufw status | grep -q "Status: active"; then
+    ufw --force enable >/dev/null 2>&1
   fi
 
   # Check if port already open (idempotent)
@@ -152,9 +157,13 @@ close_firewall_port() {
   local protocol=${2:-tcp}
 
   # Check if port is still used by any inbound
-  local port_in_use=$(jq -r --argjson port "$port" \
+  # If jq fails (config corrupted/missing), don't close the port
+  local port_in_use
+  if ! port_in_use=$(jq -r --argjson port "$port" \
     '.inbounds[] | select(.port == $port) | .tag' \
-    "$CONFIG_FILE" 2>/dev/null)
+    "$CONFIG_FILE" 2>/dev/null); then
+    return 0  # jq error — don't close, safety first
+  fi
 
   if [[ -n "$port_in_use" ]]; then
     return 0  # Still in use, don't close
@@ -629,6 +638,23 @@ add_inbound() {
 
   local existing_tag=$(jq -r --argjson port "$port" '.inbounds[] | select(.port == $port) | .tag' "$CONFIG_FILE" 2>/dev/null)
   if [[ -n "$existing_tag" ]]; then
+    # Check transport compatibility
+    local existing_transport=$(jq -r --argjson port "$port" \
+      '.inbounds[] | select(.port == $port) | .streamSettings.network' \
+      "$CONFIG_FILE" 2>/dev/null)
+
+    local expected_network="$transport"
+    case "$transport" in
+      tcp|tcp-utls|tcp-xudp) expected_network="tcp" ;;
+    esac
+
+    if [[ -n "$existing_transport" ]] && [[ "$expected_network" != "$existing_transport" ]]; then
+      echo ""
+      echo -e "${RED}✗ Порт $port уже используется с транспортом '$existing_transport' (несовместимо с '$transport')${NC}"
+      echo -e "${YELLOW}Используйте другой порт для транспорта '$transport'${NC}"
+      return 1
+    fi
+
     # Check existing inbound's SNI
     local existing_sni=$(jq -r --argjson port "$port" \
       '.inbounds[] | select(.port == $port) | .streamSettings.realitySettings.serverNames[0]' \
@@ -689,6 +715,9 @@ add_inbound() {
     mv "$temp_config" "$CONFIG_FILE"
     chown root:root "$CONFIG_FILE"
     chmod 644 "$CONFIG_FILE"
+
+    # Ensure firewall port is open (even for existing inbound)
+    open_firewall_port "$port"
     return
   fi
 
@@ -845,9 +874,9 @@ delete_profile_menu() {
         jq "del(.inbounds[] | select(.tag == \"inbound-$port\"))" "$CONFIG_FILE" > "$temp_config"
         echo -e "${CYAN}  → Удаление inbound на порту $port${NC}"
       else
-        # Есть другие профили на порту - удаляем только клиента
-        jq --arg uuid "$uuid" '
-          (.inbounds[].settings.clients) |= map(select(.id != $uuid))
+        # Есть другие профили на порту - удаляем только клиента из конкретного inbound
+        jq --arg uuid "$uuid" --argjson port "$port" '
+          (.inbounds[] | select(.port == $port) | .settings.clients) |= map(select(.id != $uuid))
         ' "$CONFIG_FILE" > "$temp_config"
         echo -e "${CYAN}  → Удаление клиента из inbound (порт $port используется другими профилями)${NC}"
       fi
@@ -1509,9 +1538,11 @@ change_port_menu() {
     target_inbound_transport=$(jq -r --argjson port "$new_port" '.inbounds[] | select(.port == $port) | .streamSettings.network' "$CONFIG_FILE")
     target_inbound_sni=$(jq -r --argjson port "$new_port" '.inbounds[] | select(.port == $port) | .streamSettings.realitySettings.serverNames[0]' "$CONFIG_FILE")
 
-    # Normalize transport for comparison (tcp-utls uses tcp network)
+    # Normalize transport for comparison (tcp-utls and tcp-xudp use tcp network)
     local profile_network="$profile_transport"
-    [[ "$profile_transport" == "tcp-utls" ]] && profile_network="tcp"
+    case "$profile_transport" in
+      tcp|tcp-utls|tcp-xudp) profile_network="tcp" ;;
+    esac
 
     if [[ "$profile_network" != "$target_inbound_transport" ]]; then
       echo -e "${RED}╔═══════════════════════════════════════════════════════════╗${NC}"
@@ -1597,18 +1628,44 @@ change_port_menu() {
       close_firewall_port "$old_port"
     fi
 
-    # Update profile with new port and SNI
+    # Update profile with new port, SNI and fingerprint from target inbound
+    local target_inbound_fp=$(jq -r --argjson port "$new_port" \
+      '.inbounds[] | select(.port == $port) | .streamSettings.realitySettings.fingerprint // "chrome"' \
+      "$CONFIG_FILE" 2>/dev/null)
     local temp_profile=$(mktemp)
-    jq --argjson port "$new_port" --arg sni "$target_inbound_sni" '.port = $port | .sni = $sni' "$profile_file" > "$temp_profile"
+    jq --argjson port "$new_port" --arg sni "$target_inbound_sni" --arg fp "$target_inbound_fp" \
+      '.port = $port | .sni = $sni | .fingerprint = $fp' "$profile_file" > "$temp_profile"
     mv "$temp_profile" "$profile_file"
 
+    # Ensure firewall port is open
+    open_firewall_port "$new_port"
+
   else
-    # Move entire inbound to new port (original logic)
-    jq --arg old_tag "inbound-$old_port" --argjson new_port "$new_port" '
-      (.inbounds[] | select(.tag == $old_tag) | .port) |= $new_port |
-      (.inbounds[] | select(.tag == $old_tag) | .tag) |= ("inbound-" + ($new_port | tostring))
-    ' "$CONFIG_FILE" > "$temp_config"
-    mv "$temp_config" "$CONFIG_FILE"
+    # Check if other profiles share the old port
+    local profiles_on_old_port=($(get_profiles_on_port "$old_port"))
+
+    if [[ ${#profiles_on_old_port[@]} -le 1 ]]; then
+      # Only this profile on old port - move entire inbound
+      jq --arg old_tag "inbound-$old_port" --argjson new_port "$new_port" '
+        (.inbounds[] | select(.tag == $old_tag) | .port) |= $new_port |
+        (.inbounds[] | select(.tag == $old_tag) | .tag) |= ("inbound-" + ($new_port | tostring))
+      ' "$CONFIG_FILE" > "$temp_config"
+      mv "$temp_config" "$CONFIG_FILE"
+    else
+      # Multiple profiles on old port - extract only this client
+      echo -e "${CYAN}  → Извлечение клиента из общего inbound на порту $old_port...${NC}"
+
+      # Remove client from old inbound
+      jq --arg uuid "$profile_uuid" --argjson port "$old_port" '
+        (.inbounds[] | select(.port == $port) | .settings.clients) |= map(select(.id != $uuid))
+      ' "$CONFIG_FILE" > "$temp_config"
+      mv "$temp_config" "$CONFIG_FILE"
+
+      # Create new inbound on new port
+      local profile_sni=$(jq -r '.sni' "$profile_file")
+      local profile_fp=$(jq -r '.fingerprint // "chrome"' "$profile_file")
+      add_inbound "$profile_uuid" "$profile_transport" "$new_port" "$profile_sni" "$profile_fp"
+    fi
 
     local temp_profile=$(mktemp)
     jq --argjson port "$new_port" '.port = $port' "$profile_file" > "$temp_profile"
