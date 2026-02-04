@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ═══════════════════════════════════════════════════════════
-# XRAYEBATOR INSTALLER v1.3 EXP
+# XRAYEBATOR INSTALLER v1.3.2 EXP
 # Автоматическая установка Xray Reality VPN
 # GitHub: https://github.com/howdeploy/Xrayebator
 # ═══════════════════════════════════════════════════════════
@@ -18,7 +18,7 @@ NC='\033[0m'
 # GitHub репозиторий
 GITHUB_USER="howdeploy"
 GITHUB_REPO="Xrayebator"
-GITHUB_BRANCH="main"
+GITHUB_BRANCH="experimental"
 RAW_BASE_URL="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/${GITHUB_BRANCH}"
 
 # Пути
@@ -39,7 +39,7 @@ clear
 echo -e "${CYAN}"
 echo '╔═══════════════════════════════════════════════════════════╗'
 echo '║                                                           ║'
-echo '║            XRAYEBATOR INSTALLER v1.3 EXP                 ║'
+echo '║            XRAYEBATOR INSTALLER v1.3.2 EXP               ║'
 echo '║       Автоматическая установка Xray Reality VPN          ║'
 echo '║                                                           ║'
 echo '╚═══════════════════════════════════════════════════════════╝'
@@ -73,6 +73,43 @@ echo -e "${BLUE}[3/10]${NC} ${YELLOW}Настройка Xray сервиса...${
 sed -i 's/^User=nobody/User=root/' /etc/systemd/system/xray.service
 systemctl daemon-reload
 echo -e "${GREEN}✓ Сервис настроен${NC}\n"
+
+# [3.5/10] Загрузка расширенных geo-баз (Loyalsoldier)
+echo -e "${BLUE}[3.5/10]${NC} ${YELLOW}Загрузка расширенных geo-баз...${NC}"
+XRAY_DAT_DIR="/usr/local/share/xray"
+LOYALSOLDIER_URL="https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download"
+
+mkdir -p "$XRAY_DAT_DIR"
+
+# Download geoip.dat
+echo -e "${CYAN}  → Загрузка geoip.dat...${NC}"
+if curl -fsSL "${LOYALSOLDIER_URL}/geoip.dat" -o "${XRAY_DAT_DIR}/geoip.dat.tmp"; then
+  if [[ -s "${XRAY_DAT_DIR}/geoip.dat.tmp" ]]; then
+    mv "${XRAY_DAT_DIR}/geoip.dat.tmp" "${XRAY_DAT_DIR}/geoip.dat"
+    echo -e "${GREEN}  ✓ geoip.dat загружен${NC}"
+  else
+    rm -f "${XRAY_DAT_DIR}/geoip.dat.tmp"
+    echo -e "${YELLOW}  ⚠ geoip.dat пустой, используется стандартный${NC}"
+  fi
+else
+  echo -e "${YELLOW}  ⚠ Не удалось загрузить geoip.dat, используется стандартный${NC}"
+fi
+
+# Download geosite.dat
+echo -e "${CYAN}  → Загрузка geosite.dat...${NC}"
+if curl -fsSL "${LOYALSOLDIER_URL}/geosite.dat" -o "${XRAY_DAT_DIR}/geosite.dat.tmp"; then
+  if [[ -s "${XRAY_DAT_DIR}/geosite.dat.tmp" ]]; then
+    mv "${XRAY_DAT_DIR}/geosite.dat.tmp" "${XRAY_DAT_DIR}/geosite.dat"
+    echo -e "${GREEN}  ✓ geosite.dat загружен${NC}"
+  else
+    rm -f "${XRAY_DAT_DIR}/geosite.dat.tmp"
+    echo -e "${YELLOW}  ⚠ geosite.dat пустой, используется стандартный${NC}"
+  fi
+else
+  echo -e "${YELLOW}  ⚠ Не удалось загрузить geosite.dat, используется стандартный${NC}"
+fi
+
+echo -e "${GREEN}✓ Geo-базы настроены (Loyalsoldier enhanced)${NC}\n"
 
 # [4/10] Создание структуры директорий
 echo -e "${BLUE}[4/10]${NC} ${YELLOW}Создание структуры директорий...${NC}"
@@ -111,16 +148,7 @@ cat > "$CONFIG_FILE" << 'EOF'
   },
   "dns": {
     "servers": [
-      {
-        "address": "https://dns.google/dns-query",
-        "domains": [
-          "domain:discord.com",
-          "domain:discordapp.com",
-          "domain:discord.gg",
-          "domain:discord.media",
-          "domain:gateway.discord.gg"
-        ]
-      },
+      "https://dns.adguard-dns.com/dns-query",
       {
         "address": "1.1.1.1",
         "domains": ["geosite:geolocation-!cn"]
@@ -142,6 +170,17 @@ cat > "$CONFIG_FILE" << 'EOF'
         "type": "field",
         "domain": ["geosite:category-ads-all"],
         "outboundTag": "block"
+      },
+      {
+        "type": "field",
+        "network": "udp",
+        "port": 443,
+        "outboundTag": "block"
+      },
+      {
+        "type": "field",
+        "network": "tcp,udp",
+        "outboundTag": "direct"
       }
     ]
   },
@@ -293,6 +332,6 @@ echo -e "  ${GREEN}443/tcp${NC}  - HTTPS (основной)"
 echo -e "  ${GREEN}8443/tcp${NC} - Альтернативный порт"
 echo ""
 echo -e "${BLUE}GitHub:${NC} https://github.com/${GITHUB_USER}/${GITHUB_REPO}"
-echo -e "${BLUE}Версия:${NC} 1.3 EXP"
+echo -e "${BLUE}Версия:${NC} 1.3.2 EXP"
 echo ""
 echo -e "${MAGENTA}════════════════════════════════════════════════════════════${NC}"

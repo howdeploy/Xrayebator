@@ -30,13 +30,21 @@ fi
 # ═══════════════════════════════════════════════════════════
 UPDATE_SESSION_FILE="/tmp/.xrayebator_update_session"
 
+# Удаляем старые файлы сессии (старше 5 минут)
+if [[ -f "$UPDATE_SESSION_FILE" ]]; then
+  file_age=$(($(date +%s) - $(stat -c %Y "$UPDATE_SESSION_FILE" 2>/dev/null || echo 0)))
+  if [[ $file_age -gt 300 ]]; then
+    rm -f "$UPDATE_SESSION_FILE" "$UPDATE_SESSION_FILE.warned"
+  fi
+fi
+
 # Если скрипт запущен с аргументом (ветка передана при restart)
 if [[ -n "$1" ]]; then
   GITHUB_BRANCH="$1"
   echo -e "${CYAN}Продолжаю обновление после рестарта скрипта...${NC}"
   echo -e "${BLUE}Выбранная ветка: ${MAGENTA}$GITHUB_BRANCH${NC}\n"
   sleep 1
-# Если есть файл сессии (скрипт был перезапущен через exec)
+# Если есть файл сессии (скрипт был перезапущен через exec, в течение 5 минут)
 elif [[ -f "$UPDATE_SESSION_FILE" ]]; then
   GITHUB_BRANCH=$(cat "$UPDATE_SESSION_FILE")
   echo -e "${CYAN}Восстанавливаю прерванное обновление...${NC}"
@@ -265,6 +273,110 @@ curl -fsSL "${RAW_BASE_URL}/ascii_art.txt" -o /usr/local/etc/xray/data/ascii_art
 echo -e "${YELLOW}Проверка установленной версии...${NC}"
 VERSION_INFO=$(grep -m 1 "XRAYEBATOR v" /usr/local/bin/xrayebator | sed 's/.*XRAYEBATOR //' | sed 's/ .*//')
 echo -e "${GREEN}✓ Версия: ${VERSION_INFO}${NC}\n"
+
+# Обновление geo-баз (Loyalsoldier enhanced)
+echo -e "${YELLOW}Обновление geo-баз (Loyalsoldier)...${NC}"
+XRAY_DAT_DIR="/usr/local/share/xray"
+LOYALSOLDIER_URL="https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download"
+GEO_UPDATED=false
+
+mkdir -p "$XRAY_DAT_DIR"
+
+# Update geoip.dat
+if curl -fsSL --connect-timeout 10 "${LOYALSOLDIER_URL}/geoip.dat" -o "${XRAY_DAT_DIR}/geoip.dat.tmp" 2>/dev/null; then
+  if [[ -s "${XRAY_DAT_DIR}/geoip.dat.tmp" ]]; then
+    mv "${XRAY_DAT_DIR}/geoip.dat.tmp" "${XRAY_DAT_DIR}/geoip.dat"
+    echo -e "${GREEN}  ✓ geoip.dat обновлен${NC}"
+    GEO_UPDATED=true
+  else
+    rm -f "${XRAY_DAT_DIR}/geoip.dat.tmp"
+    echo -e "${YELLOW}  ⚠ geoip.dat: пустой ответ${NC}"
+  fi
+else
+  rm -f "${XRAY_DAT_DIR}/geoip.dat.tmp"
+  echo -e "${YELLOW}  ⚠ geoip.dat: недоступен (GitHub?)${NC}"
+fi
+
+# Update geosite.dat
+if curl -fsSL --connect-timeout 10 "${LOYALSOLDIER_URL}/geosite.dat" -o "${XRAY_DAT_DIR}/geosite.dat.tmp" 2>/dev/null; then
+  if [[ -s "${XRAY_DAT_DIR}/geosite.dat.tmp" ]]; then
+    mv "${XRAY_DAT_DIR}/geosite.dat.tmp" "${XRAY_DAT_DIR}/geosite.dat"
+    echo -e "${GREEN}  ✓ geosite.dat обновлен${NC}"
+    GEO_UPDATED=true
+  else
+    rm -f "${XRAY_DAT_DIR}/geosite.dat.tmp"
+    echo -e "${YELLOW}  ⚠ geosite.dat: пустой ответ${NC}"
+  fi
+else
+  rm -f "${XRAY_DAT_DIR}/geosite.dat.tmp"
+  echo -e "${YELLOW}  ⚠ geosite.dat: недоступен (GitHub?)${NC}"
+fi
+
+if [[ "$GEO_UPDATED" == "true" ]]; then
+  echo -e "${GREEN}✓ Geo-базы обновлены${NC}\n"
+else
+  echo -e "${YELLOW}⚠ Geo-базы не обновлены (используются существующие)${NC}\n"
+fi
+
+# ═══════════════════════════════════════════════════════════
+# МИГРАЦИЯ DNS (AdGuard для блокировки рекламы)
+# ═══════════════════════════════════════════════════════════
+CONFIG_FILE="/usr/local/etc/xray/config.json"
+if [[ -f "$CONFIG_FILE" ]]; then
+  echo -e "${YELLOW}Проверка настроек DNS...${NC}"
+
+  # Проверяем есть ли уже AdGuard DNS
+  if ! grep -q "dns.adguard-dns.com" "$CONFIG_FILE" 2>/dev/null; then
+    echo -e "${CYAN}  → Миграция на AdGuard DNS (блокировка рекламы)${NC}"
+
+    # Создаём новую конфигурацию DNS
+    NEW_DNS='{
+      "servers": [
+        "https://dns.adguard-dns.com/dns-query",
+        {
+          "address": "1.1.1.1",
+          "domains": ["geosite:geolocation-!cn"]
+        },
+        "localhost"
+      ],
+      "queryStrategy": "UseIPv4",
+      "disableCache": false
+    }'
+
+    # Обновляем DNS секцию в конфиге
+    if jq --argjson dns "$NEW_DNS" '.dns = $dns' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" 2>/dev/null; then
+      mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+      echo -e "${GREEN}  ✓ DNS обновлён на AdGuard (реклама будет блокироваться)${NC}"
+    else
+      rm -f "${CONFIG_FILE}.tmp"
+      echo -e "${YELLOW}  ⚠ Не удалось обновить DNS (конфиг без изменений)${NC}"
+    fi
+  else
+    echo -e "${GREEN}  ✓ AdGuard DNS уже настроен${NC}"
+  fi
+
+  # Миграция: блокировка QUIC (UDP/443) для эффективной блокировки рекламы
+  echo -e "${YELLOW}Проверка блокировки QUIC...${NC}"
+  if ! jq -e '.routing.rules[] | select(.network == "udp" and .port == 443)' "$CONFIG_FILE" > /dev/null 2>&1; then
+    echo -e "${CYAN}  → Добавление блокировки QUIC (UDP/443)${NC}"
+
+    # Добавляем правило блокировки QUIC перед последним правилом (direct)
+    QUIC_RULE='{"type": "field", "network": "udp", "port": 443, "outboundTag": "block"}'
+
+    if jq --argjson rule "$QUIC_RULE" '
+      .routing.rules = [.routing.rules[:-1][], $rule, .routing.rules[-1]]
+    ' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" 2>/dev/null; then
+      mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+      echo -e "${GREEN}  ✓ QUIC заблокирован (реклама не сможет обойти DNS)${NC}"
+    else
+      rm -f "${CONFIG_FILE}.tmp"
+      echo -e "${YELLOW}  ⚠ Не удалось добавить правило QUIC${NC}"
+    fi
+  else
+    echo -e "${GREEN}  ✓ QUIC уже заблокирован${NC}"
+  fi
+  echo ""
+fi
 
 # Перезапуск Xray (если работает)
 if systemctl is-active --quiet xray; then
