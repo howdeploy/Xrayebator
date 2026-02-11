@@ -1735,7 +1735,55 @@ install_adguard_home() {
     return
   fi
 
+  # Учётные данные администратора
+  echo -e "${CYAN}Создайте учётную запись администратора Web UI:${NC}"
+  echo ""
+  echo -n -e "${YELLOW}Логин: ${NC}"
+  read agh_user
+  if [[ -z "$agh_user" ]]; then
+    echo -e "${RED}✗ Логин не может быть пустым${NC}"
+    sleep 2
+    return
+  fi
+  echo -n -e "${YELLOW}Пароль: ${NC}"
+  read -s agh_pass
+  echo ""
+  if [[ -z "$agh_pass" ]]; then
+    echo -e "${RED}✗ Пароль не может быть пустым${NC}"
+    sleep 2
+    return
+  fi
+  echo -n -e "${YELLOW}Повторите пароль: ${NC}"
+  read -s agh_pass2
+  echo ""
+  if [[ "$agh_pass" != "$agh_pass2" ]]; then
+    echo -e "${RED}✗ Пароли не совпадают${NC}"
+    sleep 2
+    return
+  fi
+  echo ""
+
   echo -e "${CYAN}Шаг 1/7: Проверка зависимостей...${NC}"
+
+  # Установка htpasswd для генерации bcrypt хэша
+  if ! command -v htpasswd &>/dev/null; then
+    echo -e "${CYAN}  → Установка apache2-utils (для bcrypt)...${NC}"
+    apt-get install -y apache2-utils >/dev/null 2>&1
+  fi
+
+  # Генерация bcrypt хэша пароля
+  local agh_pass_hash
+  if command -v htpasswd &>/dev/null; then
+    agh_pass_hash=$(htpasswd -nbBC 10 "" "$agh_pass" 2>/dev/null | cut -d: -f2)
+  fi
+
+  if [[ -z "$agh_pass_hash" ]]; then
+    echo -e "${RED}✗ Не удалось сгенерировать хэш пароля${NC}"
+    echo -e "${YELLOW}Установите apache2-utils: apt install apache2-utils${NC}"
+    sleep 2
+    return
+  fi
+  echo -e "${GREEN}  ✓ Хэш пароля сгенерирован${NC}"
 
   # Шаг 2: Проверка порта 53
   echo -e "${CYAN}Шаг 2/7: Проверка порта 53...${NC}"
@@ -1790,7 +1838,7 @@ http:
   pprof:
     port: 6060
     enabled: false
-  address: 0.0.0.0:3000
+  address: 127.0.0.1:3000
   session_ttl: 720h
 users: []
 auth_attempts: 5
@@ -1965,8 +2013,18 @@ os:
 schema_version: 29
 AGHEOF
 
+  # Подстановка учётных данных (bcrypt хэш содержит $, sed ненадёжен)
+  python3 -c "
+import sys
+data = open('/opt/AdGuardHome/AdGuardHome.yaml').read()
+data = data.replace(
+    'users: []',
+    'users:\n  - name: ' + sys.argv[1] + '\n    password: ' + sys.argv[2])
+open('/opt/AdGuardHome/AdGuardHome.yaml', 'w').write(data)
+" "$agh_user" "$agh_pass_hash"
+
   chown root:root /opt/AdGuardHome/AdGuardHome.yaml
-  chmod 644 /opt/AdGuardHome/AdGuardHome.yaml
+  chmod 600 /opt/AdGuardHome/AdGuardHome.yaml
   echo -e "${GREEN}  ✓ Конфигурация записана${NC}"
 
   # Шаг 6: Интеграция с Xray DNS
@@ -1996,24 +2054,29 @@ AGHEOF
   systemctl enable AdGuardHome 2>/dev/null || true
   systemctl restart xray
 
-  # Открываем порт Web UI
-  open_firewall_port 3000
-
-  # Открываем DNS порт (UDP + TCP)
+  # Открываем DNS порт (UDP + TCP) — только для Xray (127.0.0.1)
   open_firewall_port 53
   open_firewall_port 53 udp
+  # Порт 3000 НЕ открываем — Web UI доступен только через SSH-туннель
 
   echo ""
   echo -e "${GREEN}╔═══════════════════════════════════════════════════════════╗${NC}"
   echo -e "${GREEN}║         ✓ ADGUARD HOME УСПЕШНО УСТАНОВЛЕН!              ║${NC}"
   echo -e "${GREEN}╚═══════════════════════════════════════════════════════════╝${NC}"
   echo ""
-  echo -e "${CYAN}Web UI:${NC} ${YELLOW}http://${SERVER_IP}:3000${NC}"
+  echo -e "${CYAN}Логин:${NC} ${GREEN}$agh_user${NC}"
+  echo -e "${CYAN}Фильтры:${NC} AdGuard DNS + AdAway (включены)"
+  echo -e "${CYAN}Xray DNS:${NC} 127.0.0.1 (AdGuard Home)"
   echo ""
-  echo -e "${MAGENTA}При первом входе создайте логин и пароль администратора.${NC}"
-  echo -e "${MAGENTA}Фильтры AdGuard DNS и AdAway уже включены.${NC}"
+  echo -e "${MAGENTA}╔═══════════════════════════════════════════════════════════╗${NC}"
+  echo -e "${MAGENTA}║  Web UI доступен ТОЛЬКО через SSH-туннель (безопасно):  ║${NC}"
+  echo -e "${MAGENTA}╚═══════════════════════════════════════════════════════════╝${NC}"
   echo ""
-  echo -e "${CYAN}Xray теперь резолвит DNS через AdGuard Home → реклама блокируется.${NC}"
+  echo -e "${YELLOW}  На вашем ПК выполните:${NC}"
+  echo ""
+  echo -e "${GREEN}  ssh -L 3000:127.0.0.1:3000 root@${SERVER_IP}${NC}"
+  echo ""
+  echo -e "${CYAN}  Затем откройте:${NC} ${YELLOW}http://localhost:3000${NC}"
   echo ""
   echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
   read
@@ -2115,11 +2178,10 @@ uninstall_adguard_home() {
   # Закрытие портов
   echo -e "${CYAN}Шаг 5/6: Закрытие портов...${NC}"
   if command -v ufw &>/dev/null; then
-    ufw delete allow 3000/tcp >/dev/null 2>&1
-    # Не закрываем порт 53 — может быть нужен системе
+    ufw delete allow 3000/tcp >/dev/null 2>&1  # На случай если открывали вручную
     ufw reload >/dev/null 2>&1
-    echo -e "${GREEN}  ✓ Порт 3000 закрыт${NC}"
   fi
+  echo -e "${GREEN}  ✓ Порты проверены${NC}"
 
   # Перезапуск Xray
   echo -e "${CYAN}Шаг 6/6: Перезапуск Xray...${NC}"
@@ -2202,9 +2264,11 @@ adguard_status() {
     fi
   fi
 
-  # Web UI URL
+  # Web UI доступ
   echo ""
-  echo -e "${CYAN}  Web UI:${NC} ${YELLOW}http://${SERVER_IP}:3000${NC}"
+  echo -e "${CYAN}  Web UI (через SSH-туннель):${NC}"
+  echo -e "${GREEN}    ssh -L 3000:127.0.0.1:3000 root@${SERVER_IP}${NC}"
+  echo -e "${CYAN}    Затем:${NC} ${YELLOW}http://localhost:3000${NC}"
 
   echo ""
   echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
