@@ -161,7 +161,7 @@ close_firewall_port() {
   fi
 
   # Never close default ports
-  local default_ports=(22 80 443 8443 2053 8080 2096 8880 9443)
+  local default_ports=(22 80 443 8443 2053 2083 2087 8080 2096 8880 9443)
   for dp in "${default_ports[@]}"; do
     [[ "$port" == "$dp" ]] && return 0
   done
@@ -348,33 +348,6 @@ migrate_xhttp_mode() {
 
 SERVER_IP=$(get_server_ip)
 
-# Инициализация DNS конфигурации (надежные DNS без рекламы)
-init_dns_config() {
-    local temp_config=$(mktemp)
-    local has_dns=$(jq -r '.dns // empty' "$CONFIG_FILE" 2>/dev/null)
-
-    if [[ -z "$has_dns" ]]; then
-        jq '. + {
-            "dns": {
-                "servers": [
-                    {"address": "1.1.1.1", "domains": [], "expectIPs": []},
-                    {"address": "1.0.0.1", "domains": [], "expectIPs": []},
-                    {"address": "8.8.8.8", "domains": [], "expectIPs": []},
-                    {"address": "9.9.9.9", "domains": [], "expectIPs": []}
-                ],
-                "queryStrategy": "UseIPv4"
-            }
-        }' "$CONFIG_FILE" > "$temp_config" 2>/dev/null
-
-        if [[ $? -eq 0 ]]; then
-            mv "$temp_config" "$CONFIG_FILE"
-            chown root:root "$CONFIG_FILE"
-            chmod 644 "$CONFIG_FILE"
-        else
-            rm -f "$temp_config"
-        fi
-    fi
-}
 
 # Показать ASCII арт
 show_ascii() {
@@ -465,8 +438,8 @@ main_menu() {
     echo -e "${CYAN} 5)${NC} Подменить Fingerprint профиля (браузер)"
     echo -e "${CYAN} 6)${NC} Изменить порт профиля"
     echo ""
-    echo -e "${MAGENTA} ЭКСПЕРИМЕНТАЛЬНЫЕ ФУНКЦИИ:${NC}"
-    echo -e "${CYAN} 7)${NC} Автоподбор рабочей связки (BETA)"
+    echo -e "${MAGENTA} ДОПОЛНИТЕЛЬНЫЕ ФУНКЦИИ:${NC}"
+    echo -e "${CYAN} 7)${NC} AdGuard Home (блокировка рекламы)"
     echo ""
     echo -e "${RED} 0)${NC} Выход"
     echo ""
@@ -480,7 +453,7 @@ main_menu() {
       4) change_sni_menu ;;
       5) change_fingerprint_menu ;;
       6) change_port_menu ;;
-      7) auto_profile_setup_menu ;;
+      7) adguard_home_menu ;;
       0) exit 0 ;;
       *) echo -e "${RED}Неверный выбор${NC}"; sleep 1 ;;
     esac
@@ -518,28 +491,33 @@ create_profile_menu() {
   echo -e "${BLUE}║              ВЫБЕРИТЕ ТИП МАРШРУТА                        ║${NC}"
   echo -e "${BLUE}╚════════════════════════════════════════════════════════════╝${NC}"
   echo ""
-  echo -e "${CYAN} 1)${NC} VLESS + TCP + Reality + Vision ${GREEN}(порт 443)${NC}"
-  echo -e "    ${GREEN}✓${NC} Самый стабильный и быстрый"
-  echo -e "    ${GREEN}✓${NC} Маскируется под обычный HTTPS трафик"
-  echo -e "    ${GREEN}✓${NC} Рекомендуется для повседневного использования"
+  echo -e "${CYAN} 1)${NC} VLESS + TCP + Reality + Mux ${GREEN}(порт 443)${NC} ${MAGENTA}— РЕКОМЕНДУЕТСЯ${NC}"
+  echo -e "    ${GREEN}✓${NC} Обходит блокировку Vision по паттерну множественных TLS"
+  echo -e "    ${GREEN}✓${NC} Мультиплексирование на стороне клиента"
+  echo -e "    ${GREEN}✓${NC} Безопасен на мобильных сетях (без >15KB детекции)"
   echo ""
-  echo -e "${CYAN} 2)${NC} VLESS + TCP + Reality + Vision + uTLS ${MAGENTA}(порт 8443, Firefox)${NC}"
+  echo -e "${CYAN} 2)${NC} VLESS + TCP + Reality + Vision ${YELLOW}(порт 8443)${NC}"
+  echo -e "    ${GREEN}✓${NC} Стабильный и быстрый"
+  echo -e "    ${GREEN}✓${NC} Маскируется под обычный HTTPS трафик"
+  echo -e "    ${YELLOW}⚠${NC} Vision на 443 детектируется ТСПУ (декабрь 2025+)"
+  echo ""
+  echo -e "${CYAN} 3)${NC} VLESS + TCP + Reality + Vision + uTLS ${MAGENTA}(порт 8443, Firefox)${NC}"
   echo -e "    ${GREEN}✓${NC} Трафик маскируется под Firefox HTTPS"
   echo -e "    ${GREEN}✓${NC} Решает проблему TLS fingerprint"
   echo -e "    ${GREEN}✓${NC} TCP BBR congestion control"
   echo -e "    ${BLUE}ℹ${NC} Идеален для обхода продвинутой DPI фильтрации"
   echo ""
-  echo -e "${CYAN} 3)${NC} VLESS + gRPC + Reality ${YELLOW}(порт 2053)${NC}"
+  echo -e "${CYAN} 4)${NC} VLESS + gRPC + Reality ${YELLOW}(порт 2053)${NC}"
   echo -e "    ${YELLOW}⚠${NC} Требует SNI с поддержкой HTTP/2 (google.com, cloudflare.com)"
   echo -e "    ${YELLOW}⚠${NC} РУ-домены (госуслуги, сбер) часто НЕ работают!"
   echo -e "    ${YELLOW}⚠${NC} Проблемы совместимости с sing-box"
   echo ""
-  echo -e "${CYAN} 4)${NC} VLESS + XHTTP + Reality ${GREEN}(порт 9443)${NC}"
+  echo -e "${CYAN} 5)${NC} VLESS + XHTTP + Reality ${GREEN}(порт 9443)${NC}"
   echo -e "    ${GREEN}✓${NC} Современный протокол с низкой задержкой"
-  echo -e "    ${GREEN}✓${NC} Минимизирует обнаружение DPI"
+  echo -e "    ${GREEN}✓${NC} Padding + xmux для минимизации обнаружения"
   echo -e "    ${YELLOW}⚠${NC} Требует клиенты с поддержкой XHTTP"
   echo ""
-  echo -e "${CYAN} 5)${NC} VLESS + TCP + Reality + Vision + XUDP ${GREEN}(порт 443, anti-Tele2)${NC}"
+  echo -e "${CYAN} 6)${NC} VLESS + TCP + Reality + Vision + XUDP ${GREEN}(порт 443, anti-Tele2)${NC}"
   echo -e "    ${GREEN}✓${NC} Обходит жесткие блокировки Tele2"
   echo -e "    ${GREEN}✓${NC} xtls-rprx-vision + xudp"
   echo -e "    ${GREEN}✓${NC} SNI: api-maps.yandex.ru по умолчанию"
@@ -551,11 +529,12 @@ create_profile_menu() {
   echo -n -e "${YELLOW}Ваш выбор: ${NC}"
   read route_choice
   case $route_choice in
-    1) create_profile "$profile_name" "tcp" "443" "chrome" ;;
-    2) create_profile "$profile_name" "tcp-utls" "8443" "firefox" ;;
-    3) create_profile "$profile_name" "grpc" "2053" "chrome" ;;
-    4) create_profile "$profile_name" "xhttp" "9443" "chrome" ;;
-    5) create_profile "$profile_name" "tcp-xudp" "443" "chrome" "api-maps.yandex.ru" ;;
+    1) create_profile "$profile_name" "tcp-mux" "443" "chrome" ;;
+    2) create_profile "$profile_name" "tcp" "8443" "chrome" ;;
+    3) create_profile "$profile_name" "tcp-utls" "8443" "firefox" ;;
+    4) create_profile "$profile_name" "grpc" "2053" "chrome" ;;
+    5) create_profile "$profile_name" "xhttp" "9443" "chrome" ;;
+    6) create_profile "$profile_name" "tcp-xudp" "443" "chrome" "api-maps.yandex.ru" ;;
     0) return ;;
     *) echo -e "${RED}Неверный выбор${NC}"; sleep 2; return ;;
   esac
@@ -629,6 +608,23 @@ add_inbound() {
 
   local existing_tag=$(jq -r --argjson port "$port" '.inbounds[] | select(.port == $port) | .tag' "$CONFIG_FILE" 2>/dev/null)
   if [[ -n "$existing_tag" ]]; then
+    # Check transport compatibility
+    local existing_transport=$(jq -r --argjson port "$port" \
+      '.inbounds[] | select(.port == $port) | .streamSettings.network' \
+      "$CONFIG_FILE" 2>/dev/null)
+
+    local expected_network="$transport"
+    case "$transport" in
+      tcp|tcp-utls|tcp-xudp|tcp-mux) expected_network="tcp" ;;
+    esac
+
+    if [[ -n "$existing_transport" ]] && [[ "$expected_network" != "$existing_transport" ]]; then
+      echo ""
+      echo -e "${RED}✗ Порт $port уже используется с транспортом '$existing_transport' (несовместимо с '$transport')${NC}"
+      echo -e "${YELLOW}Используйте другой порт для транспорта '$transport'${NC}"
+      return 1
+    fi
+
     # Check existing inbound's SNI
     local existing_sni=$(jq -r --argjson port "$port" \
       '.inbounds[] | select(.port == $port) | .streamSettings.realitySettings.serverNames[0]' \
@@ -674,16 +670,11 @@ add_inbound() {
 
     echo -e "${CYAN} → Добавление клиента в существующий inbound на порту $port${NC}"
     local temp_config=$(mktemp)
-    # Определяем flow по типу транспорта: TCP = xtls-rprx-vision, gRPC/XHTTP = пустой
+    # Определяем flow из первого существующего клиента (tcp-mux = пустой, tcp+vision = xtls-rprx-vision)
     jq --arg uuid "$uuid" --argjson port "$port" '
       (.inbounds[] | select(.port == $port) | .settings.clients) += [{
         "id": $uuid,
-        "flow": (
-          if (.inbounds[] | select(.port == $port) | .streamSettings.network) == "tcp"
-          then "xtls-rprx-vision"
-          else ""
-          end
-        )
+        "flow": (.inbounds[] | select(.port == $port) | .settings.clients[0].flow)
       }]
     ' "$CONFIG_FILE" > "$temp_config"
     mv "$temp_config" "$CONFIG_FILE"
@@ -695,6 +686,35 @@ add_inbound() {
   echo -e "${CYAN} → Создание нового inbound на порту $port${NC}"
   local inbound=""
   case $transport in
+    tcp-mux)
+      inbound=$(cat << TCPMUXEOF
+{
+  "listen": "0.0.0.0",
+  "port": $port,
+  "protocol": "vless",
+  "settings": {
+    "clients": [{"id": "$uuid", "flow": ""}],
+    "decryption": "none"
+  },
+  "streamSettings": {
+    "network": "tcp",
+    "security": "reality",
+    "realitySettings": {
+      "show": false,
+      "dest": "$sni:443",
+      "xver": 0,
+      "serverNames": ["$sni"],
+      "privateKey": "$PRIVATE_KEY",
+      "shortIds": [""],
+      "fingerprint": "$fingerprint"
+    }
+  },
+  "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]},
+  "tag": "inbound-$port"
+}
+TCPMUXEOF
+)
+      ;;
     tcp|tcp-utls|tcp-xudp)
       inbound=$(cat << TCPEOF
 {
@@ -771,7 +791,16 @@ GRPCEOF
       "mode": "auto",
       "path": "/xhttp",
       "host": "$sni",
-      "extra": {}
+      "extra": {
+        "xPaddingBytes": "100-1000",
+        "xmux": {
+          "maxConcurrency": "16-32",
+          "cMaxLifetimeMs": "10000-30000"
+        },
+        "noSSEHeader": true,
+        "scMaxEachPostBytes": "1000000-2000000",
+        "scMinPostsIntervalMs": "10-50"
+      }
     },
     "realitySettings": {
       "show": false,
@@ -927,9 +956,13 @@ generate_connection() {
   echo -e "${GREEN}═══════════════════════════════════════════════${NC}\n"
   local vless_link=""
   case $transport in
-    tcp|tcp-utls)
+    tcp|tcp-utls|tcp-xudp)
       # TCP Reality + Vision
       vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=&type=tcp&headerType=none#${profile_name}"
+      ;;
+    tcp-mux)
+      # TCP Reality + Mux (без Vision, мультиплексирование на клиенте)
+      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=&type=tcp&headerType=none#${profile_name}"
       ;;
     grpc)
       # gRPC Reality
@@ -952,8 +985,12 @@ generate_connection() {
   echo -e "${CYAN}Порт:${NC} $port"
   echo -e "${CYAN}UUID:${NC} $uuid"
   case $transport in
-    tcp|tcp-utls)
+    tcp|tcp-utls|tcp-xudp)
       echo -e "${CYAN}Flow:${NC} xtls-rprx-vision"
+      ;;
+    tcp-mux)
+      echo -e "${CYAN}Flow:${NC} (пустой)"
+      echo -e "${CYAN}Mux:${NC} включить на клиенте (sing-box: multiplex, v2rayN: mux)"
       ;;
     grpc|xhttp)
       echo -e "${CYAN}Flow:${NC} (пустой)"
@@ -966,7 +1003,7 @@ generate_connection() {
   echo -e "${CYAN}Fingerprint:${NC} $fingerprint"
   echo -e "${CYAN}PublicKey:${NC} $clean_public_key"
   echo -e "${CYAN}ShortID:${NC} (пустой)"
-  if [[ "$transport" == "tcp" ]] || [[ "$transport" == "tcp-utls" ]] || [[ "$transport" == "tcp-xudp" ]]; then
+  if [[ "$transport" == "tcp" ]] || [[ "$transport" == "tcp-utls" ]] || [[ "$transport" == "tcp-xudp" ]] || [[ "$transport" == "tcp-mux" ]]; then
     echo -e "${CYAN}SpiderX:${NC} /"
   elif [[ "$transport" == "grpc" ]]; then
     echo -e "${CYAN}serviceName:${NC} grpc"
@@ -1509,9 +1546,11 @@ change_port_menu() {
     target_inbound_transport=$(jq -r --argjson port "$new_port" '.inbounds[] | select(.port == $port) | .streamSettings.network' "$CONFIG_FILE")
     target_inbound_sni=$(jq -r --argjson port "$new_port" '.inbounds[] | select(.port == $port) | .streamSettings.realitySettings.serverNames[0]' "$CONFIG_FILE")
 
-    # Normalize transport for comparison (tcp-utls uses tcp network)
+    # Normalize transport for comparison (tcp-utls, tcp-xudp, tcp-mux use tcp network)
     local profile_network="$profile_transport"
-    [[ "$profile_transport" == "tcp-utls" ]] && profile_network="tcp"
+    case "$profile_transport" in
+      tcp|tcp-utls|tcp-xudp|tcp-mux) profile_network="tcp" ;;
+    esac
 
     if [[ "$profile_network" != "$target_inbound_transport" ]]; then
       echo -e "${RED}╔═══════════════════════════════════════════════════════════╗${NC}"
@@ -1633,633 +1672,541 @@ change_port_menu() {
   read
 }
 
-# ════════════════════════════════════════════════════════════
-# ФУНКЦИИ ДЛЯ АВТОПОДБОРА
-# ════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════
+# ADGUARD HOME
+# ═══════════════════════════════════════════════════════════
 
-get_sni_by_category() {
-  local category=$1
-  local limit=${2:-5}
-  local count=0
-  local result=()
+# Подменю AdGuard Home
+adguard_home_menu() {
+  while true; do
+    show_ascii
+    echo -e "${BLUE}╔════════════════════════════════════════╗${NC}"
+    echo -e "${BLUE}║      ADGUARD HOME — БЛОКИРОВКА РЕКЛАМЫ ║${NC}"
+    echo -e "${BLUE}╚════════════════════════════════════════╝${NC}"
+    echo ""
 
-  while IFS='|' read -r domain cat priority || [[ -n "$domain" ]]; do
-    [[ "$domain" =~ ^#.*$ ]] && continue
-    [[ -z "$domain" ]] && continue
-
-    if [[ "$cat" == "$category" ]]; then
-      result+=("$domain")
-      ((count++))
-      [[ $count -ge $limit ]] && break
+    # Быстрый статус
+    if [[ -f /opt/AdGuardHome/AdGuardHome ]]; then
+      local agh_status=$(systemctl is-active AdGuardHome 2>/dev/null || echo "inactive")
+      if [[ "$agh_status" == "active" ]]; then
+        echo -e "  ${GREEN}● AdGuard Home работает${NC}"
+      else
+        echo -e "  ${RED}● AdGuard Home остановлен${NC}"
+      fi
+    else
+      echo -e "  ${YELLOW}○ AdGuard Home не установлен${NC}"
     fi
-  done < "$SNI_LIST"
+    echo ""
 
-  echo "${result[@]}"
+    echo -e "${CYAN} 1)${NC} Установить AdGuard Home"
+    echo -e "${CYAN} 2)${NC} Удалить AdGuard Home"
+    echo -e "${CYAN} 3)${NC} Показать статус"
+    echo -e "${RED} 0)${NC} Назад"
+    echo ""
+    echo -n -e "${YELLOW}Выберите действие: ${NC}"
+    read agh_choice
+    case $agh_choice in
+      1) install_adguard_home ;;
+      2) uninstall_adguard_home ;;
+      3) adguard_status ;;
+      0) return ;;
+      *) echo -e "${RED}Неверный выбор${NC}"; sleep 1 ;;
+    esac
+  done
 }
 
-setup_test_socks5() {
-  local temp_config=$(mktemp)
-  local has_test_socks=$(jq -r '.inbounds[] | select(.tag == "test-socks") | .tag' "$CONFIG_FILE" 2>/dev/null)
+# Установка AdGuard Home
+install_adguard_home() {
+  show_ascii
+  echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
+  echo -e "${BLUE}       УСТАНОВКА ADGUARD HOME                 ${NC}"
+  echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
+  echo ""
 
-  if [[ -z "$has_test_socks" ]]; then
-    jq '.inbounds += [{
-      "listen": "127.0.0.1",
-      "port": 10808,
-      "protocol": "socks",
-      "tag": "test-socks",
-      "settings": {
-        "auth": "noauth",
-        "udp": false
-      }
-    }]' "$CONFIG_FILE" > "$temp_config"
-    mv "$temp_config" "$CONFIG_FILE"
-  fi
-}
-
-remove_test_socks() {
-  local temp_config=$(mktemp)
-  jq 'del(.inbounds[] | select(.tag == "test-socks"))' "$CONFIG_FILE" > "$temp_config"
-  mv "$temp_config" "$CONFIG_FILE"
-}
-
-add_test_inbound() {
-  local uuid=$1
-  local transport=$2
-  local port=$3
-  local sni=$4
-  local fingerprint=${5:-"chrome"}
-
-  echo -e "${CYAN} → Создание тестового inbound на порту $port${NC}"
-
-  # Очищаем старый тестовый inbound если есть
-  local temp_config=$(mktemp)
-  jq 'del(.inbounds[] | select(.tag == "test-inbound"))' "$CONFIG_FILE" > "$temp_config"
-  mv "$temp_config" "$CONFIG_FILE"
-
-  local inbound=""
-  case $transport in
-    tcp|tcp-utls|tcp-xudp)
-      inbound=$(jq -n \
-        --arg uuid "$uuid" \
-        --argjson port "$port" \
-        --arg sni "$sni" \
-        --arg privkey "$PRIVATE_KEY" \
-        --arg fp "$fingerprint" \
-        '{
-          "listen": "0.0.0.0",
-          "port": $port,
-          "protocol": "vless",
-          "settings": {
-            "clients": [{"id": $uuid, "flow": "xtls-rprx-vision"}],
-            "decryption": "none"
-          },
-          "streamSettings": {
-            "network": "tcp",
-            "security": "reality",
-            "realitySettings": {
-              "show": false,
-              "dest": ($sni + ":443"),
-              "xver": 0,
-              "serverNames": [$sni],
-              "privateKey": $privkey,
-              "shortIds": [""],
-              "fingerprint": $fp
-            }
-          },
-          "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]},
-          "tag": "test-inbound"
-        }')
-      ;;
-    grpc)
-      inbound=$(jq -n \
-        --arg uuid "$uuid" \
-        --argjson port "$port" \
-        --arg sni "$sni" \
-        --arg privkey "$PRIVATE_KEY" \
-        --arg fp "$fingerprint" \
-        '{
-          "listen": "0.0.0.0",
-          "port": $port,
-          "protocol": "vless",
-          "settings": {
-            "clients": [{"id": $uuid, "flow": ""}],
-            "decryption": "none"
-          },
-          "streamSettings": {
-            "network": "grpc",
-            "security": "reality",
-            "grpcSettings": {"serviceName": "grpc"},
-            "realitySettings": {
-              "show": false,
-              "dest": ($sni + ":443"),
-              "xver": 0,
-              "serverNames": [$sni],
-              "privateKey": $privkey,
-              "shortIds": [""],
-              "fingerprint": $fp
-            }
-          },
-          "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]},
-          "tag": "test-inbound"
-        }')
-      ;;
-    xhttp)
-      inbound=$(jq -n \
-        --arg uuid "$uuid" \
-        --argjson port "$port" \
-        --arg sni "$sni" \
-        --arg privkey "$PRIVATE_KEY" \
-        --arg fp "$fingerprint" \
-        '{
-          "listen": "0.0.0.0",
-          "port": $port,
-          "protocol": "vless",
-          "settings": {
-            "clients": [{"id": $uuid, "flow": ""}],
-            "decryption": "none"
-          },
-          "streamSettings": {
-            "network": "xhttp",
-            "security": "reality",
-            "xhttpSettings": {
-              "mode": "auto",
-              "path": "/xhttp",
-              "host": $sni,
-              "extra": {}
-            },
-            "realitySettings": {
-              "show": false,
-              "dest": ($sni + ":443"),
-              "xver": 0,
-              "serverNames": [$sni],
-              "privateKey": $privkey,
-              "shortIds": [""],
-              "fingerprint": $fp
-            }
-          },
-          "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]},
-          "tag": "test-inbound"
-        }')
-      ;;
-  esac
-
-  if ! echo "$inbound" | jq empty 2>/dev/null; then
-    echo -e "${RED}  ✗ Невалидный JSON inbound${NC}"
-    return 1
+  # Шаг 1: Проверка — уже установлен?
+  if [[ -f /opt/AdGuardHome/AdGuardHome ]]; then
+    echo -e "${YELLOW}⚠ AdGuard Home уже установлен${NC}"
+    echo ""
+    local agh_ver=$(/opt/AdGuardHome/AdGuardHome --version 2>/dev/null | head -1)
+    [[ -n "$agh_ver" ]] && echo -e "${CYAN}Версия: ${GREEN}$agh_ver${NC}"
+    echo ""
+    echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
+    read
+    return
   fi
 
-  temp_config=$(mktemp)
-  echo "$inbound" | jq --slurp '.[0]' > /tmp/test_inbound.json
+  echo -e "${CYAN}Шаг 1/7: Проверка зависимостей...${NC}"
 
-  if ! jq --slurpfile new_inbound /tmp/test_inbound.json '.inbounds += $new_inbound' "$CONFIG_FILE" > "$temp_config"; then
-    echo -e "${RED}  ✗ Ошибка добавления inbound${NC}"
-    rm -f "$temp_config" /tmp/test_inbound.json
-    return 1
-  fi
-
-  mv "$temp_config" "$CONFIG_FILE"
-  rm -f /tmp/test_inbound.json
-  chown root:root "$CONFIG_FILE"
-  chmod 644 "$CONFIG_FILE"
-}
-
-
-create_test_profile() {
-  local sni=$1
-  local transport=$2
-  local port=$3
-  local fp=$4
-  local uuid=$(uuidgen)
-
-  # Сохраняем профиль для тестирования
-  cat > "$PROFILES_DIR/_test.json" << EOF
-{
-  "name": "_test",
-  "uuid": "$uuid",
-  "transport": "$transport",
-  "port": "$port",
-  "fingerprint": "$fp",
-  "sni": "$sni",
-  "created": "$(date +%Y-%m-%d\ %H:%M:%S)"
-}
-EOF
-
-  # Возвращаем UUID для использования в update_test_inbound_client
-  echo "$uuid"
-}
-
-
-cleanup_test_profile() {
-  rm -f "$PROFILES_DIR/_test.json" 2>/dev/null
-
-  local temp_config=$(mktemp)
-  jq 'del(.inbounds[] | select(.tag == "test-inbound"))' "$CONFIG_FILE" > "$temp_config"
-  mv "$temp_config" "$CONFIG_FILE"
-  chown root:root "$CONFIG_FILE"
-  chmod 644 "$CONFIG_FILE"
-}
-
-update_test_inbound_client() {
-  local new_uuid=$1
-  local new_sni=$2
-  local fingerprint=${3:-"chrome"}
-
-  echo -e "${CYAN}  → Обновление тестового клиента (UUID и SNI)${NC}"
-
-  # Detect transport type
-  local transport=$(jq -r '.inbounds[] | select(.tag == "test-inbound") | .streamSettings.network' "$CONFIG_FILE")
-
-  local temp_config=$(mktemp)
-
-  # Обновляем UUID клиента, SNI и fingerprint в существующем test-inbound
-  jq --arg uuid "$new_uuid" \
-     --arg sni "$new_sni" \
-     --arg fp "$fingerprint" '
-    (.inbounds[] | select(.tag == "test-inbound") | .settings.clients[0].id) |= $uuid |
-    (.inbounds[] | select(.tag == "test-inbound") | .streamSettings.realitySettings.dest) |= ($sni + ":443") |
-    (.inbounds[] | select(.tag == "test-inbound") | .streamSettings.realitySettings.serverNames) |= [$sni] |
-    (.inbounds[] | select(.tag == "test-inbound") | .streamSettings.realitySettings.fingerprint) |= $fp
-  ' "$CONFIG_FILE" > "$temp_config"
-
-  if [[ $? -ne 0 ]]; then
-    echo -e "${RED}  ✗ Ошибка обновления клиента${NC}"
-    rm -f "$temp_config"
-    return 1
-  fi
-
-  mv "$temp_config" "$CONFIG_FILE"
-
-  # Transport-specific update for XHTTP
-  if [[ "$transport" == "xhttp" ]]; then
-    temp_config=$(mktemp)
-    jq --arg sni "$new_sni" '
-      (.inbounds[] | select(.tag == "test-inbound") | .streamSettings.xhttpSettings.host) |= $sni
-    ' "$CONFIG_FILE" > "$temp_config"
-    mv "$temp_config" "$CONFIG_FILE"
-    echo -e "${CYAN}  → XHTTP: обновлен host → $new_sni${NC}"
-  fi
-
-  chown root:root "$CONFIG_FILE"
-  chmod 644 "$CONFIG_FILE"
-}
-
-
-test_connection_full() {
-  local sni=$1
-  local transport=$2
-  local port=$3
-  local fp=$4
-
-  # Создаем профиль и получаем UUID
-  local new_uuid=$(create_test_profile "$sni" "$transport" "$port" "$fp")
-
-  # Обновляем только клиента в существующем inbound (не пересоздаем!)
-  update_test_inbound_client "$new_uuid" "$sni" "$fp"
-
-  echo -e "${CYAN}  → Проверка конфигурации...${NC}"
-  if ! /usr/local/bin/xray -test -config "$CONFIG_FILE" >/dev/null 2>&1; then
-    echo -e "${RED}  ✗ Конфигурация невалидна${NC}"
-    /usr/local/bin/xray -test -config "$CONFIG_FILE" 2>&1 | tail -3
-    return 1
-  fi
-
-  echo -e "${CYAN}  → Перезагрузка конфига Xray...${NC}"
-  # Используем reload вместо restart для применения изменений БЕЗ разрыва соединений
-  if ! systemctl reload xray 2>/dev/null; then
-    # Если reload не поддерживается, используем restart
-    systemctl restart xray >/dev/null 2>&1
-    sleep 3
+  # Шаг 2: Проверка порта 53
+  echo -e "${CYAN}Шаг 2/7: Проверка порта 53...${NC}"
+  local port53_busy=$(ss -tuln 2>/dev/null | grep -E ':53\s' | head -1)
+  if [[ -n "$port53_busy" ]]; then
+    echo -e "${YELLOW}  ⚠ Порт 53 занят — отключаю systemd-resolved stub listener...${NC}"
+    mkdir -p /etc/systemd/resolved.conf.d
+    cat > /etc/systemd/resolved.conf.d/adguardhome.conf << 'RESOLVEDEOF'
+[Resolve]
+DNS=127.0.0.1
+DNSStubListener=no
+RESOLVEDEOF
+    # Обновляем symlink resolv.conf
+    if [[ -L /etc/resolv.conf ]]; then
+      ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf 2>/dev/null || true
+    fi
+    systemctl restart systemd-resolved 2>/dev/null || true
+    sleep 2
+    echo -e "${GREEN}  ✓ systemd-resolved stub listener отключен${NC}"
   else
-    sleep 1
+    echo -e "${GREEN}  ✓ Порт 53 свободен${NC}"
   fi
 
-  if ! systemctl is-active --quiet xray; then
-    echo -e "${RED}  ✗ Xray не активен${NC}"
-    return 1
+  # Шаг 3: Скачивание установщика
+  echo -e "${CYAN}Шаг 3/7: Скачивание AdGuard Home...${NC}"
+  if ! curl -fsSL https://raw.githubusercontent.com/AdguardTeam/AdGuardHome/master/scripts/install.sh -o /tmp/agh_install.sh; then
+    echo -e "${RED}✗ Ошибка скачивания установщика${NC}"
+    echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
+    read
+    return
+  fi
+  echo -e "${GREEN}  ✓ Установщик скачан${NC}"
+
+  # Шаг 4: Запуск установщика
+  echo -e "${CYAN}Шаг 4/7: Установка...${NC}"
+  if ! sh /tmp/agh_install.sh -v; then
+    echo -e "${RED}✗ Ошибка установки AdGuard Home${NC}"
+    rm -f /tmp/agh_install.sh
+    echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
+    read
+    return
+  fi
+  rm -f /tmp/agh_install.sh
+  echo -e "${GREEN}  ✓ AdGuard Home установлен${NC}"
+
+  # Шаг 5: Конфигурация
+  echo -e "${CYAN}Шаг 5/7: Запись конфигурации...${NC}"
+  systemctl stop AdGuardHome 2>/dev/null || true
+
+  cat > /opt/AdGuardHome/AdGuardHome.yaml << 'AGHEOF'
+http:
+  pprof:
+    port: 6060
+    enabled: false
+  address: 0.0.0.0:3000
+  session_ttl: 720h
+users: []
+auth_attempts: 5
+block_auth_min: 15
+http_proxy: ""
+language: ru
+theme: auto
+dns:
+  bind_hosts:
+    - 0.0.0.0
+  port: 53
+  anonymize_client_ip: false
+  ratelimit: 0
+  ratelimit_subnet_len_ipv4: 24
+  ratelimit_subnet_len_ipv6: 56
+  ratelimit_whitelist: []
+  refuse_any: true
+  upstream_dns:
+    - 1.1.1.1
+    - 8.8.8.8
+  upstream_dns_file: ""
+  bootstrap_dns:
+    - 9.9.9.10
+    - 149.112.112.10
+    - 2620:fe::10
+    - 2620:fe::fe:10
+  fallback_dns: []
+  upstream_mode: load_balance
+  fastest_timeout: 1s
+  allowed_clients: []
+  disallowed_clients: []
+  blocked_hosts:
+    - version.bind
+    - id.server
+    - hostname.bind
+  trusted_proxies:
+    - 127.0.0.0/8
+    - ::1/128
+  cache_size: 4194304
+  cache_ttl_min: 0
+  cache_ttl_max: 0
+  cache_optimistic: true
+  bogus_nxdomain: []
+  aaaa_disabled: false
+  enable_dnssec: false
+  edns_client_subnet:
+    custom_ip: ""
+    enabled: false
+    use_custom: false
+  max_goroutines: 300
+  handle_ddr: true
+  ipset: []
+  ipset_file: ""
+  bootstrap_prefer_ipv6: false
+  upstream_timeout: 10s
+  private_networks: []
+  use_private_ptr_resolvers: true
+  local_ptr_upstreams: []
+  use_dns64: false
+  dns64_prefixes: []
+  serve_http3: false
+  use_http3_upstreams: false
+  serve_plain_dns: true
+  hostsfile_enabled: true
+tls:
+  enabled: false
+  server_name: ""
+  force_https: false
+  port_https: 443
+  port_dns_over_tls: 853
+  port_dns_over_quic: 784
+  port_dnscrypt: 0
+  dnscrypt_config_file: ""
+  allow_unencrypted_doh: false
+  certificate_chain: ""
+  private_key: ""
+  certificate_path: ""
+  private_key_path: ""
+  strict_sni_check: false
+querylog:
+  dir_path: ""
+  ignored: []
+  interval: 24h
+  size_memory: 1000
+  enabled: true
+  file_enabled: true
+statistics:
+  dir_path: ""
+  ignored: []
+  interval: 24h
+  enabled: true
+filters:
+  - enabled: true
+    url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt
+    name: AdGuard DNS filter
+    id: 1
+  - enabled: true
+    url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_2.txt
+    name: AdAway Default Blocklist
+    id: 2
+whitelist_filters: []
+user_rules: []
+dhcp:
+  enabled: false
+  interface_name: ""
+  local_domain_name: lan
+  dhcpv4:
+    gateway_ip: ""
+    subnet_mask: ""
+    range_start: ""
+    range_end: ""
+    lease_duration: 86400
+    icmp_timeout_msec: 1000
+    options: []
+  dhcpv6:
+    range_start: ""
+    lease_duration: 86400
+    ra_slaac_only: false
+    ra_allow_slaac: false
+filtering:
+  blocking_ipv4: ""
+  blocking_ipv6: ""
+  blocked_services:
+    schedule:
+      time_zone: Local
+    ids: []
+  protection_disabled_until: null
+  safe_search:
+    enabled: false
+    bing: true
+    duckduckgo: true
+    ecosia: true
+    google: true
+    pixabay: true
+    yandex: true
+    youtube: true
+  blocking_mode: default
+  parental_block_host: family-block.dns.adguard.com
+  safebrowsing_block_host: standard-block.dns.adguard.com
+  rewrites: []
+  safebrowsing_cache_size: 1048576
+  safesearch_cache_size: 1048576
+  parental_cache_size: 1048576
+  cache_time: 30
+  filters_update_interval: 24
+  blocked_response_ttl: 10
+  filtering_enabled: true
+  parental_enabled: false
+  safebrowsing_enabled: false
+  protection_enabled: true
+clients:
+  runtime_sources:
+    whois: true
+    arp: true
+    rdns: true
+    dhcp: true
+    hosts: true
+  persistent: []
+log:
+  enabled: true
+  file: ""
+  max_backups: 0
+  max_size: 100
+  max_age: 3
+  compress: false
+  local_time: false
+  verbose: false
+os:
+  group: ""
+  user: ""
+  rlimit_nofile: 0
+schema_version: 29
+AGHEOF
+
+  chown root:root /opt/AdGuardHome/AdGuardHome.yaml
+  chmod 644 /opt/AdGuardHome/AdGuardHome.yaml
+  echo -e "${GREEN}  ✓ Конфигурация записана${NC}"
+
+  # Шаг 6: Интеграция с Xray DNS
+  echo -e "${CYAN}Шаг 6/7: Интеграция с Xray...${NC}"
+  if [[ -f "$CONFIG_FILE" ]]; then
+    local temp_config=$(mktemp)
+    jq '.dns = {
+      "servers": ["127.0.0.1"],
+      "queryStrategy": "UseIPv4",
+      "disableCache": false
+    }' "$CONFIG_FILE" > "$temp_config"
+
+    if [[ $? -eq 0 ]] && [[ -s "$temp_config" ]]; then
+      mv "$temp_config" "$CONFIG_FILE"
+      chown root:root "$CONFIG_FILE"
+      chmod 644 "$CONFIG_FILE"
+      echo -e "${GREEN}  ✓ Xray DNS → 127.0.0.1 (AdGuard Home)${NC}"
+    else
+      rm -f "$temp_config"
+      echo -e "${RED}  ✗ Ошибка обновления Xray DNS${NC}"
+    fi
   fi
 
-  # ИСПРАВЛЕННАЯ проверка порта
-  echo -e "${CYAN}  → Проверка порта $port...${NC}"
+  # Шаг 7: Запуск
+  echo -e "${CYAN}Шаг 7/7: Запуск служб...${NC}"
+  systemctl start AdGuardHome
+  systemctl enable AdGuardHome 2>/dev/null || true
+  systemctl restart xray
 
-  # Проверяем что порт слушается (ПРАВИЛЬНЫЙ regex)
-  if ss -tuln | grep -qE ":${port}[[:space:]]"; then
-    echo -e "${GREEN}  ✓ Порт $port слушается${NC}"
-  else
-    echo -e "${RED}  ✗ Порт $port не найден${NC}"
-    echo -e "${YELLOW}  Открытые порты Xray:${NC}"
-    ss -tuln | grep -E ":(443|8443|2053|9443)" | sed 's/^/    /'
-    return 1
-  fi
+  # Открываем порт Web UI
+  open_firewall_port 3000
 
-  # Проверяем SOCKS5 прокси
-  if ! ss -tuln | grep -qE ":10808[[:space:]]"; then
-    echo -e "${RED}  ✗ SOCKS5 прокси не запущен${NC}"
-    return 1
-  fi
-
-  # Даём время на инициализацию соединения
-  sleep 2
-
-  # Тестируем подключение
-  echo -e "${CYAN}  → Тест соединения...${NC}"
-
-  local http_code=$(timeout 12 curl -s --connect-timeout 6 \
-    --max-time 10 \
-    --socks5 127.0.0.1:10808 \
-    https://www.google.com \
-    -o /dev/null -w "%{http_code}" 2>/dev/null)
-
-  if [[ "$http_code" =~ ^(200|301|302)$ ]]; then
-    echo -e "${GREEN}  ✓ Google: $http_code${NC}"
-    return 0
-  fi
-
-  local yandex_test=$(timeout 12 curl -s --connect-timeout 6 \
-    --max-time 10 \
-    --socks5 127.0.0.1:10808 \
-    https://ya.ru \
-    -o /dev/null -w "%{http_code}" 2>/dev/null)
-
-  if [[ "$yandex_test" =~ ^(200|301|302)$ ]]; then
-    echo -e "${GREEN}  ✓ Yandex: $yandex_test${NC}"
-    return 0
-  fi
-
-  echo -e "${RED}  ✗ Тесты провалены (Google=$http_code, Ya=$yandex_test)${NC}"
-  return 1
-}
-
-
-save_profile_from_test() {
-  local sni=$1
-  local transport=$2
-  local port=$3
-  local fp=$4
+  # Открываем DNS порт (UDP + TCP)
+  open_firewall_port 53
+  open_firewall_port 53 udp
 
   echo ""
   echo -e "${GREEN}╔═══════════════════════════════════════════════════════════╗${NC}"
-  echo -e "${GREEN}║         ✓ НАЙДЕНА РАБОЧАЯ КОНФИГУРАЦИЯ!                 ║${NC}"
+  echo -e "${GREEN}║         ✓ ADGUARD HOME УСПЕШНО УСТАНОВЛЕН!              ║${NC}"
   echo -e "${GREEN}╚═══════════════════════════════════════════════════════════╝${NC}"
   echo ""
-  echo -e "${CYAN}SNI:${NC}         $sni"
-  echo -e "${CYAN}Транспорт:${NC}   $transport"
-  echo -e "${CYAN}Порт:${NC}        $port"
-  echo -e "${CYAN}Fingerprint:${NC} $fp"
+  echo -e "${CYAN}Web UI:${NC} ${YELLOW}http://${SERVER_IP}:3000${NC}"
   echo ""
-  echo -n -e "${YELLOW}Сохранить как рабочий профиль? (Y/n): ${NC}"
-  read save_choice
-
-  if [[ ! "$save_choice" =~ ^[nNнН]$ ]]; then
-    echo -n -e "${YELLOW}Введите имя профиля (например: auto_found): ${NC}"
-    read profile_name
-
-    if [[ -z "$profile_name" ]]; then
-      profile_name="auto_$(date +%Y%m%d_%H%M%S)"
-    fi
-
-    if [[ ! "$profile_name" =~ ^[a-zA-Z0-9_-]+$ ]]; then
-      echo -e "${RED}✗ Неверное имя профиля${NC}"
-      profile_name="auto_$(date +%Y%m%d_%H%M%S)"
-      echo -e "${YELLOW}Используется автоимя: $profile_name${NC}"
-    fi
-
-    if [[ -f "$PROFILES_DIR/_test.json" ]]; then
-      mv "$PROFILES_DIR/_test.json" "$PROFILES_DIR/$profile_name.json"
-      local temp_profile=$(mktemp)
-      jq --arg name "$profile_name" '.name = $name' "$PROFILES_DIR/$profile_name.json" > "$temp_profile"
-      mv "$temp_profile" "$PROFILES_DIR/$profile_name.json"
-
-      # Обновляем tag в конфиге
-      local temp_config=$(mktemp)
-      jq --arg new_tag "inbound-$port" '
-        (.inbounds[] | select(.tag == "test-inbound") | .tag) |= $new_tag
-      ' "$CONFIG_FILE" > "$temp_config"
-      mv "$temp_config" "$CONFIG_FILE"
-
-      echo ""
-      echo -e "${GREEN}✓ Профиль '$profile_name' успешно создан!${NC}"
-      echo -e "${CYAN}Используйте меню 'Подключиться по профилю' для получения ссылки${NC}"
-    fi
-  else
-    cleanup_test_profile
-    echo -e "${YELLOW}⚠ Профиль не сохранён${NC}"
-  fi
+  echo -e "${MAGENTA}При первом входе создайте логин и пароль администратора.${NC}"
+  echo -e "${MAGENTA}Фильтры AdGuard DNS и AdAway уже включены.${NC}"
+  echo ""
+  echo -e "${CYAN}Xray теперь резолвит DNS через AdGuard Home → реклама блокируется.${NC}"
+  echo ""
+  echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
+  read
 }
 
-# ════════════════════════════════════════════════════════════
-# ГЛАВНАЯ ФУНКЦИЯ АВТОПОДБОРА (С ДИНАМИЧЕСКИМ ПОРТОМ)
-# ════════════════════════════════════════════════════════════
-
-auto_profile_setup_menu() {
+# Удаление AdGuard Home
+uninstall_adguard_home() {
   show_ascii
-  echo -e "${BLUE}╔═══════════════════════════════════════════════════════════╗${NC}"
-  echo -e "${BLUE}║      АВТОПОДБОР РАБОЧЕЙ СВЯЗКИ (ЭКСПЕРИМЕНТАЛЬНО)       ║${NC}"
-  echo -e "${BLUE}╚═══════════════════════════════════════════════════════════╝${NC}\n"
-
-  echo -e "${YELLOW}Функция автоматически перебирает комбинации:${NC}"
-  echo -e "  ${CYAN}•${NC} SNI доменов (топ-15 из списка по приоритету)"
-  echo -e "  ${CYAN}•${NC} Транспорты (TCP, gRPC)"
-  echo -e "  ${CYAN}•${NC} Порты (динамический выбор свободного)"
-  echo -e "  ${CYAN}•${NC} Fingerprints (chrome, firefox)"
+  echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
+  echo -e "${BLUE}        УДАЛЕНИЕ ADGUARD HOME                 ${NC}"
+  echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
   echo ""
-  echo -e "${MAGENTA}Будет создан временный профиль для каждого теста.${NC}"
-  echo -e "${YELLOW}Это может занять 3-10 минут в зависимости от провайдера.${NC}\n"
 
-  echo -e "${CYAN}Порядок тестирования:${NC}"
-  echo -e "  ${GREEN}1.${NC} ru_whitelist + TCP + chrome (приоритет)"
-  echo -e "  ${GREEN}2.${NC} yandex_cdn + TCP + firefox"
-  echo -e "  ${GREEN}3.${NC} ru_whitelist + gRPC + chrome"
-  echo -e "  ${GREEN}4.${NC} foreign + TCP + chrome (резервный)\n"
+  # Шаг 1: Проверка — установлен?
+  if [[ ! -f /opt/AdGuardHome/AdGuardHome ]]; then
+    echo -e "${YELLOW}⚠ AdGuard Home не установлен${NC}"
+    echo ""
+    echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
+    read
+    return
+  fi
 
-  echo -n -e "${YELLOW}Начать автоподбор? (y/N): ${NC}"
+  # Шаг 2: Подтверждение
+  echo -e "${RED}╔═══════════════════════════════════════════════════════════╗${NC}"
+  echo -e "${RED}║            ⚠ УДАЛЕНИЕ ADGUARD HOME ⚠                   ║${NC}"
+  echo -e "${RED}╚═══════════════════════════════════════════════════════════╝${NC}"
+  echo ""
+  echo -e "${YELLOW}Будут удалены:${NC}"
+  echo -e "  ${CYAN}•${NC} AdGuard Home и все его настройки"
+  echo -e "  ${CYAN}•${NC} Фильтры и статистика"
+  echo -e "  ${CYAN}•${NC} Интеграция с Xray DNS"
+  echo ""
+  echo -e "${CYAN}Xray DNS будет восстановлен на AdGuard DoH (dns.adguard-dns.com).${NC}"
+  echo ""
+  echo -n -e "${RED}Вы уверены? (y/N): ${NC}"
   read confirm
-
   if [[ ! "$confirm" =~ ^[yYдД]$ ]]; then
     echo -e "${CYAN}✓ Отменено${NC}"
     sleep 1
     return
   fi
 
-  # ДИНАМИЧЕСКИЙ ВЫБОР СВОБОДНОГО ПОРТА
-  local test_port=8443
   echo ""
-  echo -e "${CYAN}Проверка свободного порта для тестов...${NC}"
-  if ss -tuln | grep -q ":8443.*LISTEN"; then
-    test_port=9443
-    echo -e "${YELLOW}⚠ Порт 8443 занят, использую 9443${NC}"
+
+  # Шаг 3: Остановка службы
+  echo -e "${CYAN}Шаг 1/6: Остановка AdGuard Home...${NC}"
+  systemctl stop AdGuardHome 2>/dev/null || true
+  systemctl disable AdGuardHome 2>/dev/null || true
+  echo -e "${GREEN}  ✓ Служба остановлена${NC}"
+
+  # Шаг 4: Удаление
+  echo -e "${CYAN}Шаг 2/6: Удаление файлов...${NC}"
+  /opt/AdGuardHome/AdGuardHome -s uninstall 2>/dev/null || true
+  rm -rf /opt/AdGuardHome/
+  echo -e "${GREEN}  ✓ AdGuard Home удалён${NC}"
+
+  # Шаг 5: Восстановление Xray DNS
+  echo -e "${CYAN}Шаг 3/6: Восстановление Xray DNS...${NC}"
+  if [[ -f "$CONFIG_FILE" ]]; then
+    local temp_config=$(mktemp)
+    jq '.dns = {
+      "servers": [
+        {
+          "address": "https://dns.adguard-dns.com/dns-query",
+          "domains": ["geosite:category-ads-all"],
+          "expectIPs": ["127.0.0.1"]
+        },
+        "https://dns.adguard-dns.com/dns-query"
+      ],
+      "queryStrategy": "UseIPv4",
+      "disableCache": false
+    }' "$CONFIG_FILE" > "$temp_config"
+
+    if [[ $? -eq 0 ]] && [[ -s "$temp_config" ]]; then
+      mv "$temp_config" "$CONFIG_FILE"
+      chown root:root "$CONFIG_FILE"
+      chmod 644 "$CONFIG_FILE"
+      echo -e "${GREEN}  ✓ Xray DNS → AdGuard DoH${NC}"
+    else
+      rm -f "$temp_config"
+      echo -e "${RED}  ✗ Ошибка восстановления Xray DNS${NC}"
+    fi
   fi
-  if ss -tuln | grep -q ":${test_port}.*LISTEN"; then
-    test_port=7443
-    echo -e "${YELLOW}⚠ Порт 9443 занят, использую 7443${NC}"
+
+  # Шаг 6: Восстановление systemd-resolved
+  echo -e "${CYAN}Шаг 4/6: Восстановление systemd-resolved...${NC}"
+  if [[ -f /etc/systemd/resolved.conf.d/adguardhome.conf ]]; then
+    rm -f /etc/systemd/resolved.conf.d/adguardhome.conf
+    # Восстанавливаем resolv.conf на стандартный stub
+    if [[ -L /etc/resolv.conf ]] || [[ -f /etc/resolv.conf ]]; then
+      ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf 2>/dev/null || true
+    fi
+    systemctl restart systemd-resolved 2>/dev/null || true
+    echo -e "${GREEN}  ✓ systemd-resolved восстановлен${NC}"
+  else
+    echo -e "${GREEN}  ✓ systemd-resolved не был изменён${NC}"
   fi
-  if ss -tuln | grep -q ":${test_port}.*LISTEN"; then
-    test_port=6443
-    echo -e "${YELLOW}⚠ Порт 7443 занят, использую 6443${NC}"
+
+  # Закрытие портов
+  echo -e "${CYAN}Шаг 5/6: Закрытие портов...${NC}"
+  if command -v ufw &>/dev/null; then
+    ufw delete allow 3000/tcp >/dev/null 2>&1
+    # Не закрываем порт 53 — может быть нужен системе
+    ufw reload >/dev/null 2>&1
+    echo -e "${GREEN}  ✓ Порт 3000 закрыт${NC}"
   fi
-  echo -e "${GREEN}✓ Тестовый порт: $test_port${NC}\n"
 
-  # Open firewall port for testing
-  open_firewall_port "$test_port"
+  # Перезапуск Xray
+  echo -e "${CYAN}Шаг 6/6: Перезапуск Xray...${NC}"
+  systemctl restart xray
+  echo -e "${GREEN}  ✓ Xray перезапущен${NC}"
 
-  echo -e "${CYAN}════════════════════════════════════════════════════════════${NC}"
-  echo -e "${CYAN}           НАЧИНАЮ ТЕСТИРОВАНИЕ КОМБИНАЦИЙ                ${NC}"
-  echo -e "${CYAN}════════════════════════════════════════════════════════════${NC}\n"
-
-  # Загружаем SNI списки ПЕРЕД созданием inbound
-  local sni_tier1=($(get_sni_by_category "ru_whitelist" 5))
-  local sni_tier2=($(get_sni_by_category "yandex_cdn" 5))
-  local sni_tier3=($(get_sni_by_category "foreign" 3))
-
-  [[ ${#sni_tier1[@]} -eq 0 ]] && sni_tier1=("ozone.ru" "sberbank.ru" "gosuslugi.ru")
-  [[ ${#sni_tier2[@]} -eq 0 ]] && sni_tier2=("speller.yandex.net")
-  [[ ${#sni_tier3[@]} -eq 0 ]] && sni_tier3=("www.microsoft.com" "cloudflare.com")
-
-  setup_test_socks5
-
-  # Создаем тестовый inbound ОДИН РАЗ в начале
-  echo -e "${CYAN}Создание тестового inbound на порту $test_port...${NC}"
-  local first_sni="${sni_tier1[0]}"
-  local test_uuid=$(uuidgen)
-
-  # Создаем начальный профиль
-  cat > "$PROFILES_DIR/_test.json" << TESTEOF
-{
-  "name": "_test",
-  "uuid": "$test_uuid",
-  "transport": "tcp",
-  "port": "$test_port",
-  "fingerprint": "chrome",
-  "sni": "$first_sni",
-  "created": "$(date +%Y-%m-%d\ %H:%M:%S)"
+  echo ""
+  echo -e "${GREEN}╔═══════════════════════════════════════════════════════════╗${NC}"
+  echo -e "${GREEN}║         ✓ ADGUARD HOME УСПЕШНО УДАЛЁН                   ║${NC}"
+  echo -e "${GREEN}╚═══════════════════════════════════════════════════════════╝${NC}"
+  echo ""
+  echo -e "${CYAN}Xray DNS восстановлен на AdGuard DoH (dns.adguard-dns.com).${NC}"
+  echo ""
+  echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
+  read
 }
-TESTEOF
 
-  # Создаем test-inbound один раз
-  add_test_inbound "$test_uuid" "tcp" "$test_port" "$first_sni" "chrome"
+# Статус AdGuard Home
+adguard_status() {
+  show_ascii
+  echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
+  echo -e "${BLUE}         СТАТУС ADGUARD HOME                  ${NC}"
+  echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
+  echo ""
 
-  # Перезапускаем Xray для применения нового inbound
-  echo -e "${CYAN}Запуск Xray с тестовым inbound...${NC}"
-  systemctl restart xray >/dev/null 2>&1
-  sleep 4
+  # Бинарник
+  if [[ -f /opt/AdGuardHome/AdGuardHome ]]; then
+    echo -e "${GREEN}  ✓ Установлен${NC}"
 
-  if ! systemctl is-active --quiet xray; then
-    echo -e "${RED}✗ Xray не запустился${NC}"
-    remove_test_socks
-    return 1
+    # Версия
+    local agh_ver=$(/opt/AdGuardHome/AdGuardHome --version 2>/dev/null | head -1)
+    if [[ -n "$agh_ver" ]]; then
+      echo -e "${CYAN}  Версия:${NC} $agh_ver"
+    fi
+  else
+    echo -e "${RED}  ✗ Не установлен${NC}"
+    echo ""
+    echo -e "${YELLOW}Установите через меню: 1) Установить AdGuard Home${NC}"
+    echo ""
+    echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
+    read
+    return
   fi
 
-  # Проверяем что тестовый порт поднялся
-  if ! ss -tuln | grep -qE ":${test_port}[[:space:]]"; then
-    echo -e "${RED}✗ Тестовый порт $test_port не поднялся${NC}"
-    remove_test_socks
-    return 1
+  # Статус службы
+  local svc_status=$(systemctl is-active AdGuardHome 2>/dev/null || echo "inactive")
+  if [[ "$svc_status" == "active" ]]; then
+    echo -e "${GREEN}  ● Служба: работает${NC}"
+  else
+    echo -e "${RED}  ● Служба: $svc_status${NC}"
   fi
 
-  echo -e "${GREEN}✓ Тестовый inbound готов на порту $test_port${NC}\n"
-
-  local test_num=1
-  local found=0
-
-  # Tier 1: ru_whitelist + TCP + chrome
-  echo -e "${MAGENTA}[Tier-1] Тестирую российские домены + TCP:$test_port${NC}\n"
-  for sni in "${sni_tier1[@]}"; do
-    echo -e "${BLUE}[$test_num] Тест:${NC} ${YELLOW}$sni${NC} + tcp:$test_port + chrome"
-    if test_connection_full "$sni" "tcp" "$test_port" "chrome"; then
-      save_profile_from_test "$sni" "tcp" "$test_port" "chrome"
-      found=1
-      break
-    fi
-    cleanup_test_profile
-    ((test_num++))
-    sleep 1
-  done
-
-  [[ $found -eq 1 ]] && { remove_test_socks; systemctl restart xray >/dev/null 2>&1; return 0; }
-
-  # Tier 1b: ru_whitelist + TCP + firefox
-  echo -e "\n${MAGENTA}[Tier-1b] Тестирую российские домены + TCP:$test_port + Firefox${NC}\n"
-  for sni in "${sni_tier1[@]}"; do
-    echo -e "${BLUE}[$test_num] Тест:${NC} ${YELLOW}$sni${NC} + tcp:$test_port + firefox"
-    if test_connection_full "$sni" "tcp" "$test_port" "firefox"; then
-      save_profile_from_test "$sni" "tcp" "$test_port" "firefox"
-      found=1
-      break
-    fi
-    cleanup_test_profile
-    ((test_num++))
-    sleep 1
-  done
-
-  [[ $found -eq 1 ]] && { remove_test_socks; systemctl restart xray >/dev/null 2>&1; return 0; }
-
-  # Tier 2: yandex_cdn + TCP
-  echo -e "\n${MAGENTA}[Tier-2] Тестирую Яндекс CDN + TCP:$test_port${NC}\n"
-  for sni in "${sni_tier2[@]}"; do
-    echo -e "${BLUE}[$test_num] Тест:${NC} ${YELLOW}$sni${NC} + tcp:$test_port + chrome"
-    if test_connection_full "$sni" "tcp" "$test_port" "chrome"; then
-      save_profile_from_test "$sni" "tcp" "$test_port" "chrome"
-      found=1
-      break
-    fi
-    cleanup_test_profile
-    ((test_num++))
-    sleep 1
-  done
-
-  [[ $found -eq 1 ]] && { remove_test_socks; systemctl restart xray >/dev/null 2>&1; return 0; }
-
-  # Tier 3: ru_whitelist + gRPC
-  echo -e "\n${MAGENTA}[Tier-3] Тестирую российские домены + gRPC:2053${NC}\n"
-  for sni in "${sni_tier1[@]:0:3}"; do
-    echo -e "${BLUE}[$test_num] Тест:${NC} ${YELLOW}$sni${NC} + grpc:2053 + chrome"
-    if test_connection_full "$sni" "grpc" "2053" "chrome"; then
-      save_profile_from_test "$sni" "grpc" "2053" "chrome"
-      found=1
-      break
-    fi
-    cleanup_test_profile
-    ((test_num++))
-    sleep 1
-  done
-
-  [[ $found -eq 1 ]] && { remove_test_socks; systemctl restart xray >/dev/null 2>&1; return 0; }
-
-  # Tier 4: foreign + TCP
-  echo -e "\n${MAGENTA}[Tier-4] Тестирую зарубежные домены + TCP:$test_port${NC}\n"
-  for sni in "${sni_tier3[@]}"; do
-    echo -e "${BLUE}[$test_num] Тест:${NC} ${YELLOW}$sni${NC} + tcp:$test_port + chrome"
-    if test_connection_full "$sni" "tcp" "$test_port" "chrome"; then
-      save_profile_from_test "$sni" "tcp" "$test_port" "chrome"
-      found=1
-      break
-    fi
-    cleanup_test_profile
-    ((test_num++))
-    sleep 1
-  done
-
-  remove_test_socks
-  cleanup_test_profile
-  systemctl restart xray >/dev/null 2>&1
-
-  if [[ $found -eq 0 ]]; then
-    echo ""
-    echo -e "${RED}╔═══════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${RED}║   ✗ НЕ НАЙДЕНО РАБОТАЮЩИХ КОМБИНАЦИЙ                    ║${NC}"
-    echo -e "${RED}╚═══════════════════════════════════════════════════════════╝${NC}"
-    echo ""
-    echo -e "${YELLOW}Возможные причины:${NC}"
-    echo -e "  ${CYAN}•${NC} Проблемы с интернет-подключением сервера"
-    echo -e "  ${CYAN}•${NC} Firewall блокирует исходящие соединения"
-    echo -e "  ${CYAN}•${NC} Список SNI устарел (обновите: sudo xrayebator-update)"
-    echo ""
-    echo -e "${MAGENTA}Попробуйте:${NC}"
-    echo -e "  ${GREEN}1.${NC} Проверить firewall: ${YELLOW}sudo ufw status${NC}"
-    echo -e "  ${GREEN}2.${NC} Проверить DNS: ${YELLOW}dig google.com${NC}"
-    echo -e "  ${GREEN}3.${NC} Создать профиль вручную с проверенным SNI"
-    echo ""
+  # DNS порт 53
+  echo ""
+  echo -e "${CYAN}  Порты:${NC}"
+  local dns_listen=$(ss -tuln 2>/dev/null | grep -E ':53\s' | head -3)
+  if [[ -n "$dns_listen" ]]; then
+    echo -e "${GREEN}    ✓ DNS (порт 53) — слушает${NC}"
+  else
+    echo -e "${RED}    ✗ DNS (порт 53) — не слушает${NC}"
   fi
 
+  # Web UI порт 3000
+  local web_listen=$(ss -tuln 2>/dev/null | grep -E ':3000\s' | head -1)
+  if [[ -n "$web_listen" ]]; then
+    echo -e "${GREEN}    ✓ Web UI (порт 3000) — слушает${NC}"
+  else
+    echo -e "${RED}    ✗ Web UI (порт 3000) — не слушает${NC}"
+  fi
+
+  # Интеграция с Xray
+  echo ""
+  echo -e "${CYAN}  Интеграция с Xray:${NC}"
+  if [[ -f "$CONFIG_FILE" ]]; then
+    local xray_dns_server=$(jq -r '.dns.servers[0] // "не задан"' "$CONFIG_FILE" 2>/dev/null)
+    if [[ "$xray_dns_server" == "127.0.0.1" ]]; then
+      echo -e "${GREEN}    ✓ Xray DNS → 127.0.0.1 (AdGuard Home)${NC}"
+    else
+      echo -e "${YELLOW}    ⚠ Xray DNS → $xray_dns_server (не через AdGuard Home)${NC}"
+    fi
+  fi
+
+  # Web UI URL
+  echo ""
+  echo -e "${CYAN}  Web UI:${NC} ${YELLOW}http://${SERVER_IP}:3000${NC}"
+
+  echo ""
   echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
   read
 }

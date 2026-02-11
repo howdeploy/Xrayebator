@@ -207,15 +207,15 @@ echo -e "${BLUE}[7/10]${NC} ${YELLOW}Настройка firewall...${NC}"
 if ! ufw status | grep -q "Status: active"; then
   ufw --force enable > /dev/null 2>&1
 fi
-ufw allow 22/tcp > /dev/null 2>&1
-ufw allow 80/tcp > /dev/null 2>&1
-ufw allow 443/tcp > /dev/null 2>&1
-ufw allow 8443/tcp > /dev/null 2>&1
-ufw allow 2053/tcp > /dev/null 2>&1
-ufw allow 8080/tcp > /dev/null 2>&1
-ufw allow 2096/tcp > /dev/null 2>&1
-ufw allow 8880/tcp > /dev/null 2>&1
-ufw allow 9443/tcp > /dev/null 2>&1
+
+UFW_ERRORS=0
+for ufw_port in 22 80 443 8443 2053 2083 2087 8080 2096 8880 9443; do
+  if ! ufw allow "${ufw_port}/tcp" > /dev/null 2>&1; then
+    echo -e "${YELLOW}  ⚠ Не удалось открыть порт ${ufw_port}/tcp${NC}"
+    ((UFW_ERRORS++))
+  fi
+done
+
 ufw reload > /dev/null 2>&1
 echo -e "${GREEN}✓ Firewall настроен${NC}"
 echo -e "${CYAN}  Открытые порты: 443, 2053, 2096, 8080, 8443, 8880, 9443${NC}\n"
