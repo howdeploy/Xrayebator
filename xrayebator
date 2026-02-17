@@ -96,16 +96,48 @@ update_transport_settings_for_sni() {
 
   # Transport-specific updates
   if [[ "$transport" == "xhttp" ]]; then
-    temp_config=$(mktemp)
-    jq --argjson port "$port_num" --arg sni "$new_sni" '
+    if safe_jq_write --argjson port "$port_num" --arg sni "$new_sni" '
       (.inbounds[] | select(.port == $port) | .streamSettings.xhttpSettings.host) |= $sni
-    ' "$config_file" > "$temp_config"
-    mv "$temp_config" "$config_file"
-    echo -e "${GREEN}  ✓ XHTTP host обновлен → $new_sni${NC}"
+    ' "$config_file"; then
+      echo -e "${GREEN}  ✓ XHTTP host обновлен → $new_sni${NC}"
+    else
+      echo -e "${RED}  ✗ Ошибка обновления XHTTP host${NC}"
+      return 1
+    fi
+  fi
+}
+
+# Безопасная запись через jq — проверяет результат перед перезаписью
+# Использование: safe_jq_write "выражение_jq" [аргументы_jq...] "$входной_файл" "$выходной_файл"
+# Или для записи в тот же файл: safe_jq_write "выражение_jq" [аргументы_jq...] "$файл"
+# Последний аргумент — целевой файл (куда записать), предпоследний — исходный
+# Если целевой == исходный, делает mktemp+mv
+safe_jq_write() {
+  local args=("$@")
+  local nargs=${#args[@]}
+
+  # Минимум 2 аргумента: выражение и файл
+  if [[ $nargs -lt 2 ]]; then
+    echo -e "${RED}  ✗ safe_jq_write: недостаточно аргументов${NC}" >&2
+    return 1
   fi
 
-  chown root:root "$config_file"
-  chmod 644 "$config_file"
+  # Последний аргумент — исходный файл (и он же целевой при in-place)
+  local src_file="${args[$((nargs-1))]}"
+  local dst_file="$src_file"
+  local jq_args=("${args[@]:0:$((nargs-1))}")
+
+  local tmp=$(mktemp)
+  if jq "${jq_args[@]}" "$src_file" > "$tmp" 2>/dev/null && [[ -s "$tmp" ]]; then
+    mv "$tmp" "$dst_file"
+    chown root:root "$dst_file" 2>/dev/null
+    chmod 644 "$dst_file" 2>/dev/null
+    return 0
+  else
+    echo -e "${RED}  ✗ Ошибка jq — файл НЕ изменён: $dst_file${NC}" >&2
+    rm -f "$tmp"
+    return 1
+  fi
 }
 
 # Open port in UFW firewall (idempotent)
@@ -208,13 +240,11 @@ update_all_profiles_on_port() {
 
   for pname in "${profiles[@]}"; do
     local pfile="$PROFILES_DIR/$pname.json"
-    local temp=$(mktemp)
-
-    jq --arg f "$field" --arg v "$value" \
-      '.[$f] = $v' "$pfile" > "$temp"
-
-    mv "$temp" "$pfile"
-    echo -e "${CYAN}  → Обновлен: ${YELLOW}$pname${NC}"
+    if safe_jq_write --arg f "$field" --arg v "$value" '.[$f] = $v' "$pfile"; then
+      echo -e "${CYAN}  → Обновлен: ${YELLOW}$pname${NC}"
+    else
+      echo -e "${RED}  ✗ Ошибка обновления: ${YELLOW}$pname${NC}"
+    fi
   done
 }
 
@@ -241,13 +271,11 @@ migrate_xhttp_profiles() {
     if [[ "$config_host" != "$profile_sni" ]]; then
       echo -e "${YELLOW}  → Миграция XHTTP: $(basename "$profile_file" .json)${NC}"
 
-      local temp_config=$(mktemp)
-      jq --argjson port "$port" --arg sni "$profile_sni" '
+      if safe_jq_write --argjson port "$port" --arg sni "$profile_sni" '
         (.inbounds[] | select(.port == $port) | .streamSettings.xhttpSettings.host) |= $sni
-      ' "$CONFIG_FILE" > "$temp_config"
-
-      mv "$temp_config" "$CONFIG_FILE"
-      ((migrated++))
+      ' "$CONFIG_FILE"; then
+        ((migrated++))
+      fi
     fi
   done
 
@@ -440,6 +468,7 @@ main_menu() {
     echo ""
     echo -e "${MAGENTA} ДОПОЛНИТЕЛЬНЫЕ ФУНКЦИИ:${NC}"
     echo -e "${CYAN} 7)${NC} AdGuard Home (блокировка рекламы)"
+    echo -e "${CYAN} 8)${NC} MTProto Proxy (Telegram)"
     echo ""
     echo -e "${RED} 0)${NC} Выход"
     echo ""
@@ -454,6 +483,7 @@ main_menu() {
       5) change_fingerprint_menu ;;
       6) change_port_menu ;;
       7) adguard_home_menu ;;
+      8) mtproto_menu ;;
       0) exit 0 ;;
       *) echo -e "${RED}Неверный выбор${NC}"; sleep 1 ;;
     esac
@@ -578,8 +608,27 @@ local custom_sni=$5  # Опциональный кастомный SNI
 }
 EOF
 
-  add_inbound "$uuid" "$transport" "$port" "$default_sni" "$fingerprint"
+  if ! add_inbound "$uuid" "$transport" "$port" "$default_sni" "$fingerprint"; then
+    rm -f "$PROFILES_DIR/$name.json"
+    echo ""
+    echo -e "${RED}╔═══════════════════════════════════════════════${NC}"
+    echo -e "${RED}         ✗ ОШИБКА СОЗДАНИЯ ПРОФИЛЯ            ${NC}"
+    echo -e "${RED}╚═══════════════════════════════════════════════${NC}"
+    echo ""
+    echo -e "${RED}Inbound не создан — файл профиля удалён.${NC}"
+    echo -e "${YELLOW}Попробуйте другой порт или транспорт.${NC}"
+    echo ""
+    echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
+    read
+    return 1
+  fi
+
   systemctl restart xray
+
+  # Читаем актуальный SNI из файла (мог измениться при SNI-конфликте)
+  local actual_sni=$(jq -r '.sni' "$PROFILES_DIR/$name.json" 2>/dev/null)
+  [[ -z "$actual_sni" ]] && actual_sni="$default_sni"
+
   echo ""
   echo -e "${GREEN}╔═══════════════════════════════════════════════${NC}"
   echo -e "${GREEN}         ✓ ПРОФИЛЬ УСПЕШНО СОЗДАН!            ${NC}"
@@ -590,7 +639,7 @@ EOF
   echo -e "${BLUE}Транспорт:${NC} $transport"
   echo -e "${BLUE}Порт:${NC} $port"
   echo -e "${BLUE}Fingerprint:${NC} $fingerprint"
-  echo -e "${BLUE}SNI:${NC} $default_sni"
+  echo -e "${BLUE}SNI:${NC} $actual_sni"
   echo ""
   echo -e "${CYAN}Используйте меню 'Подключиться по профилю' для получения ссылки${NC}"
   echo ""
@@ -647,39 +696,35 @@ add_inbound() {
       # Override sni to match existing inbound
       sni="$existing_sni"
 
-      # Update profile JSON with correct SNI
-      # Note: Profile name extracted from caller context via create_profile
-      # We need to update the just-created profile.json
-      local profile_name=$(jq -r --arg uuid "$uuid" \
-        '.name' \
-        "$PROFILES_DIR"/*.json 2>/dev/null | head -1)
-
-      if [[ -n "$profile_name" ]]; then
-        local profile_files=("$PROFILES_DIR"/*.json)
-        for pf in "${profile_files[@]}"; do
-          local pf_uuid=$(jq -r '.uuid' "$pf" 2>/dev/null)
-          if [[ "$pf_uuid" == "$uuid" ]]; then
-            local temp_profile=$(mktemp)
-            jq --arg sni "$existing_sni" '.sni = $sni' "$pf" > "$temp_profile"
-            mv "$temp_profile" "$pf"
-            break
-          fi
-        done
-      fi
+      # Обновить SNI в только что созданном файле профиля
+      local pf
+      for pf in "$PROFILES_DIR"/*.json; do
+        [[ ! -f "$pf" ]] && continue
+        local pf_uuid=$(jq -r '.uuid' "$pf" 2>/dev/null)
+        if [[ "$pf_uuid" == "$uuid" ]]; then
+          safe_jq_write --arg sni "$existing_sni" '.sni = $sni' "$pf" || \
+            echo -e "${YELLOW}  ⚠ Не удалось обновить SNI в профиле$(basename "$pf")${NC}"
+          break
+        fi
+      done
     fi
 
     echo -e "${CYAN} → Добавление клиента в существующий inbound на порту $port${NC}"
-    local temp_config=$(mktemp)
-    # Определяем flow из первого существующего клиента (tcp-mux = пустой, tcp+vision = xtls-rprx-vision)
-    jq --arg uuid "$uuid" --argjson port "$port" '
+    # Определяем flow по типу транспорта нового профиля (не копируем слепо от первого клиента)
+    local client_flow=""
+    case "$transport" in
+      tcp|tcp-utls|tcp-xudp) client_flow="xtls-rprx-vision" ;;
+      tcp-mux|grpc|xhttp) client_flow="" ;;
+    esac
+    if ! safe_jq_write --arg uuid "$uuid" --argjson port "$port" --arg flow "$client_flow" '
       (.inbounds[] | select(.port == $port) | .settings.clients) += [{
         "id": $uuid,
-        "flow": (.inbounds[] | select(.port == $port) | .settings.clients[0].flow)
+        "flow": $flow
       }]
-    ' "$CONFIG_FILE" > "$temp_config"
-    mv "$temp_config" "$CONFIG_FILE"
-    chown root:root "$CONFIG_FILE"
-    chmod 644 "$CONFIG_FILE"
+    ' "$CONFIG_FILE"; then
+      echo -e "${RED}  ✗ Не удалось добавить клиента в inbound${NC}"
+      return 1
+    fi
     return
   fi
 
@@ -820,11 +865,10 @@ XHTTPEOF
       ;;
   esac
 
-  local temp_config=$(mktemp)
-  jq ".inbounds += [$inbound]" "$CONFIG_FILE" > "$temp_config"
-  mv "$temp_config" "$CONFIG_FILE"
-  chown root:root "$CONFIG_FILE"
-  chmod 644 "$CONFIG_FILE"
+  if ! safe_jq_write ".inbounds += [$inbound]" "$CONFIG_FILE"; then
+    echo -e "${RED}  ✗ Не удалось создать inbound в конфиге${NC}"
+    return 1
+  fi
 
   # Open firewall port
   open_firewall_port "$port"
@@ -866,30 +910,43 @@ delete_profile_menu() {
     if [[ "$confirm" =~ ^[yYдД]$ ]]; then
       local port=$(jq -r '.port' "$PROFILES_DIR/$profile_name.json")
       local uuid=$(jq -r '.uuid' "$PROFILES_DIR/$profile_name.json")
-      local profiles_on_port=($(get_profiles_on_port "$port"))
-      local temp_config=$(mktemp)
 
-      if [[ ${#profiles_on_port[@]} -le 1 ]]; then
-        # Единственный профиль на порту - удаляем весь inbound
-        jq "del(.inbounds[] | select(.tag == \"inbound-$port\"))" "$CONFIG_FILE" > "$temp_config"
-        echo -e "${CYAN}  → Удаление inbound на порту $port${NC}"
+      # Считаем клиентов через config.json (надёжнее чем файлы профилей)
+      local clients_count=$(jq -r --argjson port "$port" \
+        '.inbounds[] | select(.port == $port) | .settings.clients | length' \
+        "$CONFIG_FILE" 2>/dev/null)
+      [[ -z "$clients_count" ]] && clients_count=0
+
+      local config_ok=false
+      if [[ "$clients_count" -le 1 ]]; then
+        # Единственный клиент (или inbound отсутствует) — удаляем весь inbound
+        if safe_jq_write --argjson port "$port" 'del(.inbounds[] | select(.port == $port))' "$CONFIG_FILE"; then
+          echo -e "${CYAN}  → Удаление inbound на порту $port${NC}"
+          config_ok=true
+        fi
       else
-        # Есть другие профили на порту - удаляем только клиента
-        jq --arg uuid "$uuid" '
+        # Есть другие клиенты — удаляем только этого
+        if safe_jq_write --arg uuid "$uuid" '
           (.inbounds[].settings.clients) |= map(select(.id != $uuid))
-        ' "$CONFIG_FILE" > "$temp_config"
-        echo -e "${CYAN}  → Удаление клиента из inbound (порт $port используется другими профилями)${NC}"
+        ' "$CONFIG_FILE"; then
+          echo -e "${CYAN}  → Удаление клиента из inbound (порт $port используется другими профилями)${NC}"
+          config_ok=true
+        fi
       fi
 
-      mv "$temp_config" "$CONFIG_FILE"
-      rm "$PROFILES_DIR/$profile_name.json"
+      if [[ "$config_ok" == "true" ]]; then
+        rm -f "$PROFILES_DIR/$profile_name.json"
 
-      # Close firewall port if not used by other profiles
-      close_firewall_port "$port"
+        # Close firewall port if not used by other profiles
+        close_firewall_port "$port"
 
-      systemctl restart xray
-      echo ""
-      echo -e "${GREEN}✓ Профиль '$profile_name' успешно удален${NC}"
+        systemctl restart xray
+        echo ""
+        echo -e "${GREEN}✓ Профиль '$profile_name' успешно удален${NC}"
+      else
+        echo ""
+        echo -e "${RED}✗ Ошибка обновления конфига — профиль НЕ удалён${NC}"
+      fi
     else
       echo -e "${YELLOW}⚠ Удаление отменено${NC}"
     fi
@@ -1604,8 +1661,6 @@ change_port_menu() {
     return
   fi
 
-  local temp_config=$(mktemp)
-
   if [[ "$move_to_existing" == "true" ]]; then
     # Move client to existing inbound on target port
     echo -e "${CYAN}  → Перемещение клиента на порт $new_port...${NC}"
@@ -1613,53 +1668,53 @@ change_port_menu() {
     # Get flow from target inbound
     local target_flow=$(jq -r --argjson port "$new_port" '.inbounds[] | select(.port == $port) | .settings.clients[0].flow // ""' "$CONFIG_FILE")
 
-    # Add client to target inbound
-    jq --arg uuid "$profile_uuid" --argjson port "$new_port" --arg flow "$target_flow" '
+    # Шаг 1: Добавить клиента на новый порт
+    if ! safe_jq_write --arg uuid "$profile_uuid" --argjson port "$new_port" --arg flow "$target_flow" '
       (.inbounds[] | select(.port == $port) | .settings.clients) += [{"id": $uuid, "flow": $flow}]
-    ' "$CONFIG_FILE" > "$temp_config"
-    mv "$temp_config" "$CONFIG_FILE"
+    ' "$CONFIG_FILE"; then
+      echo -e "${RED}  ✗ Ошибка добавления клиента на порт $new_port — операция отменена${NC}"
+      echo -n -e "${YELLOW}Нажмите Enter...${NC}"; read
+      return
+    fi
 
-    # Remove client from old inbound
-    temp_config=$(mktemp)
-    jq --arg uuid "$profile_uuid" --argjson port "$old_port" '
+    # Шаг 2: Удалить клиента со старого порта
+    if ! safe_jq_write --arg uuid "$profile_uuid" --argjson port "$old_port" '
       (.inbounds[] | select(.port == $port) | .settings.clients) |= map(select(.id != $uuid))
-    ' "$CONFIG_FILE" > "$temp_config"
-    mv "$temp_config" "$CONFIG_FILE"
+    ' "$CONFIG_FILE"; then
+      echo -e "${RED}  ✗ Ошибка удаления клиента с порта $old_port${NC}"
+      echo -n -e "${YELLOW}Нажмите Enter...${NC}"; read
+      return
+    fi
 
-    # Check if old inbound has no clients left - remove it
+    # Шаг 3: Если старый inbound пуст — удалить его
     local old_clients_count=$(jq -r --argjson port "$old_port" '.inbounds[] | select(.port == $port) | .settings.clients | length' "$CONFIG_FILE")
     if [[ "$old_clients_count" == "0" ]]; then
       echo -e "${CYAN}  → Удаление пустого inbound на порту $old_port...${NC}"
-      temp_config=$(mktemp)
-      jq --argjson port "$old_port" 'del(.inbounds[] | select(.port == $port))' "$CONFIG_FILE" > "$temp_config"
-      mv "$temp_config" "$CONFIG_FILE"
+      safe_jq_write --argjson port "$old_port" 'del(.inbounds[] | select(.port == $port))' "$CONFIG_FILE"
       close_firewall_port "$old_port"
     fi
 
-    # Update profile with new port and SNI
-    local temp_profile=$(mktemp)
-    jq --argjson port "$new_port" --arg sni "$target_inbound_sni" '.port = $port | .sni = $sni' "$profile_file" > "$temp_profile"
-    mv "$temp_profile" "$profile_file"
+    # Шаг 4: Обновить файл профиля
+    safe_jq_write --argjson port "$new_port" --arg sni "$target_inbound_sni" '.port = $port | .sni = $sni' "$profile_file"
 
   else
     # Move entire inbound to new port (original logic)
-    jq --arg old_tag "inbound-$old_port" --argjson new_port "$new_port" '
+    if ! safe_jq_write --arg old_tag "inbound-$old_port" --argjson new_port "$new_port" '
       (.inbounds[] | select(.tag == $old_tag) | .port) |= $new_port |
       (.inbounds[] | select(.tag == $old_tag) | .tag) |= ("inbound-" + ($new_port | tostring))
-    ' "$CONFIG_FILE" > "$temp_config"
-    mv "$temp_config" "$CONFIG_FILE"
+    ' "$CONFIG_FILE"; then
+      echo -e "${RED}  ✗ Ошибка смены порта в конфиге — операция отменена${NC}"
+      echo -n -e "${YELLOW}Нажмите Enter...${NC}"; read
+      return
+    fi
 
-    local temp_profile=$(mktemp)
-    jq --argjson port "$new_port" '.port = $port' "$profile_file" > "$temp_profile"
-    mv "$temp_profile" "$profile_file"
+    safe_jq_write --argjson port "$new_port" '.port = $port' "$profile_file"
 
     # Update firewall
     open_firewall_port "$new_port"
     close_firewall_port "$old_port"
   fi
 
-  chown root:root "$CONFIG_FILE"
-  chmod 644 "$CONFIG_FILE"
   systemctl restart xray
   echo ""
   echo -e "${GREEN}✓ Порт профиля '$profile_name' изменен: ${YELLOW}$old_port → $new_port${NC}"
@@ -2269,6 +2324,365 @@ adguard_status() {
   echo -e "${CYAN}  Web UI (через SSH-туннель):${NC}"
   echo -e "${GREEN}    ssh -L 3000:127.0.0.1:3000 root@${SERVER_IP}${NC}"
   echo -e "${CYAN}    Затем:${NC} ${YELLOW}http://localhost:3000${NC}"
+
+  echo ""
+  echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
+  read
+}
+
+# ═══════════════════════════════════════════════════════════
+# MTPROTO PROXY (Telegram)
+# ═══════════════════════════════════════════════════════════
+
+# Определение docker compose команды
+get_docker_compose_cmd() {
+  if docker compose version &>/dev/null 2>&1; then
+    echo "docker compose"
+  elif command -v docker-compose &>/dev/null; then
+    echo "docker-compose"
+  else
+    echo ""
+  fi
+}
+
+mtproto_menu() {
+  while true; do
+    show_ascii
+    echo -e "${BLUE}╔════════════════════════════════════════╗${NC}"
+    echo -e "${BLUE}║       MTPROTO PROXY (TELEGRAM)         ║${NC}"
+    echo -e "${BLUE}╚════════════════════════════════════════╝${NC}"
+    echo ""
+
+    # Предупреждение о рисках
+    echo -e "${RED}  ╔══════════════════════════════════════════════════════╗${NC}"
+    echo -e "${RED}  ║  ⚠  ВНИМАНИЕ — РИСКИ                               ║${NC}"
+    echo -e "${RED}  ╠══════════════════════════════════════════════════════╣${NC}"
+    echo -e "${RED}  ║${NC}  Прокси на том же IP что и VPN.                     ${RED}║${NC}"
+    echo -e "${RED}  ║${NC}  Если обнаружат прокси → заблокируют IP → VPN тоже. ${RED}║${NC}"
+    echo -e "${RED}  ║${NC}  MTProto — только Telegram, не весь интернет.       ${RED}║${NC}"
+    echo -e "${RED}  ║${NC}  НЕ раздавайте ссылки публично!                     ${RED}║${NC}"
+    echo -e "${RED}  ╚══════════════════════════════════════════════════════╝${NC}"
+    echo ""
+
+    # Быстрый статус
+    if [[ -d /opt/telemt ]]; then
+      if docker ps --filter name=telemt --format '{{.Names}}' 2>/dev/null | grep -q telemt; then
+        echo -e "  ${GREEN}● MTProto Proxy работает${NC}"
+      else
+        echo -e "  ${YELLOW}● MTProto установлен, но остановлен${NC}"
+      fi
+    else
+      echo -e "  ${CYAN}○ Не установлен${NC}"
+    fi
+    echo ""
+
+    echo -e "${CYAN} 1)${NC} Установить"
+    echo -e "${CYAN} 2)${NC} Удалить"
+    echo -e "${CYAN} 3)${NC} Статус и ссылка"
+    echo -e "${RED} 0)${NC} Назад"
+    echo ""
+    echo -n -e "${YELLOW}Выберите действие: ${NC}"
+    read mt_choice
+    case $mt_choice in
+      1) install_mtproto ;;
+      2) uninstall_mtproto ;;
+      3) mtproto_status ;;
+      0) return ;;
+      *) echo -e "${RED}Неверный выбор${NC}"; sleep 1 ;;
+    esac
+  done
+}
+
+install_mtproto() {
+  show_ascii
+  echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
+  echo -e "${BLUE}       УСТАНОВКА MTPROTO PROXY                ${NC}"
+  echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
+  echo ""
+
+  # Проверка: уже установлен?
+  if [[ -d /opt/telemt ]]; then
+    echo -e "${YELLOW}⚠ MTProto Proxy уже установлен${NC}"
+    echo -e "${CYAN}Используйте меню для просмотра статуса или удаления${NC}"
+    echo ""
+    echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
+    read
+    return
+  fi
+
+  # Установка Docker если нет
+  if ! command -v docker &>/dev/null; then
+    echo -e "${CYAN}  → Установка Docker...${NC}"
+    apt-get update -qq
+    apt-get install -y -qq docker.io docker-compose-plugin >/dev/null 2>&1
+    systemctl enable --now docker >/dev/null 2>&1
+    if ! command -v docker &>/dev/null; then
+      echo -e "${RED}✗ Не удалось установить Docker${NC}"
+      echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
+      read
+      return
+    fi
+    echo -e "${GREEN}  ✓ Docker установлен${NC}"
+  fi
+
+  # Определить команду docker compose
+  local DOCKER_COMPOSE
+  DOCKER_COMPOSE=$(get_docker_compose_cmd)
+  if [[ -z "$DOCKER_COMPOSE" ]]; then
+    echo -e "${CYAN}  → Установка docker-compose-plugin...${NC}"
+    apt-get install -y -qq docker-compose-plugin >/dev/null 2>&1
+    DOCKER_COMPOSE=$(get_docker_compose_cmd)
+    if [[ -z "$DOCKER_COMPOSE" ]]; then
+      echo -e "${RED}✗ Не удалось настроить docker compose${NC}"
+      echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
+      read
+      return
+    fi
+  fi
+
+  # Спросить порт
+  echo -n -e "${YELLOW}Порт для MTProto (по умолчанию 8888): ${NC}"
+  read mt_port
+  mt_port=${mt_port:-8888}
+
+  # Валидация порта
+  if [[ ! "$mt_port" =~ ^[0-9]+$ ]] || [[ $mt_port -lt 1 ]] || [[ $mt_port -gt 65535 ]]; then
+    echo -e "${RED}✗ Неверный порт${NC}"
+    sleep 2
+    return
+  fi
+
+  # Проверка конфликта с Xray портами
+  local xray_ports
+  xray_ports=$(jq -r '.inbounds[].port' "$CONFIG_FILE" 2>/dev/null)
+  for xp in $xray_ports; do
+    if [[ "$mt_port" == "$xp" ]]; then
+      echo -e "${RED}✗ Порт $mt_port уже используется Xray${NC}"
+      sleep 2
+      return
+    fi
+  done
+
+  # Проверка что порт не занят
+  if ss -tuln | grep -qE ":${mt_port}\b"; then
+    echo -e "${RED}✗ Порт $mt_port уже занят другим сервисом${NC}"
+    sleep 2
+    return
+  fi
+
+  # Спросить TLS-домен
+  echo -n -e "${YELLOW}TLS-домен для маскировки (по умолчанию www.google.com): ${NC}"
+  read mt_domain
+  mt_domain=${mt_domain:-www.google.com}
+
+  echo ""
+  echo -e "${CYAN}  → Генерация секрета...${NC}"
+  local mt_secret
+  mt_secret=$(openssl rand -hex 16)
+
+  # Hex-кодируем домен
+  local hex_domain
+  hex_domain=$(echo -n "$mt_domain" | xxd -p | tr -d '\n')
+
+  # Полный secret для tg://proxy (ee + random + hex_domain)
+  local full_secret="ee${mt_secret}${hex_domain}"
+
+  # Создать директорию
+  mkdir -p /opt/telemt
+
+  # Записать telemt.toml
+  echo -e "${CYAN}  → Создание конфигурации...${NC}"
+  cat > /opt/telemt/telemt.toml << TOMLEOF
+[general]
+[general.modes]
+tls = true
+
+[server]
+port = ${mt_port}
+
+[censorship]
+tls_domain = "${mt_domain}"
+mask = true
+
+[access]
+[access.users]
+user1 = "${mt_secret}"
+TOMLEOF
+
+  # Записать docker-compose.yml
+  cat > /opt/telemt/docker-compose.yml << YAMLEOF
+services:
+  telemt:
+    image: whn0thacked/telemt-docker:latest
+    container_name: telemt
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./telemt.toml:/app/telemt.toml:ro
+YAMLEOF
+
+  # Запуск контейнера
+  echo -e "${CYAN}  → Запуск MTProto Proxy...${NC}"
+  if ! $DOCKER_COMPOSE -f /opt/telemt/docker-compose.yml up -d 2>&1; then
+    echo -e "${RED}✗ Ошибка запуска контейнера${NC}"
+    rm -rf /opt/telemt
+    echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
+    read
+    return
+  fi
+
+  # Открыть порт
+  open_firewall_port "$mt_port" tcp
+
+  # Генерация ссылок
+  local tg_link="tg://proxy?server=${SERVER_IP}&port=${mt_port}&secret=${full_secret}"
+  local tme_link="https://t.me/proxy?server=${SERVER_IP}&port=${mt_port}&secret=${full_secret}"
+
+  # Сохранить метаданные
+  cat > /opt/telemt/proxy_info.json << JSONEOF
+{
+  "port": ${mt_port},
+  "domain": "${mt_domain}",
+  "secret": "${mt_secret}",
+  "full_secret": "${full_secret}",
+  "tg_link": "${tg_link}",
+  "tme_link": "${tme_link}",
+  "server_ip": "${SERVER_IP}",
+  "installed_at": "$(date -Iseconds)"
+}
+JSONEOF
+
+  echo ""
+  echo -e "${GREEN}  ✓ MTProto Proxy установлен и запущен!${NC}"
+  echo ""
+  echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
+  echo -e "${CYAN}  Сервер:${NC} ${GREEN}${SERVER_IP}${NC}"
+  echo -e "${CYAN}  Порт:${NC}   ${GREEN}${mt_port}${NC}"
+  echo -e "${CYAN}  Домен:${NC}  ${GREEN}${mt_domain}${NC}"
+  echo -e "${CYAN}  Secret:${NC} ${GREEN}${full_secret}${NC}"
+  echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
+  echo ""
+  echo -e "${CYAN}  tg://proxy ссылка:${NC}"
+  echo -e "${GREEN}  ${tg_link}${NC}"
+  echo ""
+  echo -e "${CYAN}  t.me ссылка:${NC}"
+  echo -e "${GREEN}  ${tme_link}${NC}"
+  echo ""
+  echo -e "${RED}  ⚠ Не раздавайте ссылку публично — только доверенным людям!${NC}"
+  echo -e "${RED}  ⚠ Прокси на том же IP что и VPN — обнаружение прокси = блокировка IP${NC}"
+  echo ""
+  echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
+  read
+}
+
+uninstall_mtproto() {
+  show_ascii
+  echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
+  echo -e "${BLUE}       УДАЛЕНИЕ MTPROTO PROXY                 ${NC}"
+  echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
+  echo ""
+
+  if [[ ! -d /opt/telemt ]]; then
+    echo -e "${YELLOW}⚠ MTProto Proxy не установлен${NC}"
+    echo ""
+    echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
+    read
+    return
+  fi
+
+  echo -e "${RED}Вы уверены что хотите удалить MTProto Proxy? (y/N): ${NC}"
+  read confirm
+  if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+    echo -e "${CYAN}Отменено${NC}"
+    sleep 1
+    return
+  fi
+
+  # Прочитать порт из метаданных
+  local mt_port
+  mt_port=$(jq -r '.port' /opt/telemt/proxy_info.json 2>/dev/null)
+
+  # Остановить и удалить контейнер
+  echo -e "${CYAN}  → Остановка контейнера...${NC}"
+  local DOCKER_COMPOSE
+  DOCKER_COMPOSE=$(get_docker_compose_cmd)
+  if [[ -n "$DOCKER_COMPOSE" ]]; then
+    $DOCKER_COMPOSE -f /opt/telemt/docker-compose.yml down 2>/dev/null
+  else
+    docker rm -f telemt 2>/dev/null
+  fi
+
+  # Удалить файлы
+  echo -e "${CYAN}  → Удаление файлов...${NC}"
+  rm -rf /opt/telemt
+
+  # Закрыть порт напрямую через ufw (НЕ через close_firewall_port)
+  if [[ -n "$mt_port" ]] && [[ "$mt_port" =~ ^[0-9]+$ ]]; then
+    if ufw status | grep -qE "^${mt_port}/tcp.*ALLOW"; then
+      echo -e "${CYAN}  → Закрываю порт ${mt_port}/tcp...${NC}"
+      ufw delete allow "${mt_port}/tcp" >/dev/null 2>&1
+      ufw reload >/dev/null 2>&1
+      echo -e "${GREEN}  ✓ Порт закрыт${NC}"
+    fi
+  fi
+
+  echo ""
+  echo -e "${GREEN}  ✓ MTProto Proxy удалён${NC}"
+  echo ""
+  echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
+  read
+}
+
+mtproto_status() {
+  show_ascii
+  echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
+  echo -e "${BLUE}       СТАТУС MTPROTO PROXY                   ${NC}"
+  echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
+  echo ""
+
+  if [[ ! -d /opt/telemt ]]; then
+    echo -e "${YELLOW}⚠ MTProto Proxy не установлен${NC}"
+    echo ""
+    echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
+    read
+    return
+  fi
+
+  # Статус контейнера
+  echo -e "${CYAN}  Контейнер:${NC}"
+  if docker ps --filter name=telemt --format '{{.Names}}' 2>/dev/null | grep -q telemt; then
+    echo -e "  ${GREEN}● telemt — работает${NC}"
+    local uptime
+    uptime=$(docker ps --filter name=telemt --format '{{.Status}}' 2>/dev/null)
+    echo -e "  ${CYAN}  Статус: ${NC}${uptime}"
+  else
+    echo -e "  ${RED}● telemt — остановлен${NC}"
+  fi
+  echo ""
+
+  # Данные подключения
+  if [[ -f /opt/telemt/proxy_info.json ]]; then
+    local mt_port mt_domain mt_full_secret mt_tg_link mt_tme_link
+    mt_port=$(jq -r '.port' /opt/telemt/proxy_info.json)
+    mt_domain=$(jq -r '.domain' /opt/telemt/proxy_info.json)
+    mt_full_secret=$(jq -r '.full_secret' /opt/telemt/proxy_info.json)
+    mt_tg_link=$(jq -r '.tg_link' /opt/telemt/proxy_info.json)
+    mt_tme_link=$(jq -r '.tme_link' /opt/telemt/proxy_info.json)
+
+    echo -e "${CYAN}  Данные подключения:${NC}"
+    echo -e "    ${CYAN}Сервер:${NC} ${GREEN}${SERVER_IP}${NC}"
+    echo -e "    ${CYAN}Порт:${NC}   ${GREEN}${mt_port}${NC}"
+    echo -e "    ${CYAN}Домен:${NC}  ${GREEN}${mt_domain}${NC}"
+    echo -e "    ${CYAN}Secret:${NC} ${GREEN}${mt_full_secret}${NC}"
+    echo ""
+    echo -e "${CYAN}  tg://proxy ссылка:${NC}"
+    echo -e "  ${GREEN}${mt_tg_link}${NC}"
+    echo ""
+    echo -e "${CYAN}  t.me ссылка:${NC}"
+    echo -e "  ${GREEN}${mt_tme_link}${NC}"
+  else
+    echo -e "${YELLOW}  ⚠ Файл метаданных не найден${NC}"
+  fi
 
   echo ""
   echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
