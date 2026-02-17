@@ -92,6 +92,8 @@ update_transport_settings_for_sni() {
   fi
 
   mv "$temp_config" "$config_file"
+  chown root:root "$config_file" 2>/dev/null
+  chmod 644 "$config_file" 2>/dev/null
   echo -e "${GREEN}  ✓ Reality SNI обновлен → $new_sni${NC}"
 
   # Transport-specific updates
@@ -408,25 +410,26 @@ main_menu() {
   local needs_restart=false
 
   if [[ ! -f /usr/local/etc/xray/.xhttp_migrated ]]; then
-    migrate_xhttp_profiles
-    touch /usr/local/etc/xray/.xhttp_migrated
-    needs_restart=true
+    if migrate_xhttp_profiles; then
+      touch /usr/local/etc/xray/.xhttp_migrated
+      needs_restart=true
+    fi
   fi
 
   # v1.3.2: Routing migration
   if [[ ! -f /usr/local/etc/xray/.routing_v132_migrated ]]; then
     if migrate_routing_config; then
+      touch /usr/local/etc/xray/.routing_v132_migrated
       needs_restart=true
     fi
-    touch /usr/local/etc/xray/.routing_v132_migrated
   fi
 
   # XHTTP mode migration (stream -> auto for sing-box compatibility)
   if [[ ! -f /usr/local/etc/xray/.xhttp_mode_migrated ]]; then
     if migrate_xhttp_mode; then
+      touch /usr/local/etc/xray/.xhttp_mode_migrated
       needs_restart=true
     fi
-    touch /usr/local/etc/xray/.xhttp_mode_migrated
   fi
 
   if [[ "$needs_restart" == "true" ]]; then
@@ -707,6 +710,26 @@ add_inbound() {
       done
     fi
 
+    # Синхронизация fingerprint с существующим inbound
+    local existing_fp=$(jq -r --argjson port "$port" \
+      '.inbounds[] | select(.port == $port) | .streamSettings.realitySettings.fingerprint' \
+      "$CONFIG_FILE" 2>/dev/null)
+
+    if [[ -n "$existing_fp" ]] && [[ "$existing_fp" != "$fingerprint" ]]; then
+      echo -e "${YELLOW}⚠ Fingerprint порта $port: ${CYAN}$existing_fp${YELLOW} (профиль будет обновлён)${NC}"
+      fingerprint="$existing_fp"
+      # Обновить fingerprint в только что созданном файле профиля
+      local fpf
+      for fpf in "$PROFILES_DIR"/*.json; do
+        [[ ! -f "$fpf" ]] && continue
+        local fpf_uuid=$(jq -r '.uuid' "$fpf" 2>/dev/null)
+        if [[ "$fpf_uuid" == "$uuid" ]]; then
+          safe_jq_write --arg fp "$existing_fp" '.fingerprint = $fp' "$fpf"
+          break
+        fi
+      done
+    fi
+
     echo -e "${CYAN} → Добавление клиента в существующий inbound на порту $port${NC}"
     # Определяем flow по типу транспорта нового профиля (не копируем слепо от первого клиента)
     local client_flow=""
@@ -923,9 +946,9 @@ delete_profile_menu() {
           config_ok=true
         fi
       else
-        # Есть другие клиенты — удаляем только этого
-        if safe_jq_write --arg uuid "$uuid" '
-          (.inbounds[].settings.clients) |= map(select(.id != $uuid))
+        # Есть другие клиенты — удаляем только этого (scoped по порту)
+        if safe_jq_write --arg uuid "$uuid" --argjson port "$port" '
+          (.inbounds[] | select(.port == $port) | .settings.clients) |= map(select(.id != $uuid))
         ' "$CONFIG_FILE"; then
           echo -e "${CYAN}  → Удаление клиента из inbound (порт $port используется другими профилями)${NC}"
           config_ok=true
@@ -1172,9 +1195,11 @@ change_sni_menu() {
     read confirm
     if [[ "$confirm" =~ ^[yYдД]$ ]]; then
       # Update profile JSON
-      local temp_profile=$(mktemp)
-      jq --arg sni "$new_sni" '.sni = $sni' "$PROFILES_DIR/$selected.json" > "$temp_profile"
-      mv "$temp_profile" "$PROFILES_DIR/$selected.json"
+      if ! safe_jq_write --arg sni "$new_sni" '.sni = $sni' "$PROFILES_DIR/$selected.json"; then
+        echo -e "${RED}✗ Ошибка обновления профиля${NC}"
+        sleep 2
+        return
+      fi
 
       # Update all profiles on port if shared
       if [[ ${#profiles_on_port[@]} -gt 1 ]]; then
@@ -1182,7 +1207,11 @@ change_sni_menu() {
       fi
 
       # Update config
-      update_transport_settings_for_sni "$port" "$new_sni" "$CONFIG_FILE"
+      if ! update_transport_settings_for_sni "$port" "$new_sni" "$CONFIG_FILE"; then
+        echo -e "${RED}✗ Ошибка обновления config.json${NC}"
+        sleep 2
+        return
+      fi
       systemctl restart xray
 
       echo ""
@@ -1328,9 +1357,11 @@ change_sni_menu() {
   fi
 
   # Update selected profile
-  local temp_profile=$(mktemp)
-  jq --arg sni "$new_sni" '.sni = $sni' "$PROFILES_DIR/$selected.json" > "$temp_profile"
-  mv "$temp_profile" "$PROFILES_DIR/$selected.json"
+  if ! safe_jq_write --arg sni "$new_sni" '.sni = $sni' "$PROFILES_DIR/$selected.json"; then
+    echo -e "${RED}✗ Ошибка обновления профиля${NC}"
+    sleep 2
+    return
+  fi
 
   # If shared inbound, update ALL profiles on port
   if [[ "$shared_inbound" == "true" ]]; then
@@ -1339,7 +1370,11 @@ change_sni_menu() {
   fi
 
   # Update config (transport-aware)
-  update_transport_settings_for_sni "$port" "$new_sni" "$CONFIG_FILE"
+  if ! update_transport_settings_for_sni "$port" "$new_sni" "$CONFIG_FILE"; then
+    echo -e "${RED}✗ Ошибка обновления config.json${NC}"
+    sleep 2
+    return
+  fi
 
   systemctl restart xray
 
@@ -1482,9 +1517,11 @@ change_fingerprint_menu() {
   fi
 
   # Update selected profile
-  local temp_profile=$(mktemp)
-  jq --arg fp "$new_fp" '.fingerprint = $fp' "$PROFILES_DIR/$selected.json" > "$temp_profile"
-  mv "$temp_profile" "$PROFILES_DIR/$selected.json"
+  if ! safe_jq_write --arg fp "$new_fp" '.fingerprint = $fp' "$PROFILES_DIR/$selected.json"; then
+    echo -e "${RED}✗ Ошибка обновления профиля${NC}"
+    sleep 2
+    return
+  fi
 
   # If shared inbound, update ALL profiles on port
   if [[ "$shared_inbound" == "true" ]]; then
@@ -1493,11 +1530,13 @@ change_fingerprint_menu() {
   fi
 
   # Update config
-  local temp_config=$(mktemp)
-  jq --arg tag "inbound-$port" --arg fp "$new_fp" '
-    (.inbounds[] | select(.tag == $tag) | .streamSettings.realitySettings.fingerprint) |= $fp
-  ' "$CONFIG_FILE" > "$temp_config"
-  mv "$temp_config" "$CONFIG_FILE"
+  if ! safe_jq_write --argjson port "$port" --arg fp "$new_fp" '
+    (.inbounds[] | select(.port == $port) | .streamSettings.realitySettings.fingerprint) |= $fp
+  ' "$CONFIG_FILE"; then
+    echo -e "${RED}✗ Ошибка обновления config.json${NC}"
+    sleep 2
+    return
+  fi
 
   systemctl restart xray
 
@@ -1667,8 +1706,12 @@ change_port_menu() {
     # Move client to existing inbound on target port
     echo -e "${CYAN}  → Перемещение клиента на порт $new_port...${NC}"
 
-    # Get flow from target inbound
-    local target_flow=$(jq -r --argjson port "$new_port" '.inbounds[] | select(.port == $port) | .settings.clients[0].flow // ""' "$CONFIG_FILE")
+    # Определяем flow по типу транспорта профиля
+    local target_flow=""
+    case "$profile_transport" in
+      tcp|tcp-utls|tcp-xudp) target_flow="xtls-rprx-vision" ;;
+      tcp-mux|grpc|xhttp) target_flow="" ;;
+    esac
 
     # Шаг 1: Добавить клиента на новый порт
     if ! safe_jq_write --arg uuid "$profile_uuid" --argjson port "$new_port" --arg flow "$target_flow" '
@@ -1684,6 +1727,10 @@ change_port_menu() {
       (.inbounds[] | select(.port == $port) | .settings.clients) |= map(select(.id != $uuid))
     ' "$CONFIG_FILE"; then
       echo -e "${RED}  ✗ Ошибка удаления клиента с порта $old_port${NC}"
+      echo -e "${YELLOW}  → Откат: удаление клиента с нового порта $new_port...${NC}"
+      safe_jq_write --arg uuid "$profile_uuid" --argjson port "$new_port" '
+        (.inbounds[] | select(.port == $port) | .settings.clients) |= map(select(.id != $uuid))
+      ' "$CONFIG_FILE"
       echo -n -e "${YELLOW}Нажмите Enter...${NC}"; read
       return
     fi
@@ -1696,8 +1743,13 @@ change_port_menu() {
       close_firewall_port "$old_port"
     fi
 
-    # Шаг 4: Обновить файл профиля
-    safe_jq_write --argjson port "$new_port" --arg sni "$target_inbound_sni" '.port = $port | .sni = $sni' "$profile_file"
+    # Шаг 4: Обновить файл профиля (port + sni + fingerprint целевого inbound)
+    local target_fp=$(jq -r --argjson port "$new_port" \
+      '.inbounds[] | select(.port == $port) | .streamSettings.realitySettings.fingerprint' \
+      "$CONFIG_FILE" 2>/dev/null)
+    [[ -z "$target_fp" ]] && target_fp="chrome"
+    safe_jq_write --argjson port "$new_port" --arg sni "$target_inbound_sni" --arg fp "$target_fp" \
+      '.port = $port | .sni = $sni | .fingerprint = $fp' "$profile_file"
 
   else
     # Move entire inbound to new port (original logic)
@@ -1710,6 +1762,12 @@ change_port_menu() {
       return
     fi
 
+    # Обновить ВСЕ профили на старом порту (inbound перенесён целиком)
+    local moved_profiles=($(get_profiles_on_port "$old_port"))
+    for mp in "${moved_profiles[@]}"; do
+      safe_jq_write --argjson port "$new_port" '.port = $port' "$PROFILES_DIR/$mp.json"
+    done
+    # На случай если выбранный профиль не попал в список (уже обновлён)
     safe_jq_write --argjson port "$new_port" '.port = $port' "$profile_file"
 
     # Update firewall
