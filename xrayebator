@@ -468,7 +468,6 @@ main_menu() {
     echo ""
     echo -e "${MAGENTA} ДОПОЛНИТЕЛЬНЫЕ ФУНКЦИИ:${NC}"
     echo -e "${CYAN} 7)${NC} AdGuard Home (блокировка рекламы)"
-    echo -e "${CYAN} 8)${NC} MTProto Proxy (Telegram)"
     echo ""
     echo -e "${RED} 0)${NC} Выход"
     echo ""
@@ -483,7 +482,6 @@ main_menu() {
       5) change_fingerprint_menu ;;
       6) change_port_menu ;;
       7) adguard_home_menu ;;
-      8) mtproto_menu ;;
       0) exit 0 ;;
       *) echo -e "${RED}Неверный выбор${NC}"; sleep 1 ;;
     esac
@@ -1205,26 +1203,30 @@ change_sni_menu() {
   fi
 
   declare -A sni_desc
-  sni_desc["ozone.ru"]="E-commerce, макс. устойчивость для мобильных"
-  sni_desc["wildberries.ru"]="E-commerce, стабильно для Мегафон/Ростелеком"
-  sni_desc["sberbank.ru"]="Банк, оптимально для региональных сетей"
-  sni_desc["nspk.ru"]="Нац. платёжная система, сложно блокировать"
-  sni_desc["speller.yandex.net"]="Яндекс CDN, универсальный вариант"
-  sni_desc["gosuslugi.ru"]="Госуслуги, для сложных регионов"
+  sni_desc["www.ozon.ru"]="E-commerce, макс. устойчивость для мобильных"
+  sni_desc["api.ozon.ru"]="Ozon API, хорошо в паре с основным"
+  sni_desc["st.ozon.ru"]="Ozon CDN статика"
+  sni_desc["ir.ozon.ru"]="Ozon CDN изображения"
+  sni_desc["www.wildberries.ru"]="E-commerce, стабильно для Мегафон/Ростелеком"
+  sni_desc["splitter.wb.ru"]="Wildberries CDN"
+  sni_desc["www.sberbank.ru"]="Банк, оптимально для региональных сетей"
+  sni_desc["www.tinkoff.ru"]="Банк, стабильный вариант"
+  sni_desc["www.alfabank.ru"]="Банк, запасной вариант"
+  sni_desc["www.nspk.ru"]="Нац. платёжная система, сложно блокировать"
+  sni_desc["sbp.nspk.ru"]="СБП, идеально для МТС"
   sni_desc["stats.vk-portal.net"]="VK мониторинг, хорош для стационарных"
   sni_desc["queuev4.vk.com"]="VK CDN, часто работает на мобильных"
   sni_desc["www.kinopoisk.ru"]="Медиа, обычно стабильный"
-  sni_desc["api.ozone.ru"]="Ozon API, хорошо в паре с основным"
-  sni_desc["splitter.wb.ru"]="Wildberries CDN"
-  sni_desc["sbp.nspk.ru"]="СБП, идеально для МТС"
-  sni_desc["st.ozone.ru"]="Ozon CDN статика"
-  sni_desc["ir.ozone.ru"]="Ozon CDN изображения"
+  sni_desc["www.gosuslugi.ru"]="Госуслуги, для сложных регионов"
   sni_desc["www.mos.ru"]="Портал Москвы"
-  sni_desc["github.com"]="Только если российские не работают!"
-  sni_desc["cloudflare.com"]="Для корпоративных каналов"
+  sni_desc["speller.yandex.net"]="Яндекс CDN, универсальный вариант"
+  sni_desc["api-maps.yandex.ru"]="Яндекс Карты API"
+  sni_desc["mc.yandex.ru"]="Яндекс Метрика"
+  sni_desc["suggest.yandex.ru"]="Яндекс подсказки"
+  sni_desc["www.github.com"]="Только если российские не работают!"
+  sni_desc["www.cloudflare.com"]="Для корпоративных каналов"
   sni_desc["www.microsoft.com"]="Часто фильтруется"
-  sni_desc["bbc.com"]="Редко работает"
-  sni_desc["cdnrhkgfkkpupuotntfj.svc.cdn.yandex.net"]="Яндекс CDN рандом"
+  sni_desc["www.bbc.com"]="Редко работает"
 
   echo -e "${YELLOW}ТОП-20 доменов для маскировки:${NC}\n"
   local idx=1
@@ -2324,365 +2326,6 @@ adguard_status() {
   echo -e "${CYAN}  Web UI (через SSH-туннель):${NC}"
   echo -e "${GREEN}    ssh -L 3000:127.0.0.1:3000 root@${SERVER_IP}${NC}"
   echo -e "${CYAN}    Затем:${NC} ${YELLOW}http://localhost:3000${NC}"
-
-  echo ""
-  echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
-  read
-}
-
-# ═══════════════════════════════════════════════════════════
-# MTPROTO PROXY (Telegram)
-# ═══════════════════════════════════════════════════════════
-
-# Определение docker compose команды
-get_docker_compose_cmd() {
-  if docker compose version &>/dev/null 2>&1; then
-    echo "docker compose"
-  elif command -v docker-compose &>/dev/null; then
-    echo "docker-compose"
-  else
-    echo ""
-  fi
-}
-
-mtproto_menu() {
-  while true; do
-    show_ascii
-    echo -e "${BLUE}╔════════════════════════════════════════╗${NC}"
-    echo -e "${BLUE}║       MTPROTO PROXY (TELEGRAM)         ║${NC}"
-    echo -e "${BLUE}╚════════════════════════════════════════╝${NC}"
-    echo ""
-
-    # Предупреждение о рисках
-    echo -e "${RED}  ╔══════════════════════════════════════════════════════╗${NC}"
-    echo -e "${RED}  ║  ⚠  ВНИМАНИЕ — РИСКИ                               ║${NC}"
-    echo -e "${RED}  ╠══════════════════════════════════════════════════════╣${NC}"
-    echo -e "${RED}  ║${NC}  Прокси на том же IP что и VPN.                     ${RED}║${NC}"
-    echo -e "${RED}  ║${NC}  Если обнаружат прокси → заблокируют IP → VPN тоже. ${RED}║${NC}"
-    echo -e "${RED}  ║${NC}  MTProto — только Telegram, не весь интернет.       ${RED}║${NC}"
-    echo -e "${RED}  ║${NC}  НЕ раздавайте ссылки публично!                     ${RED}║${NC}"
-    echo -e "${RED}  ╚══════════════════════════════════════════════════════╝${NC}"
-    echo ""
-
-    # Быстрый статус
-    if [[ -d /opt/telemt ]]; then
-      if docker ps --filter name=telemt --format '{{.Names}}' 2>/dev/null | grep -q telemt; then
-        echo -e "  ${GREEN}● MTProto Proxy работает${NC}"
-      else
-        echo -e "  ${YELLOW}● MTProto установлен, но остановлен${NC}"
-      fi
-    else
-      echo -e "  ${CYAN}○ Не установлен${NC}"
-    fi
-    echo ""
-
-    echo -e "${CYAN} 1)${NC} Установить"
-    echo -e "${CYAN} 2)${NC} Удалить"
-    echo -e "${CYAN} 3)${NC} Статус и ссылка"
-    echo -e "${RED} 0)${NC} Назад"
-    echo ""
-    echo -n -e "${YELLOW}Выберите действие: ${NC}"
-    read mt_choice
-    case $mt_choice in
-      1) install_mtproto ;;
-      2) uninstall_mtproto ;;
-      3) mtproto_status ;;
-      0) return ;;
-      *) echo -e "${RED}Неверный выбор${NC}"; sleep 1 ;;
-    esac
-  done
-}
-
-install_mtproto() {
-  show_ascii
-  echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
-  echo -e "${BLUE}       УСТАНОВКА MTPROTO PROXY                ${NC}"
-  echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
-  echo ""
-
-  # Проверка: уже установлен?
-  if [[ -d /opt/telemt ]]; then
-    echo -e "${YELLOW}⚠ MTProto Proxy уже установлен${NC}"
-    echo -e "${CYAN}Используйте меню для просмотра статуса или удаления${NC}"
-    echo ""
-    echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
-    read
-    return
-  fi
-
-  # Установка Docker если нет
-  if ! command -v docker &>/dev/null; then
-    echo -e "${CYAN}  → Установка Docker...${NC}"
-    apt-get update -qq
-    apt-get install -y -qq docker.io docker-compose-plugin >/dev/null 2>&1
-    systemctl enable --now docker >/dev/null 2>&1
-    if ! command -v docker &>/dev/null; then
-      echo -e "${RED}✗ Не удалось установить Docker${NC}"
-      echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
-      read
-      return
-    fi
-    echo -e "${GREEN}  ✓ Docker установлен${NC}"
-  fi
-
-  # Определить команду docker compose
-  local DOCKER_COMPOSE
-  DOCKER_COMPOSE=$(get_docker_compose_cmd)
-  if [[ -z "$DOCKER_COMPOSE" ]]; then
-    echo -e "${CYAN}  → Установка docker-compose-plugin...${NC}"
-    apt-get install -y -qq docker-compose-plugin >/dev/null 2>&1
-    DOCKER_COMPOSE=$(get_docker_compose_cmd)
-    if [[ -z "$DOCKER_COMPOSE" ]]; then
-      echo -e "${RED}✗ Не удалось настроить docker compose${NC}"
-      echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
-      read
-      return
-    fi
-  fi
-
-  # Спросить порт
-  echo -n -e "${YELLOW}Порт для MTProto (по умолчанию 8888): ${NC}"
-  read mt_port
-  mt_port=${mt_port:-8888}
-
-  # Валидация порта
-  if [[ ! "$mt_port" =~ ^[0-9]+$ ]] || [[ $mt_port -lt 1 ]] || [[ $mt_port -gt 65535 ]]; then
-    echo -e "${RED}✗ Неверный порт${NC}"
-    sleep 2
-    return
-  fi
-
-  # Проверка конфликта с Xray портами
-  local xray_ports
-  xray_ports=$(jq -r '.inbounds[].port' "$CONFIG_FILE" 2>/dev/null)
-  for xp in $xray_ports; do
-    if [[ "$mt_port" == "$xp" ]]; then
-      echo -e "${RED}✗ Порт $mt_port уже используется Xray${NC}"
-      sleep 2
-      return
-    fi
-  done
-
-  # Проверка что порт не занят
-  if ss -tuln | grep -qE ":${mt_port}\b"; then
-    echo -e "${RED}✗ Порт $mt_port уже занят другим сервисом${NC}"
-    sleep 2
-    return
-  fi
-
-  # Спросить TLS-домен
-  echo -n -e "${YELLOW}TLS-домен для маскировки (по умолчанию www.google.com): ${NC}"
-  read mt_domain
-  mt_domain=${mt_domain:-www.google.com}
-
-  echo ""
-  echo -e "${CYAN}  → Генерация секрета...${NC}"
-  local mt_secret
-  mt_secret=$(openssl rand -hex 16)
-
-  # Hex-кодируем домен
-  local hex_domain
-  hex_domain=$(echo -n "$mt_domain" | xxd -p | tr -d '\n')
-
-  # Полный secret для tg://proxy (ee + random + hex_domain)
-  local full_secret="ee${mt_secret}${hex_domain}"
-
-  # Создать директорию
-  mkdir -p /opt/telemt
-
-  # Записать telemt.toml
-  echo -e "${CYAN}  → Создание конфигурации...${NC}"
-  cat > /opt/telemt/telemt.toml << TOMLEOF
-[general]
-[general.modes]
-tls = true
-
-[server]
-port = ${mt_port}
-
-[censorship]
-tls_domain = "${mt_domain}"
-mask = true
-
-[access]
-[access.users]
-user1 = "${mt_secret}"
-TOMLEOF
-
-  # Записать docker-compose.yml
-  cat > /opt/telemt/docker-compose.yml << YAMLEOF
-services:
-  telemt:
-    image: whn0thacked/telemt-docker:latest
-    container_name: telemt
-    restart: unless-stopped
-    network_mode: host
-    volumes:
-      - ./telemt.toml:/app/telemt.toml:ro
-YAMLEOF
-
-  # Запуск контейнера
-  echo -e "${CYAN}  → Запуск MTProto Proxy...${NC}"
-  if ! $DOCKER_COMPOSE -f /opt/telemt/docker-compose.yml up -d 2>&1; then
-    echo -e "${RED}✗ Ошибка запуска контейнера${NC}"
-    rm -rf /opt/telemt
-    echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
-    read
-    return
-  fi
-
-  # Открыть порт
-  open_firewall_port "$mt_port" tcp
-
-  # Генерация ссылок
-  local tg_link="tg://proxy?server=${SERVER_IP}&port=${mt_port}&secret=${full_secret}"
-  local tme_link="https://t.me/proxy?server=${SERVER_IP}&port=${mt_port}&secret=${full_secret}"
-
-  # Сохранить метаданные
-  cat > /opt/telemt/proxy_info.json << JSONEOF
-{
-  "port": ${mt_port},
-  "domain": "${mt_domain}",
-  "secret": "${mt_secret}",
-  "full_secret": "${full_secret}",
-  "tg_link": "${tg_link}",
-  "tme_link": "${tme_link}",
-  "server_ip": "${SERVER_IP}",
-  "installed_at": "$(date -Iseconds)"
-}
-JSONEOF
-
-  echo ""
-  echo -e "${GREEN}  ✓ MTProto Proxy установлен и запущен!${NC}"
-  echo ""
-  echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
-  echo -e "${CYAN}  Сервер:${NC} ${GREEN}${SERVER_IP}${NC}"
-  echo -e "${CYAN}  Порт:${NC}   ${GREEN}${mt_port}${NC}"
-  echo -e "${CYAN}  Домен:${NC}  ${GREEN}${mt_domain}${NC}"
-  echo -e "${CYAN}  Secret:${NC} ${GREEN}${full_secret}${NC}"
-  echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
-  echo ""
-  echo -e "${CYAN}  tg://proxy ссылка:${NC}"
-  echo -e "${GREEN}  ${tg_link}${NC}"
-  echo ""
-  echo -e "${CYAN}  t.me ссылка:${NC}"
-  echo -e "${GREEN}  ${tme_link}${NC}"
-  echo ""
-  echo -e "${RED}  ⚠ Не раздавайте ссылку публично — только доверенным людям!${NC}"
-  echo -e "${RED}  ⚠ Прокси на том же IP что и VPN — обнаружение прокси = блокировка IP${NC}"
-  echo ""
-  echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
-  read
-}
-
-uninstall_mtproto() {
-  show_ascii
-  echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
-  echo -e "${BLUE}       УДАЛЕНИЕ MTPROTO PROXY                 ${NC}"
-  echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
-  echo ""
-
-  if [[ ! -d /opt/telemt ]]; then
-    echo -e "${YELLOW}⚠ MTProto Proxy не установлен${NC}"
-    echo ""
-    echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
-    read
-    return
-  fi
-
-  echo -e "${RED}Вы уверены что хотите удалить MTProto Proxy? (y/N): ${NC}"
-  read confirm
-  if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
-    echo -e "${CYAN}Отменено${NC}"
-    sleep 1
-    return
-  fi
-
-  # Прочитать порт из метаданных
-  local mt_port
-  mt_port=$(jq -r '.port' /opt/telemt/proxy_info.json 2>/dev/null)
-
-  # Остановить и удалить контейнер
-  echo -e "${CYAN}  → Остановка контейнера...${NC}"
-  local DOCKER_COMPOSE
-  DOCKER_COMPOSE=$(get_docker_compose_cmd)
-  if [[ -n "$DOCKER_COMPOSE" ]]; then
-    $DOCKER_COMPOSE -f /opt/telemt/docker-compose.yml down 2>/dev/null
-  else
-    docker rm -f telemt 2>/dev/null
-  fi
-
-  # Удалить файлы
-  echo -e "${CYAN}  → Удаление файлов...${NC}"
-  rm -rf /opt/telemt
-
-  # Закрыть порт напрямую через ufw (НЕ через close_firewall_port)
-  if [[ -n "$mt_port" ]] && [[ "$mt_port" =~ ^[0-9]+$ ]]; then
-    if ufw status | grep -qE "^${mt_port}/tcp.*ALLOW"; then
-      echo -e "${CYAN}  → Закрываю порт ${mt_port}/tcp...${NC}"
-      ufw delete allow "${mt_port}/tcp" >/dev/null 2>&1
-      ufw reload >/dev/null 2>&1
-      echo -e "${GREEN}  ✓ Порт закрыт${NC}"
-    fi
-  fi
-
-  echo ""
-  echo -e "${GREEN}  ✓ MTProto Proxy удалён${NC}"
-  echo ""
-  echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
-  read
-}
-
-mtproto_status() {
-  show_ascii
-  echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
-  echo -e "${BLUE}       СТАТУС MTPROTO PROXY                   ${NC}"
-  echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
-  echo ""
-
-  if [[ ! -d /opt/telemt ]]; then
-    echo -e "${YELLOW}⚠ MTProto Proxy не установлен${NC}"
-    echo ""
-    echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
-    read
-    return
-  fi
-
-  # Статус контейнера
-  echo -e "${CYAN}  Контейнер:${NC}"
-  if docker ps --filter name=telemt --format '{{.Names}}' 2>/dev/null | grep -q telemt; then
-    echo -e "  ${GREEN}● telemt — работает${NC}"
-    local uptime
-    uptime=$(docker ps --filter name=telemt --format '{{.Status}}' 2>/dev/null)
-    echo -e "  ${CYAN}  Статус: ${NC}${uptime}"
-  else
-    echo -e "  ${RED}● telemt — остановлен${NC}"
-  fi
-  echo ""
-
-  # Данные подключения
-  if [[ -f /opt/telemt/proxy_info.json ]]; then
-    local mt_port mt_domain mt_full_secret mt_tg_link mt_tme_link
-    mt_port=$(jq -r '.port' /opt/telemt/proxy_info.json)
-    mt_domain=$(jq -r '.domain' /opt/telemt/proxy_info.json)
-    mt_full_secret=$(jq -r '.full_secret' /opt/telemt/proxy_info.json)
-    mt_tg_link=$(jq -r '.tg_link' /opt/telemt/proxy_info.json)
-    mt_tme_link=$(jq -r '.tme_link' /opt/telemt/proxy_info.json)
-
-    echo -e "${CYAN}  Данные подключения:${NC}"
-    echo -e "    ${CYAN}Сервер:${NC} ${GREEN}${SERVER_IP}${NC}"
-    echo -e "    ${CYAN}Порт:${NC}   ${GREEN}${mt_port}${NC}"
-    echo -e "    ${CYAN}Домен:${NC}  ${GREEN}${mt_domain}${NC}"
-    echo -e "    ${CYAN}Secret:${NC} ${GREEN}${mt_full_secret}${NC}"
-    echo ""
-    echo -e "${CYAN}  tg://proxy ссылка:${NC}"
-    echo -e "  ${GREEN}${mt_tg_link}${NC}"
-    echo ""
-    echo -e "${CYAN}  t.me ссылка:${NC}"
-    echo -e "  ${GREEN}${mt_tme_link}${NC}"
-  else
-    echo -e "${YELLOW}  ⚠ Файл метаданных не найден${NC}"
-  fi
 
   echo ""
   echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"

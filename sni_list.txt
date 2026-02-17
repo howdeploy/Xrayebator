@@ -1,5 +1,5 @@
 # XRAYEBATOR - Категоризированный список SNI
-# Последнее обновление: декабрь 2025
+# Последнее обновление: февраль 2026
 # Формат: домен|категория|приоритет
 # Категории: ru_whitelist, yandex_cdn, foreign, fallback
 
@@ -9,20 +9,19 @@
 # ═══════════════════════════════════════════════════════════
 
 # E-commerce (никогда не блокируется)
-ozone.ru|ru_whitelist|1
-api.ozone.ru|ru_whitelist|1
-st.ozone.ru|ru_whitelist|1
-ir.ozone.ru|ru_whitelist|1
+www.ozon.ru|ru_whitelist|1
+api.ozon.ru|ru_whitelist|1
+st.ozon.ru|ru_whitelist|1
+ir.ozon.ru|ru_whitelist|1
 
-wildberries.ru|ru_whitelist|1
-splitter.wb.ru|ru_whitelist|1
 www.wildberries.ru|ru_whitelist|1
+splitter.wb.ru|ru_whitelist|1
 
 # Финансы (опорная инфраструктура)
-sberbank.ru|ru_whitelist|1
-tinkoff.ru|ru_whitelist|1
-alfabank.ru|ru_whitelist|1
-nspk.ru|ru_whitelist|1
+www.sberbank.ru|ru_whitelist|1
+www.tinkoff.ru|ru_whitelist|1
+www.alfabank.ru|ru_whitelist|1
+www.nspk.ru|ru_whitelist|1
 sbp.nspk.ru|ru_whitelist|1
 
 # VK/Госмониторинг
@@ -39,57 +38,47 @@ www.rbc.ru|ru_whitelist|1
 www.vedomosti.ru|ru_whitelist|1
 
 # Госуслуги/Порталы
-gosuslugi.ru|ru_whitelist|1
+www.gosuslugi.ru|ru_whitelist|1
 www.mos.ru|ru_whitelist|1
-spb.gov.ru|ru_whitelist|1
+www.spb.gov.ru|ru_whitelist|1
 
 # ═══════════════════════════════════════════════════════════
 # YANDEX CDN - Рандомные поддомены (очень рекомендуется)
 # Использовать ВТОРЫМ, если Tier-1 не работает
 # ═══════════════════════════════════════════════════════════
 
-cdnrhkgfkkpupuotntfj.svc.cdn.yandex.net|yandex_cdn|2
-cdnbuzfdtsznmhefqqlf.svc.cdn.yandex.net|yandex_cdn|2
-cdnfnznsqfhsejbvonwd.svc.cdn.yandex.net|yandex_cdn|2
-cdnqwerty123abc456def.svc.cdn.yandex.net|yandex_cdn|2
-cdnrandom7890xyz1234.svc.cdn.yandex.net|yandex_cdn|2
-cdncommunity2025team.svc.cdn.yandex.net|yandex_cdn|2
-cdnstability5000fast1.svc.cdn.yandex.net|yandex_cdn|2
-
 speller.yandex.net|yandex_cdn|2
 api-maps.yandex.ru|yandex_cdn|2
 spell.yandex.net|yandex_cdn|2
 advapi.yandex.net|yandex_cdn|2
+mc.yandex.ru|yandex_cdn|2
+suggest.yandex.ru|yandex_cdn|2
 
 # ═══════════════════════════════════════════════════════════
 # ИНОСТРАННЫЕ ДОМЕНЫ (не всегда проходят, в России могут фильтроваться)
 # Использовать ТРЕТЬИМ — резервное решение
 # ═══════════════════════════════════════════════════════════
 
-github.com|foreign|3
+www.github.com|foreign|3
 raw.githubusercontent.com|foreign|3
 api.github.com|foreign|3
-www.github.com|foreign|3
-cloudflare.com|foreign|3
-cdn.cloudflare.net|foreign|3
 www.cloudflare.com|foreign|3
+cdn.cloudflare.net|foreign|3
 www.google.com|foreign|3
 www.microsoft.com|foreign|3
 www.apple.com|foreign|3
 aws.amazon.com|foreign|3
-bbc.com|foreign|3
 www.bbc.com|foreign|3
-cnn.com|foreign|3
 
 # ═══════════════════════════════════════════════════════════
 # FALLBACK (экстренный случай, часто уходит под подозрение DPI)
 # Использовать ТОЛЬКО если ничего не сработало
 # ═══════════════════════════════════════════════════════════
 
-yahoo.com|fallback|4
-mozilla.org|fallback|4
-ubuntu.com|fallback|4
-debian.org|fallback|4
+www.yahoo.com|fallback|4
+www.mozilla.org|fallback|4
+www.ubuntu.com|fallback|4
+www.debian.org|fallback|4
 
 # ═══════════════════════════════════════════════════════════
 # ПРИМЕЧАНИЯ:
