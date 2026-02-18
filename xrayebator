@@ -328,6 +328,7 @@ migrate_routing_config() {
 
 # Migration function for XHTTP mode (stream -> auto)
 # Fixes sing-box compatibility issues
+# NOTE: extra settings preserved — they are critical for DPI bypass
 migrate_xhttp_mode() {
   echo -e "${CYAN}Проверка XHTTP mode для миграции...${NC}"
 
@@ -348,8 +349,7 @@ migrate_xhttp_mode() {
 
       local temp_config=$(mktemp)
       jq --argjson port "$port" '
-        (.inbounds[] | select(.port == $port) | .streamSettings.xhttpSettings.mode) = "auto" |
-        (.inbounds[] | select(.port == $port) | .streamSettings.xhttpSettings.extra) = {}
+        (.inbounds[] | select(.port == $port) | .streamSettings.xhttpSettings.mode) = "auto"
       ' "$CONFIG_FILE" > "$temp_config"
 
       if [[ $? -eq 0 ]] && [[ -s "$temp_config" ]]; then
@@ -368,6 +368,60 @@ migrate_xhttp_mode() {
     return 0  # Needs restart
   else
     echo -e "${GREEN}✓ XHTTP mode миграция не требуется${NC}"
+    return 1  # No restart needed
+  fi
+}
+
+# Migration: restore XHTTP extra settings wiped by previous migrate_xhttp_mode bug
+# Without extra (padding, xmux, post limits) XHTTP is easily detected by DPI
+migrate_xhttp_extra_restore() {
+  echo -e "${CYAN}Проверка XHTTP extra для восстановления...${NC}"
+
+  local restored=0
+
+  local xhttp_ports=$(jq -r '.inbounds[] | select(.streamSettings.network == "xhttp") | .port' "$CONFIG_FILE" 2>/dev/null)
+
+  for port in $xhttp_ports; do
+    [[ -z "$port" ]] && continue
+
+    # Check if extra is missing, null, or empty object
+    local extra_keys=$(jq -r --argjson port "$port" \
+      '.inbounds[] | select(.port == $port) | .streamSettings.xhttpSettings.extra // {} | keys | length' \
+      "$CONFIG_FILE" 2>/dev/null)
+
+    if [[ "$extra_keys" == "0" ]] || [[ -z "$extra_keys" ]]; then
+      echo -e "${YELLOW}  → Восстановление XHTTP extra на порту $port${NC}"
+
+      local temp_config=$(mktemp)
+      jq --argjson port "$port" '
+        (.inbounds[] | select(.port == $port) | .streamSettings.xhttpSettings.extra) = {
+          "xPaddingBytes": "100-1000",
+          "xmux": {
+            "maxConcurrency": "16-32",
+            "cMaxLifetimeMs": "10000-30000"
+          },
+          "noSSEHeader": true,
+          "scMaxEachPostBytes": "1000000-2000000",
+          "scMinPostsIntervalMs": "10-50"
+        }
+      ' "$CONFIG_FILE" > "$temp_config"
+
+      if [[ $? -eq 0 ]] && [[ -s "$temp_config" ]]; then
+        mv "$temp_config" "$CONFIG_FILE"
+        ((restored++))
+      else
+        rm -f "$temp_config"
+      fi
+    fi
+  done
+
+  if [[ $restored -gt 0 ]]; then
+    chown root:root "$CONFIG_FILE"
+    chmod 644 "$CONFIG_FILE"
+    echo -e "${GREEN}✓ Восстановлено extra для $restored XHTTP inbound(ов)${NC}"
+    return 0  # Needs restart
+  else
+    echo -e "${GREEN}✓ XHTTP extra в порядке${NC}"
     return 1  # No restart needed
   fi
 }
@@ -428,6 +482,14 @@ main_menu() {
   if [[ ! -f /usr/local/etc/xray/.xhttp_mode_migrated ]]; then
     if migrate_xhttp_mode; then
       touch /usr/local/etc/xray/.xhttp_mode_migrated
+      needs_restart=true
+    fi
+  fi
+
+  # XHTTP extra restore (fix for previous migration that wiped anti-DPI settings)
+  if [[ ! -f /usr/local/etc/xray/.xhttp_extra_restored ]]; then
+    if migrate_xhttp_extra_restore; then
+      touch /usr/local/etc/xray/.xhttp_extra_restored
       needs_restart=true
     fi
   fi
