@@ -45,11 +45,11 @@ Plans:
   3. All inbound sniffing has routeOnly:true -- destination addresses are never overridden
   4. BitTorrent traffic is blocked (VPS TOS compliance) -- verified in routing rules
   5. Existing installations receive all optimizations via migration functions on first menu launch after update (no manual intervention)
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 02-01: DNS, Freedom, sniffing, log, policy, BitTorrent migrations
-- [ ] 02-02: install.sh and update.sh alignment (new installs get optimal config, updates preserve AdGuard DNS)
+- [ ] 02-01-PLAN.md -- Config optimization migrations (DNS DoH Local, Freedom UseIPv4, sniffing routeOnly, access log, policy bufferSize, BitTorrent block) + inbound templates + AdGuard uninstall fix
+- [ ] 02-02-PLAN.md -- install.sh optimal config template + update.sh DNS migration alignment
 
 ### Phase 3: Transport Modernization
 **Goal**: Users create profiles with transport defaults that match 2026 TSPU blocking patterns -- XHTTP first, random ports, randomized paths, honest risk warnings
