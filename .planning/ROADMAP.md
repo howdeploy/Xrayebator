@@ -28,12 +28,12 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. AdGuard Home installation does not expose port 53 to the public internet (verified via `ufw status`)
   4. Xray process runs as non-root user (verified via `ps aux | grep xray`) with no loss of functionality
   5. New inbounds have non-empty shortIds (verified in generated config.json)
-**Plans**: TBD
+**Plans**: 3 plans
 
 Plans:
-- [ ] 01-01: safe_restart_xray, config backup, migration framework hardening
-- [ ] 01-02: Security fixes (port 53, non-root, shortIds, install.sh key grep)
-- [ ] 01-03: Code quality (safe_jq_write migration, SNI cleanup, formatting)
+- [ ] 01-01-PLAN.md -- safe_restart_xray, backup_config, replace all 10 restart calls
+- [ ] 01-02-PLAN.md -- Security fixes (shortIds, port 53, non-root, key grep, DNS preserve)
+- [ ] 01-03-PLAN.md -- Code quality (safe_jq_write migration, SNI cleanup, formatting)
 
 ### Phase 2: Config Optimization
 **Goal**: Server-side config.json delivers optimal DNS latency, correct routing, memory efficiency, and privacy -- all applied as backward-compatible migrations
