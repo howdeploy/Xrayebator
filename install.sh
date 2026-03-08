@@ -68,11 +68,28 @@ else
   exit 1
 fi
 
-# [3/10] Исправление systemd сервиса
+# [3/10] Настройка Xray сервиса (non-root с capabilities)
 echo -e "${BLUE}[3/10]${NC} ${YELLOW}Настройка Xray сервиса...${NC}"
-sed -i 's/^User=nobody/User=root/' /etc/systemd/system/xray.service
+
+# Create xray system user if not exists
+if ! id "xray" &>/dev/null; then
+  useradd -r -s /usr/sbin/nologin -M xray
+  echo -e "${GREEN}  ✓ Пользователь xray создан${NC}"
+fi
+
+# Create systemd drop-in for non-root with capabilities
+mkdir -p /etc/systemd/system/xray.service.d
+cat > /etc/systemd/system/xray.service.d/security.conf << 'SVCEOF'
+[Service]
+User=xray
+Group=xray
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+SVCEOF
+
 systemctl daemon-reload
-echo -e "${GREEN}✓ Сервис настроен${NC}\n"
+echo -e "${GREEN}✓ Сервис настроен (User=xray, CAP_NET_BIND_SERVICE)${NC}\n"
 
 # [3.5/10] Загрузка расширенных geo-баз (Loyalsoldier)
 echo -e "${BLUE}[3.5/10]${NC} ${YELLOW}Загрузка расширенных geo-баз...${NC}"
@@ -116,13 +133,17 @@ echo -e "${BLUE}[4/10]${NC} ${YELLOW}Создание структуры дир�
 mkdir -p "$PROFILES_DIR"
 mkdir -p "$DATA_DIR"
 mkdir -p "$SCRIPTS_DIR"
+mkdir -p /var/log/xray
+chown xray:xray /var/log/xray
+chown -R xray:xray /usr/local/etc/xray/
 echo -e "${GREEN}✓ Директории созданы${NC}\n"
 
 # [5/10] Генерация ключей Reality
 echo -e "${BLUE}[5/10]${NC} ${YELLOW}Генерация ключей Reality...${NC}"
 KEYS_OUTPUT=$(/usr/local/bin/xray x25519 2>&1)
-PRIVATE_KEY=$(echo "$KEYS_OUTPUT" | grep "PrivateKey:" | cut -d' ' -f2)
-PUBLIC_KEY=$(echo "$KEYS_OUTPUT" | grep "Password:" | cut -d' ' -f2)
+# Support both old format (Private key:/Public key:) and new format (PrivateKey:/Password:)
+PRIVATE_KEY=$(echo "$KEYS_OUTPUT" | grep -E "^Private" | awk '{print $NF}')
+PUBLIC_KEY=$(echo "$KEYS_OUTPUT" | grep -E "^Public|^Password" | awk '{print $NF}')
 
 if [[ -z "$PRIVATE_KEY" ]] || [[ -z "$PUBLIC_KEY" ]]; then
   echo -e "${RED}✗ Ошибка генерации ключей${NC}"
@@ -138,6 +159,11 @@ chmod 644 "$PUBLIC_KEY_FILE"
 echo -e "${GREEN}✓ Ключи сгенерированы${NC}"
 echo -e "${CYAN}  Private: ${PRIVATE_KEY:0:16}...${NC}"
 echo -e "${CYAN}  Public: ${PUBLIC_KEY:0:16}...${NC}\n"
+
+# Set file ownership for xray user
+chown -R xray:xray /usr/local/etc/xray/
+chmod 600 "$PRIVATE_KEY_FILE"
+chmod 644 "$PUBLIC_KEY_FILE"
 
 # [6/10] Создание базовой конфигурации
 echo -e "${BLUE}[6/10]${NC} ${YELLOW}Создание конфигурации Xray...${NC}"
@@ -198,7 +224,7 @@ cat > "$CONFIG_FILE" << 'EOF'
 }
 EOF
 
-chown root:root "$CONFIG_FILE"
+chown xray:xray "$CONFIG_FILE"
 chmod 644 "$CONFIG_FILE"
 echo -e "${GREEN}✓ Конфигурация создана${NC}\n"
 

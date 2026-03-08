@@ -92,7 +92,6 @@ update_transport_settings_for_sni() {
   fi
 
   mv "$temp_config" "$config_file"
-  chown root:root "$config_file" 2>/dev/null
   chmod 644 "$config_file" 2>/dev/null
   echo -e "${GREEN}  ✓ Reality SNI обновлен → $new_sni${NC}"
 
@@ -132,7 +131,6 @@ safe_jq_write() {
   local tmp=$(mktemp)
   if jq "${jq_args[@]}" "$src_file" > "$tmp" 2>/dev/null && [[ -s "$tmp" ]]; then
     mv "$tmp" "$dst_file"
-    chown root:root "$dst_file" 2>/dev/null
     chmod 644 "$dst_file" 2>/dev/null
     return 0
   else
@@ -363,7 +361,6 @@ migrate_routing_config() {
 
     if [[ $? -eq 0 ]] && [[ -s "$temp_config" ]]; then
       mv "$temp_config" "$CONFIG_FILE"
-      chown root:root "$CONFIG_FILE"
       chmod 644 "$CONFIG_FILE"
       echo -e "${GREEN}  ✓ Маршрутизация исправлена${NC}"
       return 0  # Needs restart
@@ -415,7 +412,6 @@ migrate_xhttp_mode() {
   done
 
   if [[ $migrated -gt 0 ]]; then
-    chown root:root "$CONFIG_FILE"
     chmod 644 "$CONFIG_FILE"
     echo -e "${GREEN}✓ Мигрировано $migrated XHTTP inbound(ов)${NC}"
     return 0  # Needs restart
@@ -470,7 +466,6 @@ migrate_xhttp_extra_restore() {
   done
 
   if [[ $restored -gt 0 ]]; then
-    chown root:root "$CONFIG_FILE"
     chmod 644 "$CONFIG_FILE"
     echo -e "${GREEN}✓ Восстановлено extra для $restored XHTTP inbound(ов)${NC}"
     return 0  # Needs restart
@@ -553,6 +548,8 @@ main_menu() {
     safe_restart_xray
     sleep 2
   fi
+
+  fix_xray_permissions
 
   while true; do
     show_ascii
@@ -1900,6 +1897,7 @@ change_port_menu() {
     close_firewall_port "$old_port"
   fi
 
+  fix_xray_permissions
   safe_restart_xray
   echo ""
   echo -e "${GREEN}✓ Порт профиля '$profile_name' изменен: ${YELLOW}$old_port → $new_port${NC}"
@@ -2280,7 +2278,6 @@ open('/opt/AdGuardHome/AdGuardHome.yaml', 'w').write(data)
 
     if [[ $? -eq 0 ]] && [[ -s "$temp_config" ]]; then
       mv "$temp_config" "$CONFIG_FILE"
-      chown root:root "$CONFIG_FILE"
       chmod 644 "$CONFIG_FILE"
       echo -e "${GREEN}  ✓ Xray DNS → 127.0.0.1 (AdGuard Home)${NC}"
     else
@@ -2392,7 +2389,6 @@ uninstall_adguard_home() {
 
     if [[ $? -eq 0 ]] && [[ -s "$temp_config" ]]; then
       mv "$temp_config" "$CONFIG_FILE"
-      chown root:root "$CONFIG_FILE"
       chmod 644 "$CONFIG_FILE"
       echo -e "${GREEN}  ✓ Xray DNS → AdGuard DoH${NC}"
     else
