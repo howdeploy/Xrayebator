@@ -142,6 +142,50 @@ safe_jq_write() {
   fi
 }
 
+# Создание бэкапа config.json перед миграцией
+# Args: $1=migration_name (optional, for logging)
+backup_config() {
+  local migration_name=${1:-"manual"}
+  local backup_dir="/usr/local/etc/xray/backups"
+  mkdir -p "$backup_dir"
+  local backup_file="$backup_dir/config_$(date +%Y%m%d_%H%M%S)_${migration_name}.json"
+  cp "$CONFIG_FILE" "$backup_file"
+  echo -e "${CYAN}  -> Бэкап конфига: $(basename "$backup_file")${NC}"
+}
+
+# Безопасный перезапуск Xray с валидацией конфига
+# Returns: 0=success, 1=validation failed (Xray НЕ перезапущен)
+safe_restart_xray() {
+  local test_output
+  test_output=$(/usr/local/bin/xray run -test -config "$CONFIG_FILE" 2>&1)
+
+  if [[ $? -ne 0 ]]; then
+    echo -e "${RED}  ✗ Конфиг не прошёл валидацию -- Xray НЕ перезапущен${NC}"
+    echo -e "${YELLOW}  Ошибка: ${test_output}${NC}"
+
+    # Rollback: restore from latest backup if exists
+    local latest_backup
+    latest_backup=$(ls -t /usr/local/etc/xray/backups/config_*.json 2>/dev/null | head -1)
+    if [[ -n "$latest_backup" ]]; then
+      echo -e "${YELLOW}  -> Восстанавливаю конфиг из бэкапа...${NC}"
+      cp "$latest_backup" "$CONFIG_FILE"
+      echo -e "${GREEN}  ✓ Конфиг восстановлен из: $(basename "$latest_backup")${NC}"
+    fi
+    return 1
+  fi
+
+  systemctl restart xray
+  sleep 1
+
+  if systemctl is-active --quiet xray; then
+    echo -e "${GREEN}  ✓ Xray перезапущен${NC}"
+    return 0
+  else
+    echo -e "${RED}  ✗ Xray не запустился после перезапуска${NC}"
+    return 1
+  fi
+}
+
 # Open port in UFW firewall (idempotent)
 # Args: $1=port, $2=protocol (default: tcp)
 # Returns: 0=success, 1=failure
@@ -717,6 +761,7 @@ add_inbound() {
   local port=$3
   local sni=$4
   local fingerprint=${5:-"chrome"}
+  local short_id=$(openssl rand -hex 4)
 
   local existing_tag=$(jq -r --argjson port "$port" '.inbounds[] | select(.port == $port) | .tag' "$CONFIG_FILE" 2>/dev/null)
   if [[ -n "$existing_tag" ]]; then
@@ -833,7 +878,7 @@ add_inbound() {
       "xver": 0,
       "serverNames": ["$sni"],
       "privateKey": "$PRIVATE_KEY",
-      "shortIds": [""],
+      "shortIds": ["$short_id"],
       "fingerprint": "$fingerprint"
     }
   },
@@ -862,7 +907,7 @@ TCPMUXEOF
       "xver": 0,
       "serverNames": ["$sni"],
       "privateKey": "$PRIVATE_KEY",
-      "shortIds": [""],
+      "shortIds": ["$short_id"],
       "fingerprint": "$fingerprint"
     }
   },
@@ -892,7 +937,7 @@ TCPEOF
       "xver": 0,
       "serverNames": ["$sni"],
       "privateKey": "$PRIVATE_KEY",
-      "shortIds": [""],
+      "shortIds": ["$short_id"],
       "fingerprint": "$fingerprint"
     }
   },
@@ -936,7 +981,7 @@ GRPCEOF
       "xver": 0,
       "serverNames": ["$sni"],
       "privateKey": "$PRIVATE_KEY",
-      "shortIds": [""],
+      "shortIds": ["$short_id"],
       "fingerprint": "$fingerprint"
     }
   },
@@ -1090,6 +1135,12 @@ generate_connection() {
   local current_sni=$(jq -r '.sni // "www.microsoft.com"' "$profile_file")
   local clean_public_key=$(cat "$PUBLIC_KEY_FILE")
 
+  # Read shortId from config for this port's inbound
+  local short_id=$(jq -r --argjson port "$port" \
+    '.inbounds[] | select(.port == $port) | .streamSettings.realitySettings.shortIds[0]' \
+    "$CONFIG_FILE" 2>/dev/null)
+  [[ -z "$short_id" || "$short_id" == "null" ]] && short_id=""
+
   show_ascii
   echo -e "${GREEN}═══════════════════════════════════════════════${NC}"
   echo -e "${GREEN}    ДАННЫЕ ДЛЯ ПОДКЛЮЧЕНИЯ: $profile_name${NC}"
@@ -1098,19 +1149,19 @@ generate_connection() {
   case $transport in
     tcp|tcp-utls|tcp-xudp)
       # TCP Reality + Vision
-      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=&type=tcp&headerType=none#${profile_name}"
+      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=${short_id}&type=tcp&headerType=none#${profile_name}"
       ;;
     tcp-mux)
       # TCP Reality + Mux (без Vision, мультиплексирование на клиенте)
-      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=&type=tcp&headerType=none#${profile_name}"
+      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=${short_id}&type=tcp&headerType=none#${profile_name}"
       ;;
     grpc)
       # gRPC Reality
-      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=&type=grpc&serviceName=grpc#${profile_name}"
+      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=${short_id}&type=grpc&serviceName=grpc#${profile_name}"
       ;;
     xhttp)
       # XHTTP Reality - требует современные клиенты (sing-box 1.8+, v2rayN 6.x+)
-      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=&type=xhttp&path=%2Fxhttp&host=${current_sni}#${profile_name}"
+      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=${short_id}&type=xhttp&path=%2Fxhttp&host=${current_sni}#${profile_name}"
       ;;
   esac
   echo -e "${BLUE}Ссылка для подключения:${NC}"
