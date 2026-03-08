@@ -77,22 +77,14 @@ update_transport_settings_for_sni() {
 
   echo -e "${CYAN}  → Обновление SNI на порту $port (транспорт: $transport)...${NC}"
 
-  local temp_config=$(mktemp)
-
   # Base updates (ALL transports) - search by port number, not tag
-  jq --argjson port "$port_num" --arg sni "$new_sni" '
+  if ! safe_jq_write --argjson port "$port_num" --arg sni "$new_sni" '
     (.inbounds[] | select(.port == $port) | .streamSettings.realitySettings.dest) |= ($sni + ":443") |
     (.inbounds[] | select(.port == $port) | .streamSettings.realitySettings.serverNames) |= [$sni]
-  ' "$config_file" > "$temp_config"
-
-  if [[ $? -ne 0 ]] || [[ ! -s "$temp_config" ]]; then
+  ' "$config_file"; then
     echo -e "${RED}  ✗ Ошибка обновления SNI${NC}"
-    rm -f "$temp_config"
     return 1
   fi
-
-  mv "$temp_config" "$config_file"
-  chmod 644 "$config_file" 2>/dev/null
   echo -e "${GREEN}  ✓ Reality SNI обновлен → $new_sni${NC}"
 
   # Transport-specific updates
@@ -352,20 +344,14 @@ migrate_routing_config() {
   if [[ -z "$has_direct_rule" ]]; then
     echo -e "${YELLOW}  → Добавляю default direct rule...${NC}"
 
-    local temp_config=$(mktemp)
-    jq '.routing.rules += [{
+    if safe_jq_write '.routing.rules += [{
       "type": "field",
       "network": "tcp,udp",
       "outboundTag": "direct"
-    }]' "$CONFIG_FILE" > "$temp_config"
-
-    if [[ $? -eq 0 ]] && [[ -s "$temp_config" ]]; then
-      mv "$temp_config" "$CONFIG_FILE"
-      chmod 644 "$CONFIG_FILE"
+    }]' "$CONFIG_FILE"; then
       echo -e "${GREEN}  ✓ Маршрутизация исправлена${NC}"
       return 0  # Needs restart
     else
-      rm -f "$temp_config"
       echo -e "${RED}  ✗ Ошибка миграции маршрутизации${NC}"
       return 1
     fi
@@ -397,22 +383,15 @@ migrate_xhttp_mode() {
     if [[ "$current_mode" == "stream" ]]; then
       echo -e "${YELLOW}  → Миграция XHTTP mode на порту $port: stream → auto${NC}"
 
-      local temp_config=$(mktemp)
-      jq --argjson port "$port" '
+      if safe_jq_write --argjson port "$port" '
         (.inbounds[] | select(.port == $port) | .streamSettings.xhttpSettings.mode) = "auto"
-      ' "$CONFIG_FILE" > "$temp_config"
-
-      if [[ $? -eq 0 ]] && [[ -s "$temp_config" ]]; then
-        mv "$temp_config" "$CONFIG_FILE"
+      ' "$CONFIG_FILE"; then
         ((migrated++))
-      else
-        rm -f "$temp_config"
       fi
     fi
   done
 
   if [[ $migrated -gt 0 ]]; then
-    chmod 644 "$CONFIG_FILE"
     echo -e "${GREEN}✓ Мигрировано $migrated XHTTP inbound(ов)${NC}"
     return 0  # Needs restart
   else
@@ -442,8 +421,7 @@ migrate_xhttp_extra_restore() {
     if [[ "$extra_keys" == "0" ]] || [[ -z "$extra_keys" ]]; then
       echo -e "${YELLOW}  → Восстановление XHTTP extra на порту $port${NC}"
 
-      local temp_config=$(mktemp)
-      jq --argjson port "$port" '
+      if safe_jq_write --argjson port "$port" '
         (.inbounds[] | select(.port == $port) | .streamSettings.xhttpSettings.extra) = {
           "xPaddingBytes": "100-1000",
           "xmux": {
@@ -454,19 +432,13 @@ migrate_xhttp_extra_restore() {
           "scMaxEachPostBytes": "1000000-2000000",
           "scMinPostsIntervalMs": "10-50"
         }
-      ' "$CONFIG_FILE" > "$temp_config"
-
-      if [[ $? -eq 0 ]] && [[ -s "$temp_config" ]]; then
-        mv "$temp_config" "$CONFIG_FILE"
+      ' "$CONFIG_FILE"; then
         ((restored++))
-      else
-        rm -f "$temp_config"
       fi
     fi
   done
 
   if [[ $restored -gt 0 ]]; then
-    chmod 644 "$CONFIG_FILE"
     echo -e "${GREEN}✓ Восстановлено extra для $restored XHTTP inbound(ов)${NC}"
     return 0  # Needs restart
   else
@@ -2269,19 +2241,13 @@ open('/opt/AdGuardHome/AdGuardHome.yaml', 'w').write(data)
   echo -e "${CYAN}Шаг 6/7: Интеграция с Xray...${NC}"
   if [[ -f "$CONFIG_FILE" ]]; then
     backup_config "adguard_dns"
-    local temp_config=$(mktemp)
-    jq '.dns = {
+    if safe_jq_write '.dns = {
       "servers": ["127.0.0.1"],
       "queryStrategy": "UseIPv4",
       "disableCache": false
-    }' "$CONFIG_FILE" > "$temp_config"
-
-    if [[ $? -eq 0 ]] && [[ -s "$temp_config" ]]; then
-      mv "$temp_config" "$CONFIG_FILE"
-      chmod 644 "$CONFIG_FILE"
+    }' "$CONFIG_FILE"; then
       echo -e "${GREEN}  ✓ Xray DNS → 127.0.0.1 (AdGuard Home)${NC}"
     else
-      rm -f "$temp_config"
       echo -e "${RED}  ✗ Ошибка обновления Xray DNS${NC}"
     fi
   fi
@@ -2373,8 +2339,7 @@ uninstall_adguard_home() {
   echo -e "${CYAN}Шаг 3/6: Восстановление Xray DNS...${NC}"
   if [[ -f "$CONFIG_FILE" ]]; then
     backup_config "adguard_dns_restore"
-    local temp_config=$(mktemp)
-    jq '.dns = {
+    if safe_jq_write '.dns = {
       "servers": [
         {
           "address": "https://dns.adguard-dns.com/dns-query",
@@ -2385,14 +2350,9 @@ uninstall_adguard_home() {
       ],
       "queryStrategy": "UseIPv4",
       "disableCache": false
-    }' "$CONFIG_FILE" > "$temp_config"
-
-    if [[ $? -eq 0 ]] && [[ -s "$temp_config" ]]; then
-      mv "$temp_config" "$CONFIG_FILE"
-      chmod 644 "$CONFIG_FILE"
+    }' "$CONFIG_FILE"; then
       echo -e "${GREEN}  ✓ Xray DNS → AdGuard DoH${NC}"
     else
-      rm -f "$temp_config"
       echo -e "${RED}  ✗ Ошибка восстановления Xray DNS${NC}"
     fi
   fi
