@@ -624,7 +624,7 @@ create_profile_menu() {
   echo -e "    ${BLUE}ℹ${NC} Идеален для обхода продвинутой DPI фильтрации"
   echo ""
   echo -e "${CYAN} 4)${NC} VLESS + gRPC + Reality ${YELLOW}(порт 2053)${NC}"
-  echo -e "    ${YELLOW}⚠${NC} Требует SNI с поддержкой HTTP/2 (google.com, cloudflare.com)"
+  echo -e "    ${YELLOW}⚠${NC} Требует SNI с поддержкой HTTP/2 (cloudflare.com, github.com)"
   echo -e "    ${YELLOW}⚠${NC} РУ-домены (госуслуги, сбер) часто НЕ работают!"
   echo -e "    ${YELLOW}⚠${NC} Проблемы совместимости с sing-box"
   echo ""
@@ -663,24 +663,23 @@ create_profile() {
   local port=$3
   local fingerprint=$4
 
-local custom_sni=$5  # Опциональный кастомный SNI
+  local custom_sni=$5  # Опциональный кастомный SNI
   local uuid=$(uuidgen)
 
   local default_sni=""
 
   # gRPC требует SNI с поддержкой HTTP/2 (только зарубежные!)
   if [[ "$transport" == "grpc" ]]; then
-    default_sni="www.google.com"
+    default_sni="www.cloudflare.com"
     echo -e "${YELLOW}⚠ gRPC: используется SNI ${CYAN}$default_sni${YELLOW} (требуется HTTP/2)${NC}"
   else
     # Read first valid SNI (skip comments and empty lines)
     default_sni=$(grep -v '^#' "$SNI_LIST" 2>/dev/null | grep -v '^[[:space:]]*$' | head -n 1 | cut -d'|' -f1)
-    [[ -z "$default_sni" ]] && default_sni="www.microsoft.com"
+    [[ -z "$default_sni" ]] && default_sni="www.ozon.ru"
   fi
 
-# Используем кастомный SNI если передан
-
-[[ -n "$custom_sni" ]] && default_sni="$custom_sni"
+  # Используем кастомный SNI если передан
+  [[ -n "$custom_sni" ]] && default_sni="$custom_sni"
 
   cat > "$PROFILES_DIR/$name.json" << EOF
 {
@@ -1113,7 +1112,7 @@ generate_connection() {
   local transport=$(jq -r '.transport' "$profile_file")
   local port=$(jq -r '.port' "$profile_file")
   local fingerprint=$(jq -r '.fingerprint // "chrome"' "$profile_file")
-  local current_sni=$(jq -r '.sni // "www.microsoft.com"' "$profile_file")
+  local current_sni=$(jq -r '.sni // "www.ozon.ru"' "$profile_file")
   local clean_public_key=$(cat "$PUBLIC_KEY_FILE")
 
   # Read shortId from config for this port's inbound
@@ -1232,7 +1231,7 @@ change_sni_menu() {
   fi
 
   local selected="${profiles[$((choice-1))]}"
-  local current_sni=$(jq -r '.sni // "www.microsoft.com"' "$PROFILES_DIR/$selected.json")
+  local current_sni=$(jq -r '.sni // "www.ozon.ru"' "$PROFILES_DIR/$selected.json")
   local transport=$(jq -r '.transport // "tcp"' "$PROFILES_DIR/$selected.json")
 
   echo ""
@@ -1249,19 +1248,19 @@ change_sni_menu() {
     echo -e "${YELLOW}Российские сайты (Ozon, WB, Sber и др.) НЕ поддерживают HTTP/2.${NC}"
     echo ""
     echo -e "${GREEN}Рекомендуемые SNI для gRPC:${NC}"
-    echo -e "  ${CYAN}1)${NC} www.google.com ${BLUE}(рекомендуется)${NC}"
-    echo -e "  ${CYAN}2)${NC} www.cloudflare.com"
-    echo -e "  ${CYAN}3)${NC} www.microsoft.com"
-    echo -e "  ${CYAN}4)${NC} github.com"
+    echo -e "  ${CYAN}1)${NC} www.cloudflare.com ${BLUE}(рекомендуется)${NC}"
+    echo -e "  ${CYAN}2)${NC} github.com"
+    echo -e "  ${CYAN}3)${NC} aws.amazon.com"
+    echo -e "  ${CYAN}4)${NC} cdn.cloudflare.net"
     echo -e "  ${CYAN}0)${NC} Назад\n"
     echo -n -e "${YELLOW}Выберите SNI для gRPC: ${NC}"
     read grpc_choice
 
     case $grpc_choice in
-      1) new_sni="www.google.com" ;;
-      2) new_sni="www.cloudflare.com" ;;
-      3) new_sni="www.microsoft.com" ;;
-      4) new_sni="github.com" ;;
+      1) new_sni="www.cloudflare.com" ;;
+      2) new_sni="github.com" ;;
+      3) new_sni="aws.amazon.com" ;;
+      4) new_sni="cdn.cloudflare.net" ;;
       0|*) return ;;
     esac
 
@@ -1348,8 +1347,7 @@ change_sni_menu() {
   sni_desc["suggest.yandex.ru"]="Яндекс подсказки"
   sni_desc["www.github.com"]="Только если российские не работают!"
   sni_desc["www.cloudflare.com"]="Для корпоративных каналов"
-  sni_desc["www.microsoft.com"]="Часто фильтруется"
-  sni_desc["www.bbc.com"]="Редко работает"
+  sni_desc["aws.amazon.com"]="AWS CDN, запасной вариант для gRPC"
 
   echo -e "${YELLOW}ТОП-20 доменов для маскировки:${NC}\n"
   local idx=1
