@@ -327,7 +327,7 @@ migrate_xhttp_profiles() {
 
   if [[ $migrated -gt 0 ]]; then
     echo -e "${GREEN}✓ Мигрировано $migrated XHTTP профилей${NC}"
-    systemctl restart xray
+    safe_restart_xray
   else
     echo -e "${GREEN}✓ Миграция не требуется${NC}"
   fi
@@ -540,7 +540,7 @@ main_menu() {
 
   if [[ "$needs_restart" == "true" ]]; then
     echo -e "${CYAN}Перезапуск Xray после миграций...${NC}"
-    systemctl restart xray
+    safe_restart_xray
     sleep 2
   fi
 
@@ -730,7 +730,7 @@ EOF
     return 1
   fi
 
-  systemctl restart xray
+  safe_restart_xray
 
   # Читаем актуальный SNI из файла (мог измениться при SNI-конфликте)
   local actual_sni=$(jq -r '.sni' "$PROFILES_DIR/$name.json" 2>/dev/null)
@@ -1068,7 +1068,7 @@ delete_profile_menu() {
         # Close firewall port if not used by other profiles
         close_firewall_port "$port"
 
-        systemctl restart xray
+        safe_restart_xray
         echo ""
         echo -e "${GREEN}✓ Профиль '$profile_name' успешно удален${NC}"
       else
@@ -1193,7 +1193,7 @@ generate_connection() {
   echo -e "${CYAN}SNI:${NC} $current_sni"
   echo -e "${CYAN}Fingerprint:${NC} $fingerprint"
   echo -e "${CYAN}PublicKey:${NC} $clean_public_key"
-  echo -e "${CYAN}ShortID:${NC} (пустой)"
+  echo -e "${CYAN}ShortID:${NC} ${short_id:-(пустой)}"
   if [[ "$transport" == "tcp" ]] || [[ "$transport" == "tcp-utls" ]] || [[ "$transport" == "tcp-xudp" ]] || [[ "$transport" == "tcp-mux" ]]; then
     echo -e "${CYAN}SpiderX:${NC} /"
   elif [[ "$transport" == "grpc" ]]; then
@@ -1325,7 +1325,7 @@ change_sni_menu() {
         sleep 2
         return
       fi
-      systemctl restart xray
+      safe_restart_xray
 
       echo ""
       echo -e "${GREEN}✓ SNI профиля '$selected' изменен на: ${YELLOW}$new_sni${NC}"
@@ -1489,7 +1489,7 @@ change_sni_menu() {
     return
   fi
 
-  systemctl restart xray
+  safe_restart_xray
 
   echo ""
   echo -e "${GREEN}✓ SNI профиля '$selected' изменен на: ${YELLOW}$new_sni${NC}"
@@ -1651,7 +1651,7 @@ change_fingerprint_menu() {
     return
   fi
 
-  systemctl restart xray
+  safe_restart_xray
 
   echo ""
   echo -e "${GREEN}✓ Fingerprint профиля '$selected' изменен на: ${YELLOW}$new_fp${NC}"
@@ -1888,7 +1888,7 @@ change_port_menu() {
     close_firewall_port "$old_port"
   fi
 
-  systemctl restart xray
+  safe_restart_xray
   echo ""
   echo -e "${GREEN}✓ Порт профиля '$profile_name' изменен: ${YELLOW}$old_port → $new_port${NC}"
   echo ""
@@ -2280,11 +2280,9 @@ open('/opt/AdGuardHome/AdGuardHome.yaml', 'w').write(data)
   echo -e "${CYAN}Шаг 7/7: Запуск служб...${NC}"
   systemctl start AdGuardHome
   systemctl enable AdGuardHome 2>/dev/null || true
-  systemctl restart xray
+  safe_restart_xray
 
-  # Открываем DNS порт (UDP + TCP) — только для Xray (127.0.0.1)
-  open_firewall_port 53
-  open_firewall_port 53 udp
+  # Порт 53 НЕ открываем — Xray обращается к AdGuard Home на 127.0.0.1 (loopback, UFW не нужен)
   # Порт 3000 НЕ открываем — Web UI доступен только через SSH-туннель
 
   echo ""
@@ -2406,6 +2404,8 @@ uninstall_adguard_home() {
   # Закрытие портов
   echo -e "${CYAN}Шаг 5/6: Закрытие портов...${NC}"
   if command -v ufw &>/dev/null; then
+    ufw delete allow 53/tcp >/dev/null 2>&1
+    ufw delete allow 53/udp >/dev/null 2>&1
     ufw delete allow 3000/tcp >/dev/null 2>&1  # На случай если открывали вручную
     ufw reload >/dev/null 2>&1
   fi
@@ -2413,8 +2413,7 @@ uninstall_adguard_home() {
 
   # Перезапуск Xray
   echo -e "${CYAN}Шаг 6/6: Перезапуск Xray...${NC}"
-  systemctl restart xray
-  echo -e "${GREEN}  ✓ Xray перезапущен${NC}"
+  safe_restart_xray
 
   echo ""
   echo -e "${GREEN}╔═══════════════════════════════════════════════════════════╗${NC}"

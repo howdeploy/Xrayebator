@@ -325,8 +325,11 @@ CONFIG_FILE="/usr/local/etc/xray/config.json"
 if [[ -f "$CONFIG_FILE" ]]; then
   echo -e "${YELLOW}Проверка настроек DNS...${NC}"
 
-  # Проверяем есть ли уже AdGuard DNS
-  if ! grep -q "dns.adguard-dns.com" "$CONFIG_FILE" 2>/dev/null; then
+  # Проверяем: если DNS -> 127.0.0.1 (AdGuard Home), не трогаем
+  CURRENT_DNS=$(jq -r '.dns.servers[0] // ""' "$CONFIG_FILE" 2>/dev/null)
+  if [[ "$CURRENT_DNS" == "127.0.0.1" ]]; then
+    echo -e "${GREEN}  ✓ DNS -> 127.0.0.1 (AdGuard Home) -- сохранено${NC}"
+  elif ! grep -q "dns.adguard-dns.com" "$CONFIG_FILE" 2>/dev/null; then
     echo -e "${CYAN}  → Миграция на AdGuard DNS (блокировка рекламы)${NC}"
 
     # Создаём новую конфигурацию DNS
