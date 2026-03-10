@@ -170,15 +170,12 @@ echo -e "${BLUE}[6/10]${NC} ${YELLOW}Создание конфигурации X
 cat > "$CONFIG_FILE" << 'EOF'
 {
   "log": {
-    "loglevel": "warning"
+    "loglevel": "warning",
+    "access": "none"
   },
   "dns": {
     "servers": [
-      "https://dns.adguard-dns.com/dns-query",
-      {
-        "address": "1.1.1.1",
-        "domains": ["geosite:geolocation-!cn"]
-      },
+      "https+local://1.1.1.1/dns-query",
       "localhost"
     ],
     "queryStrategy": "UseIPv4",
@@ -199,6 +196,11 @@ cat > "$CONFIG_FILE" << 'EOF'
       },
       {
         "type": "field",
+        "protocol": ["bittorrent"],
+        "outboundTag": "block"
+      },
+      {
+        "type": "field",
         "network": "udp",
         "port": 443,
         "outboundTag": "block"
@@ -214,17 +216,34 @@ cat > "$CONFIG_FILE" << 'EOF'
   "outbounds": [
     {
       "protocol": "freedom",
+      "settings": {
+        "domainStrategy": "UseIPv4"
+      },
       "tag": "direct"
     },
     {
       "protocol": "blackhole",
       "tag": "block"
     }
-  ]
+  ],
+  "policy": {
+    "levels": {
+      "0": {
+        "handshake": 4,
+        "connIdle": 300,
+        "uplinkOnly": 2,
+        "downlinkOnly": 5,
+        "bufferSize": 4
+      }
+    }
+  }
 }
 EOF
 
 chown xray:xray "$CONFIG_FILE"
+# Mark config as already optimized (skip migration on first launch)
+touch /usr/local/etc/xray/.config_optimized
+chown xray:xray /usr/local/etc/xray/.config_optimized
 chmod 644 "$CONFIG_FILE"
 echo -e "${GREEN}✓ Конфигурация создана${NC}\n"
 
