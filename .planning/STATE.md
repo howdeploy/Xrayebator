@@ -5,14 +5,14 @@
 See: .planning/PROJECT.md (updated 2026-03-08)
 
 **Core value:** VPN stably and fast works through TSPU -- connection does not drop, blocks are bypassed reliably
-**Current focus:** Milestone v1.0 complete
+**Current focus:** Planning next milestone
 
 ## Current Position
 
 Phase: 3 of 3 (Transport Modernization) -- COMPLETE
 Plan: 1 of 1 in current phase -- COMPLETE
-Status: Milestone complete
-Last activity: 2026-03-10 -- Completed 03-01-PLAN.md and closed Phase 3
+Status: Milestone archived
+Last activity: 2026-03-10 -- Archived milestone v1.0 and prepared for next cycle
 
 Progress: [██████████] 100%
 
@@ -75,5 +75,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-03-10
-Stopped at: Milestone v1.0 complete; next step is milestone closeout or next roadmap cycle
+Stopped at: Milestone v1.0 archived; next step is start next milestone with fresh requirements
 Resume file: None

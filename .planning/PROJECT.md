@@ -2,11 +2,24 @@
 
 ## What This Is
 
-Xrayebator — автоматизированный менеджер Xray Reality VPN для обхода DPI-цензуры в России. Единый Bash-скрипт (~2500 строк) с интерактивным TUI, который превращает VPS в управляемый VPN-сервер. Развёртывается на Debian 10+/Ubuntu 20.04+.
+Xrayebator — автоматизированный менеджер Xray Reality VPN для обхода DPI-цензуры в России. После v1.0 это single-file Bash TUI с безопасными миграциями, non-root Xray, оптимизированным server-side config.json и актуализированными transport defaults под ТСПУ-2026.
 
 ## Core Value
 
 VPN должен стабильно и быстро работать через ТСПУ — подключение не падает, скорость сопоставима с платными решениями, блокировки обходятся надёжно.
+
+## Current State
+
+- **Shipped version:** v1.0 (2026-03-10)
+- **Milestone result:** Все 3 roadmap phases выполнены и заархивированы в `.planning/milestones/`
+- **Runtime shape:** Один Bash-файл `xrayebator` + supporting `install.sh` / `update.sh`
+- **Validated in v1.0:** safe restart + rollback, config migration safety, non-root Xray, DoH Local/UseIPv4 optimizations, randomized transport defaults, persisted gRPC/XHTTP metadata
+
+## Next Milestone Goals
+
+- Сформировать новый milestone через `$gsd-new-milestone`
+- Пересобрать fresh `REQUIREMENTS.md` на основе нового аудита/продуктовых целей
+- Решить, что из post-v1.0 идет дальше: quality hardening, transport follow-ups, или новые user-facing capabilities
 
 ## Requirements
 
@@ -20,17 +33,14 @@ VPN должен стабильно и быстро работать через 
 - ✓ Безопасная запись JSON через safe_jq_write — existing
 - ✓ Firewall management (UFW) — existing
 - ✓ Update/uninstall скрипты с выбором ветки — existing
+- ✓ Безопасный restart Xray с валидацией и rollback — v1.0
+- ✓ Non-root Xray через systemd drop-in и CAP_NET_BIND_SERVICE — v1.0
+- ✓ Оптимизированный config.json baseline (DoH Local, UseIPv4, routeOnly, buffer tuning) — v1.0
+- ✓ Актуализированные transport defaults: XHTTP first, random high ports, persisted grpc/xhttp metadata — v1.0
 
 ### Active
 
-- [ ] Исправить все критические баги из аудита (~15 проблем)
-- [ ] Оптимизировать DNS-конфигурацию (убрать DoH-латентность)
-- [ ] Оптимизировать маршрутизацию (QUIC, freedom outbound)
-- [ ] Актуализировать транспорты под текущие методы блокировки РКН/ТСПУ
-- [ ] Добавить валидацию конфига перед рестартом Xray
-- [ ] Исправить безопасность (root, порт 53, shortIds)
-- [ ] Привести все jq-операции к safe_jq_write
-- [ ] Защитить update.sh от затирания AdGuard Home DNS
+- [ ] Следующий milestone еще не определен — начать с нового requirements/roadmap цикла
 
 ### Out of Scope
 
@@ -89,10 +99,10 @@ VPN должен стабильно и быстро работать через 
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Не менять архитектуру | Single-file удобен для деплоя через curl, пользователи привыкли | — Pending |
-| Ресерч РКН перед оптимизацией транспортов | Нужно знать актуальные методы блокировки чтобы не ломать рабочие связки | — Pending |
-| Валидация конфига перед рестартом | Предотвращает downtime от сломанного JSON | — Pending |
-| Рандомизация serviceName/path | Затрудняет DPI-детекцию по известным паттернам | — Pending |
+| Не менять архитектуру | Single-file удобен для деплоя через curl, пользователи привыкли | ✓ Good — v1.0 shipped inside single-file Bash constraints |
+| Ресерч РКН перед оптимизацией транспортов | Нужно знать актуальные методы блокировки чтобы не ломать рабочие связки | ✓ Good — informed Phase 3 transport ordering and warnings |
+| Валидация конфига перед рестартом | Предотвращает downtime от сломанного JSON | ✓ Good — implemented in Phase 1 |
+| Рандомизация serviceName/path | Затрудняет DPI-детекцию по известным паттернам | ✓ Good — implemented with persisted profile metadata in Phase 3 |
 
 ---
-*Last updated: 2026-03-08 after initialization*
+*Last updated: 2026-03-10 after v1.0 milestone*
