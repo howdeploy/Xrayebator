@@ -990,7 +990,7 @@ add_inbound() {
       "fingerprint": "$fingerprint"
     }
   },
-  "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]},
+  "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"], "routeOnly": true},
   "tag": "inbound-$port"
 }
 TCPMUXEOF
@@ -1019,7 +1019,7 @@ TCPMUXEOF
       "fingerprint": "$fingerprint"
     }
   },
-  "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]},
+  "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"], "routeOnly": true},
   "tag": "inbound-$port"
 }
 TCPEOF
@@ -1049,7 +1049,7 @@ TCPEOF
       "fingerprint": "$fingerprint"
     }
   },
-  "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]},
+  "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"], "routeOnly": true},
   "tag": "inbound-$port"
 }
 GRPCEOF
@@ -1093,7 +1093,7 @@ GRPCEOF
       "fingerprint": "$fingerprint"
     }
   },
-  "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]},
+  "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"], "routeOnly": true},
   "tag": "inbound-$port"
 }
 XHTTPEOF
@@ -2438,7 +2438,7 @@ uninstall_adguard_home() {
   echo -e "  ${CYAN}•${NC} Фильтры и статистика"
   echo -e "  ${CYAN}•${NC} Интеграция с Xray DNS"
   echo ""
-  echo -e "${CYAN}Xray DNS будет восстановлен на AdGuard DoH (dns.adguard-dns.com).${NC}"
+  echo -e "${CYAN}Xray DNS будет восстановлен на DoH Local (1.1.1.1).${NC}"
   echo ""
   echo -n -e "${RED}Вы уверены? (y/N): ${NC}"
   read confirm
@@ -2468,17 +2468,13 @@ uninstall_adguard_home() {
     backup_config "adguard_dns_restore"
     if safe_jq_write '.dns = {
       "servers": [
-        {
-          "address": "https://dns.adguard-dns.com/dns-query",
-          "domains": ["geosite:category-ads-all"],
-          "expectIPs": ["127.0.0.1"]
-        },
-        "https://dns.adguard-dns.com/dns-query"
+        "https+local://1.1.1.1/dns-query",
+        "localhost"
       ],
       "queryStrategy": "UseIPv4",
       "disableCache": false
     }' "$CONFIG_FILE"; then
-      echo -e "${GREEN}  ✓ Xray DNS → AdGuard DoH${NC}"
+      echo -e "${GREEN}  ✓ Xray DNS → DoH Local${NC}"
     else
       echo -e "${RED}  ✗ Ошибка восстановления Xray DNS${NC}"
     fi
@@ -2517,7 +2513,7 @@ uninstall_adguard_home() {
   echo -e "${GREEN}║         ✓ ADGUARD HOME УСПЕШНО УДАЛЁН                   ║${NC}"
   echo -e "${GREEN}╚═══════════════════════════════════════════════════════════╝${NC}"
   echo ""
-  echo -e "${CYAN}Xray DNS восстановлен на AdGuard DoH (dns.adguard-dns.com).${NC}"
+  echo -e "${CYAN}Xray DNS восстановлен на DoH Local (1.1.1.1).${NC}"
   echo ""
   echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
   read
