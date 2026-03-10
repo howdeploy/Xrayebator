@@ -5,23 +5,23 @@
 See: .planning/PROJECT.md (updated 2026-03-08)
 
 **Core value:** VPN stably and fast works through TSPU -- connection does not drop, blocks are bypassed reliably
-**Current focus:** Phase 3: Transport Modernization
+**Current focus:** Milestone v1.0 complete
 
 ## Current Position
 
-Phase: 3 of 3 (Transport Modernization) -- READY TO EXECUTE
-Plan: 1 of 1 in current phase -- PLANNED
-Status: Phase 3 planned and verified
-Last activity: 2026-03-10 -- Created and verified 03-01-PLAN.md
+Phase: 3 of 3 (Transport Modernization) -- COMPLETE
+Plan: 1 of 1 in current phase -- COMPLETE
+Status: Milestone complete
+Last activity: 2026-03-10 -- Completed 03-01-PLAN.md and closed Phase 3
 
-Progress: [███████░░░] 67%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 5
-- Average duration: 7min
-- Total execution time: 0.58 hours
+- Total plans completed: 6
+- Average duration: ~10min
+- Total execution time: ~0.98 hours
 
 **By Phase:**
 
@@ -29,9 +29,10 @@ Progress: [███████░░░] 67%
 |-------|-------|-------|----------|
 | 01-safety-net-security | 3/3 | 14min | 5min |
 | 02-config-optimization | 2/2 | 21min | 11min |
+| 03-transport-modernization | 1/1 | 24min | 24min |
 
 **Recent Trend:**
-- Last 5 plans: 02-01 (12min), 02-02 (9min), 01-03 (4min), 01-02 (6min), 01-01 (4min)
+- Last 5 plans: 03-01 (24min), 02-01 (12min), 02-02 (9min), 01-03 (4min), 01-02 (6min)
 - Trend: stable
 
 *Updated after each plan completion*
@@ -59,6 +60,8 @@ Recent decisions affecting current work:
 - [02-02]: update.sh treats https+local:// as canonical DNS while preserving 127.0.0.1 and legacy AdGuard DoH compatibility
 - [03-Plan]: Phase 3 remains a single executable plan because all required transport work stays inside xrayebator
 - [03-Plan]: Randomized XHTTP path and gRPC serviceName require additive profile metadata so QR/link export stays correct
+- [03-01]: New profiles use randomized high ports and persisted grpc_service_name/xhttp_path so links stay aligned with inbound settings
+- [03-01]: Vision on 443 is now an explicitly confirmed manual-risk path in both create and change-port flows
 
 ### Pending Todos
 
@@ -72,5 +75,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-03-10
-Stopped at: Phase 3 planned and verified; next step is execute 03-01 for Transport Modernization
+Stopped at: Milestone v1.0 complete; next step is milestone closeout or next roadmap cycle
 Resume file: None

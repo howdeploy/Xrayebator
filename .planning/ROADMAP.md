@@ -14,7 +14,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Safety Net + Security** - Config validation, backup mechanism, security fixes, code quality cleanup
 - [x] **Phase 2: Config Optimization** - DNS, routing, policy, and sniffing migrations for performance and stealth
-- [ ] **Phase 3: Transport Modernization** - Restructure transport menu, randomize ports/paths, update TSPU guidance
+- [x] **Phase 3: Transport Modernization** - Restructure transport menu, randomize ports/paths, update TSPU guidance
 
 ## Phase Details
 
@@ -61,10 +61,10 @@ Plans:
   3. gRPC serviceName and XHTTP path are randomly generated strings, not hardcoded "grpc"/"xhttp"
   4. Choosing Vision on port 443 shows a warning about TSPU blocking risk and requires explicit confirmation
   5. Transport descriptions in the menu explain current TSPU status (which transports work on mobile vs wired)
-**Plans**: TBD
+**Plans**: 1 plan
 
 Plans:
-- [ ] 03-01: Transport menu restructuring, random port/path generation, Vision warnings
+- [x] 03-01: Transport menu restructuring, random port/path generation, Vision warnings
 
 ## Progress
 
@@ -75,4 +75,4 @@ Phases execute in numeric order: 1 -> 2 -> 3
 |-------|----------------|--------|-----------|
 | 1. Safety Net + Security | 3/3 | Complete | 2026-03-08 |
 | 2. Config Optimization | 2/2 | Complete | 2026-03-10 |
-| 3. Transport Modernization | 0/1 | Not started | - |
+| 3. Transport Modernization | 1/1 | Complete | 2026-03-10 |

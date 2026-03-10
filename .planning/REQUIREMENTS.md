@@ -19,12 +19,12 @@
 
 ### Transport Modernization (TRN)
 
-- [ ] **TRN-01**: XHTTP+Reality — первый и рекомендуемый транспорт в меню создания профиля
-- [ ] **TRN-02**: Все транспорты используют рандомные высокие порты по умолчанию (не 443/8443/2053)
-- [ ] **TRN-03**: gRPC serviceName генерируется рандомно (не "grpc")
-- [ ] **TRN-04**: XHTTP path генерируется рандомно (не "/xhttp")
-- [ ] **TRN-05**: Vision-на-443 убран как дефолтный вариант, предупреждение о блокировке ТСПУ
-- [ ] **TRN-06**: Описания транспортов в меню обновлены с учётом актуальной информации о ТСПУ
+- [x] **TRN-01**: XHTTP+Reality — первый и рекомендуемый транспорт в меню создания профиля
+- [x] **TRN-02**: Все транспорты используют рандомные высокие порты по умолчанию (не 443/8443/2053)
+- [x] **TRN-03**: gRPC serviceName генерируется рандомно (не "grpc")
+- [x] **TRN-04**: XHTTP path генерируется рандомно (не "/xhttp")
+- [x] **TRN-05**: Vision-на-443 убран как дефолтный вариант, предупреждение о блокировке ТСПУ
+- [x] **TRN-06**: Описания транспортов в меню обновлены с учётом актуальной информации о ТСПУ
 
 ### Security (SEC)
 
@@ -83,12 +83,12 @@
 | CFG-07 | Phase 2 | Complete |
 | CFG-08 | Phase 1 | Pending |
 | CFG-09 | Phase 1 | Pending |
-| TRN-01 | Phase 3 | Pending |
-| TRN-02 | Phase 3 | Pending |
-| TRN-03 | Phase 3 | Pending |
-| TRN-04 | Phase 3 | Pending |
-| TRN-05 | Phase 3 | Pending |
-| TRN-06 | Phase 3 | Pending |
+| TRN-01 | Phase 3 | Complete |
+| TRN-02 | Phase 3 | Complete |
+| TRN-03 | Phase 3 | Complete |
+| TRN-04 | Phase 3 | Complete |
+| TRN-05 | Phase 3 | Complete |
+| TRN-06 | Phase 3 | Complete |
 | SEC-01 | Phase 1 | Pending |
 | SEC-02 | Phase 1 | Pending |
 | SEC-03 | Phase 1 | Pending |
@@ -107,4 +107,4 @@
 
 ---
 *Requirements defined: 2026-03-08*
-*Last updated: 2026-03-10 after Phase 2 completion*
+*Last updated: 2026-03-10 after Phase 3 completion*
