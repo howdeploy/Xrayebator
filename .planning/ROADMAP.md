@@ -12,7 +12,7 @@ Xrayebator needs three things: a safety net that prevents broken configs from ki
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Safety Net + Security** - Config validation, backup mechanism, security fixes, code quality cleanup
+- [x] **Phase 1: Safety Net + Security** - Config validation, backup mechanism, security fixes, code quality cleanup
 - [ ] **Phase 2: Config Optimization** - DNS, routing, policy, and sniffing migrations for performance and stealth
 - [ ] **Phase 3: Transport Modernization** - Restructure transport menu, randomize ports/paths, update TSPU guidance
 
@@ -31,9 +31,9 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Plans**: 3 plans
 
 Plans:
-- [ ] 01-01-PLAN.md -- safe_restart_xray, backup_config, replace all 10 restart calls
-- [ ] 01-02-PLAN.md -- Security fixes (shortIds, port 53, non-root, key grep, DNS preserve)
-- [ ] 01-03-PLAN.md -- Code quality (safe_jq_write migration, SNI cleanup, formatting)
+- [x] 01-01-PLAN.md -- safe_restart_xray, backup_config, replace all 10 restart calls
+- [x] 01-02-PLAN.md -- Security fixes (shortIds, port 53, non-root, key grep, DNS preserve)
+- [x] 01-03-PLAN.md -- Code quality (safe_jq_write migration, SNI cleanup, formatting)
 
 ### Phase 2: Config Optimization
 **Goal**: Server-side config.json delivers optimal DNS latency, correct routing, memory efficiency, and privacy -- all applied as backward-compatible migrations
@@ -49,7 +49,7 @@ Plans:
 
 Plans:
 - [ ] 02-01-PLAN.md -- Config optimization migrations (DNS DoH Local, Freedom UseIPv4, sniffing routeOnly, access log, policy bufferSize, BitTorrent block) + inbound templates + AdGuard uninstall fix
-- [ ] 02-02-PLAN.md -- install.sh optimal config template + update.sh DNS migration alignment
+- [x] 02-02-PLAN.md -- install.sh optimal config template + update.sh DNS migration alignment
 
 ### Phase 3: Transport Modernization
 **Goal**: Users create profiles with transport defaults that match 2026 TSPU blocking patterns -- XHTTP first, random ports, randomized paths, honest risk warnings
@@ -73,6 +73,6 @@ Phases execute in numeric order: 1 -> 2 -> 3
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Safety Net + Security | 0/3 | Not started | - |
-| 2. Config Optimization | 0/2 | Not started | - |
+| 1. Safety Net + Security | 3/3 | Complete | 2026-03-08 |
+| 2. Config Optimization | 1/2 | In progress | 2026-03-10 (partial) |
 | 3. Transport Modernization | 0/1 | Not started | - |

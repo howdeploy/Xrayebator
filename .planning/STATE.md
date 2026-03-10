@@ -5,32 +5,33 @@
 See: .planning/PROJECT.md (updated 2026-03-08)
 
 **Core value:** VPN stably and fast works through TSPU -- connection does not drop, blocks are bypassed reliably
-**Current focus:** Phase 1: Safety Net + Security
+**Current focus:** Phase 2: Config Optimization
 
 ## Current Position
 
-Phase: 1 of 3 (Safety Net + Security) -- COMPLETE
-Plan: 3 of 3 in current phase -- COMPLETE
-Status: Phase Complete
-Last activity: 2026-03-08 -- Completed 01-03-PLAN.md
+Phase: 2 of 3 (Config Optimization) -- IN PROGRESS
+Plan: 2 of 2 in current phase -- COMPLETE (02-01 still pending)
+Status: Partial phase execution -- 02-02 complete, 02-01 pending
+Last activity: 2026-03-10 -- Completed 02-02-PLAN.md; Phase 2 still awaits 02-01
 
-Progress: [███░░░░░░░] 33%
+Progress: [████░░░░░░] 44%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 3
-- Average duration: 5min
-- Total execution time: 0.23 hours
+- Total plans completed: 4
+- Average duration: 6min
+- Total execution time: 0.38 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 01-safety-net-security | 3/3 | 14min | 5min |
+| 02-config-optimization | 1/2 | 9min | 9min |
 
 **Recent Trend:**
-- Last 5 plans: 01-01 (4min), 01-02 (6min), 01-03 (4min)
+- Last 5 plans: 02-02 (9min), 01-03 (4min), 01-02 (6min), 01-01 (4min)
 - Trend: stable
 
 *Updated after each plan completion*
@@ -52,6 +53,8 @@ Recent decisions affecting current work:
 - [01-03]: gRPC default SNI changed from google.com to cloudflare.com (TSPU primary target)
 - [01-03]: General fallback SNI changed from microsoft.com to ozon.ru (Russian e-commerce, never blocked)
 - [01-03]: All jq operations now use safe_jq_write -- zero raw jq temp file patterns remain
+- [02-02]: Fresh installs now write the fully optimized Phase 2 config template and create .config_optimized immediately
+- [02-02]: update.sh treats https+local:// as canonical DNS while preserving 127.0.0.1 and legacy AdGuard DoH compatibility
 
 ### Pending Todos
 
@@ -64,6 +67,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-08
-Stopped at: Completed 01-03-PLAN.md (Phase 01 complete)
+Last session: 2026-03-10
+Stopped at: Completed 02-02-PLAN.md; next step is execute 02-01-PLAN.md
 Resume file: None
