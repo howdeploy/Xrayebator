@@ -7,13 +7,13 @@
 
 ### Config Hardening (CFG)
 
-- [ ] **CFG-01**: DNS мигрирован на DoH Local (`https+local://1.1.1.1/dns-query`) для устранения латентности
-- [ ] **CFG-02**: Freedom outbound имеет `domainStrategy: "UseIPv4"` для предотвращения IPv6-утечек
-- [ ] **CFG-03**: Все inbound имеют sniffing `routeOnly: true` для предотвращения переопределения destination
+- [x] **CFG-01**: DNS мигрирован на DoH Local (`https+local://1.1.1.1/dns-query`) для устранения латентности
+- [x] **CFG-02**: Freedom outbound имеет `domainStrategy: "UseIPv4"` для предотвращения IPv6-утечек
+- [x] **CFG-03**: Все inbound имеют sniffing `routeOnly: true` для предотвращения переопределения destination
 - [ ] **CFG-04**: Перед каждым `systemctl restart xray` выполняется `xray run -test -config` с откатом при ошибке
-- [ ] **CFG-05**: Access log отключен (`"access": "none"`) для приватности и производительности
-- [ ] **CFG-06**: Policy section добавлен с `bufferSize: 4` для снижения потребления памяти
-- [ ] **CFG-07**: BitTorrent заблокирован в routing rules (VPS TOS compliance)
+- [x] **CFG-05**: Access log отключен (`"access": "none"`) для приватности и производительности
+- [x] **CFG-06**: Policy section добавлен с `bufferSize: 4` для снижения потребления памяти
+- [x] **CFG-07**: BitTorrent заблокирован в routing rules (VPS TOS compliance)
 - [ ] **CFG-08**: Все конфиг-изменения реализованы как миграции с marker-file (обратная совместимость)
 - [ ] **CFG-09**: Бэкап config.json создаётся перед каждой миграцией
 
@@ -74,13 +74,13 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CFG-01 | Phase 2 | Pending |
-| CFG-02 | Phase 2 | Pending |
-| CFG-03 | Phase 2 | Pending |
+| CFG-01 | Phase 2 | Complete |
+| CFG-02 | Phase 2 | Complete |
+| CFG-03 | Phase 2 | Complete |
 | CFG-04 | Phase 1 | Pending |
-| CFG-05 | Phase 2 | Pending |
-| CFG-06 | Phase 2 | Pending |
-| CFG-07 | Phase 2 | Pending |
+| CFG-05 | Phase 2 | Complete |
+| CFG-06 | Phase 2 | Complete |
+| CFG-07 | Phase 2 | Complete |
 | CFG-08 | Phase 1 | Pending |
 | CFG-09 | Phase 1 | Pending |
 | TRN-01 | Phase 3 | Pending |
@@ -107,4 +107,4 @@
 
 ---
 *Requirements defined: 2026-03-08*
-*Last updated: 2026-03-08 after roadmap creation*
+*Last updated: 2026-03-10 after Phase 2 completion*

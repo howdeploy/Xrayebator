@@ -5,33 +5,33 @@
 See: .planning/PROJECT.md (updated 2026-03-08)
 
 **Core value:** VPN stably and fast works through TSPU -- connection does not drop, blocks are bypassed reliably
-**Current focus:** Phase 2: Config Optimization
+**Current focus:** Phase 3: Transport Modernization
 
 ## Current Position
 
-Phase: 2 of 3 (Config Optimization) -- IN PROGRESS
-Plan: 2 of 2 in current phase -- COMPLETE (02-01 still pending)
-Status: Partial phase execution -- 02-02 complete, 02-01 pending
-Last activity: 2026-03-10 -- Completed 02-02-PLAN.md; Phase 2 still awaits 02-01
+Phase: 3 of 3 (Transport Modernization) -- READY TO PLAN
+Plan: 0 of 1 in current phase -- NOT PLANNED
+Status: Phase 2 complete
+Last activity: 2026-03-10 -- Completed 02-01-PLAN.md and 02-02-PLAN.md
 
-Progress: [████░░░░░░] 44%
+Progress: [███████░░░] 67%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 4
-- Average duration: 6min
-- Total execution time: 0.38 hours
+- Total plans completed: 5
+- Average duration: 7min
+- Total execution time: 0.58 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 01-safety-net-security | 3/3 | 14min | 5min |
-| 02-config-optimization | 1/2 | 9min | 9min |
+| 02-config-optimization | 2/2 | 21min | 11min |
 
 **Recent Trend:**
-- Last 5 plans: 02-02 (9min), 01-03 (4min), 01-02 (6min), 01-01 (4min)
+- Last 5 plans: 02-01 (12min), 02-02 (9min), 01-03 (4min), 01-02 (6min), 01-01 (4min)
 - Trend: stable
 
 *Updated after each plan completion*
@@ -53,6 +53,8 @@ Recent decisions affecting current work:
 - [01-03]: gRPC default SNI changed from google.com to cloudflare.com (TSPU primary target)
 - [01-03]: General fallback SNI changed from microsoft.com to ozon.ru (Russian e-commerce, never blocked)
 - [01-03]: All jq operations now use safe_jq_write -- zero raw jq temp file patterns remain
+- [02-01]: DNS migration preserves 127.0.0.1 so AdGuard Home is never overwritten by DoH Local migration
+- [02-01]: Freedom outbound uses jq path assignment for UseIPv4 to preserve existing settings like fragment
 - [02-02]: Fresh installs now write the fully optimized Phase 2 config template and create .config_optimized immediately
 - [02-02]: update.sh treats https+local:// as canonical DNS while preserving 127.0.0.1 and legacy AdGuard DoH compatibility
 
@@ -68,5 +70,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-03-10
-Stopped at: Completed 02-02-PLAN.md; next step is execute 02-01-PLAN.md
+Stopped at: Phase 2 complete; next step is discuss/plan Phase 3 (Transport Modernization)
 Resume file: None

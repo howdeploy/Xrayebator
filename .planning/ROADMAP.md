@@ -13,7 +13,7 @@ Xrayebator needs three things: a safety net that prevents broken configs from ki
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Safety Net + Security** - Config validation, backup mechanism, security fixes, code quality cleanup
-- [ ] **Phase 2: Config Optimization** - DNS, routing, policy, and sniffing migrations for performance and stealth
+- [x] **Phase 2: Config Optimization** - DNS, routing, policy, and sniffing migrations for performance and stealth
 - [ ] **Phase 3: Transport Modernization** - Restructure transport menu, randomize ports/paths, update TSPU guidance
 
 ## Phase Details
@@ -48,7 +48,7 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 02-01-PLAN.md -- Config optimization migrations (DNS DoH Local, Freedom UseIPv4, sniffing routeOnly, access log, policy bufferSize, BitTorrent block) + inbound templates + AdGuard uninstall fix
+- [x] 02-01-PLAN.md -- Config optimization migrations (DNS DoH Local, Freedom UseIPv4, sniffing routeOnly, access log, policy bufferSize, BitTorrent block) + inbound templates + AdGuard uninstall fix
 - [x] 02-02-PLAN.md -- install.sh optimal config template + update.sh DNS migration alignment
 
 ### Phase 3: Transport Modernization
@@ -74,5 +74,5 @@ Phases execute in numeric order: 1 -> 2 -> 3
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Safety Net + Security | 3/3 | Complete | 2026-03-08 |
-| 2. Config Optimization | 1/2 | In progress | 2026-03-10 (partial) |
+| 2. Config Optimization | 2/2 | Complete | 2026-03-10 |
 | 3. Transport Modernization | 0/1 | Not started | - |
