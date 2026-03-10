@@ -329,17 +329,15 @@ if [[ -f "$CONFIG_FILE" ]]; then
   CURRENT_DNS=$(jq -r '.dns.servers[0] // ""' "$CONFIG_FILE" 2>/dev/null)
   if [[ "$CURRENT_DNS" == "127.0.0.1" ]]; then
     echo -e "${GREEN}  ✓ DNS -> 127.0.0.1 (AdGuard Home) -- сохранено${NC}"
+  elif [[ "$CURRENT_DNS" == "https+local://"* ]]; then
+    echo -e "${GREEN}  ✓ DNS -> DoH Local -- сохранено${NC}"
   elif ! grep -q "dns.adguard-dns.com" "$CONFIG_FILE" 2>/dev/null; then
-    echo -e "${CYAN}  → Миграция на AdGuard DNS (блокировка рекламы)${NC}"
+    echo -e "${CYAN}  → Миграция на DoH Local${NC}"
 
     # Создаём новую конфигурацию DNS
     NEW_DNS='{
       "servers": [
-        "https://dns.adguard-dns.com/dns-query",
-        {
-          "address": "1.1.1.1",
-          "domains": ["geosite:geolocation-!cn"]
-        },
+        "https+local://1.1.1.1/dns-query",
         "localhost"
       ],
       "queryStrategy": "UseIPv4",
@@ -347,9 +345,9 @@ if [[ -f "$CONFIG_FILE" ]]; then
     }'
 
     # Обновляем DNS секцию в конфиге
-    if jq --argjson dns "$NEW_DNS" '.dns = $dns' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" 2>/dev/null; then
+    if jq --argjson dns "$NEW_DNS" '.dns = $dns' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" 2>/dev/null && [[ -s "${CONFIG_FILE}.tmp" ]]; then
       mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
-      echo -e "${GREEN}  ✓ DNS обновлён на AdGuard (реклама будет блокироваться)${NC}"
+      echo -e "${GREEN}  ✓ DNS обновлён на DoH Local (https+local://1.1.1.1)${NC}"
     else
       rm -f "${CONFIG_FILE}.tmp"
       echo -e "${YELLOW}  ⚠ Не удалось обновить DNS (конфиг без изменений)${NC}"
