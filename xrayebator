@@ -447,6 +447,127 @@ migrate_xhttp_extra_restore() {
   fi
 }
 
+# Migration: config optimization (Phase 2)
+# Applies DNS DoH Local, freedom UseIPv4, sniffing routeOnly,
+# access log none, policy bufferSize, and BitTorrent blocking
+migrate_config_optimization() {
+  echo -e "${CYAN}Оптимизация конфигурации...${NC}"
+  backup_config "config_optimization"
+
+  local changed=false
+
+  local current_dns=$(jq -r '.dns.servers[0] // ""' "$CONFIG_FILE" 2>/dev/null)
+  if [[ "$current_dns" == "127.0.0.1" ]]; then
+    echo -e "${GREEN}  ✓ DNS -> 127.0.0.1 (AdGuard Home) сохранён${NC}"
+  elif [[ "$current_dns" == "https+local://1.1.1.1/dns-query" ]]; then
+    echo -e "${GREEN}  ✓ DNS уже оптимизирован${NC}"
+  else
+    echo -e "${YELLOW}  → DNS: миграция на DoH Local${NC}"
+    if safe_jq_write '.dns = {
+      "servers": [
+        "https+local://1.1.1.1/dns-query",
+        "localhost"
+      ],
+      "queryStrategy": "UseIPv4",
+      "disableCache": false
+    }' "$CONFIG_FILE"; then
+      echo -e "${GREEN}  ✓ DNS переведён на DoH Local${NC}"
+      changed=true
+    else
+      echo -e "${RED}  ✗ Ошибка миграции DNS${NC}"
+    fi
+  fi
+
+  local freedom_strategy=$(jq -r '.outbounds[] | select(.protocol == "freedom") | .settings.domainStrategy // "none"' "$CONFIG_FILE" 2>/dev/null)
+  if [[ "$freedom_strategy" == "UseIPv4" ]]; then
+    echo -e "${GREEN}  ✓ Freedom уже использует UseIPv4${NC}"
+  else
+    echo -e "${YELLOW}  → Freedom: добавляю UseIPv4${NC}"
+    if safe_jq_write '
+      (.outbounds[] | select(.protocol == "freedom")).settings.domainStrategy = "UseIPv4"
+    ' "$CONFIG_FILE"; then
+      echo -e "${GREEN}  ✓ Freedom переведён на UseIPv4${NC}"
+      changed=true
+    else
+      echo -e "${RED}  ✗ Ошибка обновления Freedom outbound${NC}"
+    fi
+  fi
+
+  local route_only_missing=$(jq '[.inbounds[] | select(.sniffing.routeOnly != true)] | length' "$CONFIG_FILE" 2>/dev/null)
+  if [[ "$route_only_missing" -gt 0 ]]; then
+    echo -e "${YELLOW}  → Sniffing: включаю routeOnly для $route_only_missing inbound(ов)${NC}"
+    if safe_jq_write '
+      .inbounds[] |= (if .sniffing then .sniffing.routeOnly = true else . end)
+    ' "$CONFIG_FILE"; then
+      echo -e "${GREEN}  ✓ Sniffing routeOnly включён${NC}"
+      changed=true
+    else
+      echo -e "${RED}  ✗ Ошибка включения sniffing routeOnly${NC}"
+    fi
+  else
+    echo -e "${GREEN}  ✓ Sniffing routeOnly уже включён${NC}"
+  fi
+
+  local access_log=$(jq -r '.log.access // "not_set"' "$CONFIG_FILE" 2>/dev/null)
+  if [[ "$access_log" == "none" ]]; then
+    echo -e "${GREEN}  ✓ Access log уже отключён${NC}"
+  else
+    echo -e "${YELLOW}  → Логирование: отключаю access log${NC}"
+    if safe_jq_write '.log.access = "none"' "$CONFIG_FILE"; then
+      echo -e "${GREEN}  ✓ Access log отключён${NC}"
+      changed=true
+    else
+      echo -e "${RED}  ✗ Ошибка отключения access log${NC}"
+    fi
+  fi
+
+  local policy_section=$(jq '.policy // empty' "$CONFIG_FILE" 2>/dev/null)
+  if [[ -n "$policy_section" ]]; then
+    echo -e "${GREEN}  ✓ Policy уже настроен${NC}"
+  else
+    echo -e "${YELLOW}  → Policy: добавляю bufferSize=4${NC}"
+    if safe_jq_write '.policy = {
+      "levels": {
+        "0": {
+          "handshake": 4,
+          "connIdle": 300,
+          "uplinkOnly": 2,
+          "downlinkOnly": 5,
+          "bufferSize": 4
+        }
+      }
+    }' "$CONFIG_FILE"; then
+      echo -e "${GREEN}  ✓ Policy добавлен (bufferSize=4)${NC}"
+      changed=true
+    else
+      echo -e "${RED}  ✗ Ошибка добавления policy${NC}"
+    fi
+  fi
+
+  local bittorrent_rule_count=$(jq -r '[.routing.rules[] | select(.protocol != null) | .protocol[] | select(. == "bittorrent")] | length' "$CONFIG_FILE" 2>/dev/null)
+  if [[ -n "$bittorrent_rule_count" ]] && [[ "$bittorrent_rule_count" != "0" ]]; then
+    echo -e "${GREEN}  ✓ Блокировка BitTorrent уже настроена${NC}"
+  else
+    echo -e "${YELLOW}  → Маршрутизация: блокирую BitTorrent${NC}"
+    if safe_jq_write '
+      .routing.rules |= (.[:-1] + [{"type":"field","protocol":["bittorrent"],"outboundTag":"block"}] + .[-1:])
+    ' "$CONFIG_FILE"; then
+      echo -e "${GREEN}  ✓ BitTorrent заблокирован${NC}"
+      changed=true
+    else
+      echo -e "${RED}  ✗ Ошибка добавления правила BitTorrent${NC}"
+    fi
+  fi
+
+  fix_xray_permissions
+
+  if [[ "$changed" == "true" ]]; then
+    return 0
+  fi
+
+  return 1
+}
+
 # ═══════════════════════════════════════════════════════════
 # END HELPER FUNCTIONS
 # ═══════════════════════════════════════════════════════════
@@ -511,6 +632,14 @@ main_menu() {
   if [[ ! -f /usr/local/etc/xray/.xhttp_extra_restored ]]; then
     if migrate_xhttp_extra_restore; then
       touch /usr/local/etc/xray/.xhttp_extra_restored
+      needs_restart=true
+    fi
+  fi
+
+  # Config optimization migration (Phase 2)
+  if [[ ! -f /usr/local/etc/xray/.config_optimized ]]; then
+    if migrate_config_optimization; then
+      touch /usr/local/etc/xray/.config_optimized
       needs_restart=true
     fi
   fi
