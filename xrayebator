@@ -100,6 +100,147 @@ update_transport_settings_for_sni() {
   fi
 }
 
+find_profile_file_by_uuid() {
+  local uuid=$1
+  local profile_file
+
+  for profile_file in "$PROFILES_DIR"/*.json; do
+    [[ ! -f "$profile_file" ]] && continue
+    if [[ "$(jq -r '.uuid // ""' "$profile_file" 2>/dev/null)" == "$uuid" ]]; then
+      echo "$profile_file"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+find_available_random_port() {
+  local min_port=30000
+  local max_port=60000
+  local attempts=0
+  local port
+
+  while [[ $attempts -lt 200 ]]; do
+    port=$((min_port + ((RANDOM << 15 | RANDOM) % (max_port - min_port + 1))))
+    if ! jq -e --argjson port "$port" '.inbounds[] | select(.port == $port)' \
+      "$CONFIG_FILE" >/dev/null 2>&1; then
+      echo "$port"
+      return 0
+    fi
+    ((attempts++))
+  done
+
+  echo -e "${RED}✗ Не удалось подобрать свободный случайный порт 30000-60000${NC}" >&2
+  return 1
+}
+
+generate_transport_token() {
+  local prefix=$1
+  local bytes=${2:-4}
+  echo "${prefix}-$(openssl rand -hex "$bytes")"
+}
+
+build_transport_defaults() {
+  local transport=$1
+  local port
+  local grpc_service_name=""
+  local xhttp_path=""
+
+  if ! port=$(find_available_random_port); then
+    return 1
+  fi
+
+  case "$transport" in
+    grpc)
+      grpc_service_name=$(generate_transport_token "grpc")
+      ;;
+    xhttp)
+      xhttp_path="/$(generate_transport_token "xhttp")"
+      ;;
+  esac
+
+  printf '%s|%s|%s\n' "$port" "$grpc_service_name" "$xhttp_path"
+}
+
+read_inbound_transport_metadata() {
+  local port=$1
+  local transport=$2
+  local grpc_service_name=""
+  local xhttp_path=""
+
+  case "$transport" in
+    grpc)
+      grpc_service_name=$(jq -r --argjson port "$port" \
+        '.inbounds[] | select(.port == $port) | .streamSettings.grpcSettings.serviceName // "grpc"' \
+        "$CONFIG_FILE" 2>/dev/null)
+      [[ -z "$grpc_service_name" || "$grpc_service_name" == "null" ]] && grpc_service_name="grpc"
+      ;;
+    xhttp)
+      xhttp_path=$(jq -r --argjson port "$port" \
+        '.inbounds[] | select(.port == $port) | .streamSettings.xhttpSettings.path // "/xhttp"' \
+        "$CONFIG_FILE" 2>/dev/null)
+      [[ -z "$xhttp_path" || "$xhttp_path" == "null" ]] && xhttp_path="/xhttp"
+      ;;
+  esac
+
+  printf '%s|%s\n' "$grpc_service_name" "$xhttp_path"
+}
+
+read_profile_transport_metadata() {
+  local profile_file=$1
+  local transport
+  local grpc_service_name=""
+  local xhttp_path=""
+
+  transport=$(jq -r '.transport // "tcp"' "$profile_file" 2>/dev/null)
+
+  case "$transport" in
+    grpc)
+      grpc_service_name=$(jq -r '.grpc_service_name // "grpc"' "$profile_file" 2>/dev/null)
+      [[ -z "$grpc_service_name" || "$grpc_service_name" == "null" ]] && grpc_service_name="grpc"
+      ;;
+    xhttp)
+      xhttp_path=$(jq -r '.xhttp_path // "/xhttp"' "$profile_file" 2>/dev/null)
+      [[ -z "$xhttp_path" || "$xhttp_path" == "null" ]] && xhttp_path="/xhttp"
+      ;;
+  esac
+
+  printf '%s|%s\n' "$grpc_service_name" "$xhttp_path"
+}
+
+write_profile_transport_metadata() {
+  local profile_file=$1
+  local grpc_service_name=$2
+  local xhttp_path=$3
+
+  if ! safe_jq_write --arg grpc_service_name "$grpc_service_name" --arg xhttp_path "$xhttp_path" '
+    if .transport == "grpc" then
+      .grpc_service_name = ($grpc_service_name | select(length > 0))
+    elif .transport == "xhttp" then
+      .xhttp_path = ($xhttp_path | select(length > 0))
+    else
+      .
+    end
+  ' "$profile_file"; then
+    return 1
+  fi
+
+  return 0
+}
+
+confirm_vision_443_risk() {
+  echo ""
+  echo -e "${RED}╔═══════════════════════════════════════════════════════════╗${NC}"
+  echo -e "${RED}║         ⚠ VISION НА 443 — РУЧНОЙ РИСКОВЫЙ РЕЖИМ         ║${NC}"
+  echo -e "${RED}╚═══════════════════════════════════════════════════════════╝${NC}"
+  echo -e "${YELLOW}В 2026 году ТСПУ часто режет Vision на 443, особенно на мобильных сетях.${NC}"
+  echo -e "${YELLOW}Используйте 443 только осознанно, если случайный высокий порт/XHTTP не подходят.${NC}"
+  echo -n -e "${YELLOW}Продолжить несмотря на риск? (y/N): ${NC}"
+  read confirm
+  [[ "$confirm" =~ ^[yYдД]$ ]]
+}
+
 # Безопасная запись через jq — проверяет результат перед перезаписью
 # Использование: safe_jq_write "выражение_jq" [аргументы_jq...] "$входной_файл" "$выходной_файл"
 # Или для записи в тот же файл: safe_jq_write "выражение_jq" [аргументы_jq...] "$файл"
@@ -288,6 +429,50 @@ update_all_profiles_on_port() {
       echo -e "${RED}  ✗ Ошибка обновления: ${YELLOW}$pname${NC}"
     fi
   done
+}
+
+migrate_transport_profile_metadata() {
+  local migrated=0
+  local profile_file
+
+  echo -e "${CYAN}Проверка transport metadata профилей...${NC}"
+  backup_config "transport_profile_metadata"
+
+  for profile_file in "$PROFILES_DIR"/*.json; do
+    [[ ! -f "$profile_file" ]] && continue
+
+    local transport
+    transport=$(jq -r '.transport // ""' "$profile_file" 2>/dev/null)
+
+    case "$transport" in
+      grpc)
+        if [[ "$(jq -r 'has("grpc_service_name")' "$profile_file" 2>/dev/null)" != "true" ]]; then
+          echo -e "${YELLOW}  → Backfill grpc_service_name: $(basename "$profile_file" .json)${NC}"
+          if safe_jq_write '.grpc_service_name = "grpc"' "$profile_file"; then
+            ((migrated++))
+          fi
+        fi
+        ;;
+      xhttp)
+        if [[ "$(jq -r 'has("xhttp_path")' "$profile_file" 2>/dev/null)" != "true" ]]; then
+          echo -e "${YELLOW}  → Backfill xhttp_path: $(basename "$profile_file" .json)${NC}"
+          if safe_jq_write '.xhttp_path = "/xhttp"' "$profile_file"; then
+            ((migrated++))
+          fi
+        fi
+        ;;
+    esac
+  done
+
+  fix_xray_permissions
+
+  if [[ $migrated -gt 0 ]]; then
+    echo -e "${GREEN}✓ Transport metadata backfill: $migrated профилей${NC}"
+  else
+    echo -e "${GREEN}✓ Transport metadata backfill не требуется${NC}"
+  fi
+
+  return 0
 }
 
 # Migration function for existing XHTTP profiles
@@ -636,6 +821,12 @@ main_menu() {
     fi
   fi
 
+  if [[ ! -f /usr/local/etc/xray/.transport_profile_metadata_migrated ]]; then
+    if migrate_transport_profile_metadata; then
+      touch /usr/local/etc/xray/.transport_profile_metadata_migrated
+    fi
+  fi
+
   # Config optimization migration (Phase 2)
   if [[ ! -f /usr/local/etc/xray/.config_optimized ]]; then
     if migrate_config_optimization; then
@@ -736,37 +927,36 @@ create_profile_menu() {
   echo -e "${BLUE}║              ВЫБЕРИТЕ ТИП МАРШРУТА                        ║${NC}"
   echo -e "${BLUE}╚════════════════════════════════════════════════════════════╝${NC}"
   echo ""
-  echo -e "${CYAN} 1)${NC} VLESS + TCP + Reality + Mux ${GREEN}(порт 443)${NC} ${MAGENTA}— РЕКОМЕНДУЕТСЯ${NC}"
-  echo -e "    ${GREEN}✓${NC} Обходит блокировку Vision по паттерну множественных TLS"
-  echo -e "    ${GREEN}✓${NC} Мультиплексирование на стороне клиента"
-  echo -e "    ${GREEN}✓${NC} Безопасен на мобильных сетях (без >15KB детекции)"
+  echo -e "${CYAN} 1)${NC} VLESS + XHTTP + Reality ${GREEN}(случайный высокий порт)${NC} ${MAGENTA}— РЕКОМЕНДУЕТСЯ${NC}"
+  echo -e "    ${GREEN}✓${NC} Самый ровный вариант под ТСПУ-2026: мобильные сети и домашние ISP"
+  echo -e "    ${GREEN}✓${NC} Path и порт генерируются случайно, host берётся из текущего SNI"
+  echo -e "    ${YELLOW}⚠${NC} Нужен свежий клиент с поддержкой XHTTP"
   echo ""
-  echo -e "${CYAN} 2)${NC} VLESS + TCP + Reality + Vision ${YELLOW}(порт 8443)${NC}"
-  echo -e "    ${GREEN}✓${NC} Стабильный и быстрый"
-  echo -e "    ${GREEN}✓${NC} Маскируется под обычный HTTPS трафик"
-  echo -e "    ${YELLOW}⚠${NC} Vision на 443 детектируется ТСПУ (декабрь 2025+)"
+  echo -e "${CYAN} 2)${NC} VLESS + TCP + Reality + Mux ${GREEN}(случайный высокий порт)${NC}"
+  echo -e "    ${GREEN}✓${NC} Хороший запасной вариант, если XHTTP-клиента нет"
+  echo -e "    ${GREEN}✓${NC} Часто ведёт себя лучше Vision на мобильных сетях"
+  echo -e "    ${BLUE}ℹ${NC} Mux включается на клиенте, без Vision-flow"
   echo ""
-  echo -e "${CYAN} 3)${NC} VLESS + TCP + Reality + Vision + uTLS ${MAGENTA}(порт 8443, Firefox)${NC}"
-  echo -e "    ${GREEN}✓${NC} Трафик маскируется под Firefox HTTPS"
-  echo -e "    ${GREEN}✓${NC} Решает проблему TLS fingerprint"
-  echo -e "    ${GREEN}✓${NC} TCP BBR congestion control"
-  echo -e "    ${BLUE}ℹ${NC} Идеален для обхода продвинутой DPI фильтрации"
+  echo -e "${CYAN} 3)${NC} VLESS + gRPC + Reality ${YELLOW}(случайный высокий порт)${NC}"
+  echo -e "    ${YELLOW}⚠${NC} Работает только с SNI, где стабилен HTTP/2"
+  echo -e "    ${YELLOW}⚠${NC} На части РУ-провайдеров и старых клиентов совместимость хуже"
+  echo -e "    ${BLUE}ℹ${NC} serviceName генерируется случайно и сохраняется в профиле"
   echo ""
-  echo -e "${CYAN} 4)${NC} VLESS + gRPC + Reality ${YELLOW}(порт 2053)${NC}"
-  echo -e "    ${YELLOW}⚠${NC} Требует SNI с поддержкой HTTP/2 (cloudflare.com, github.com)"
-  echo -e "    ${YELLOW}⚠${NC} РУ-домены (госуслуги, сбер) часто НЕ работают!"
-  echo -e "    ${YELLOW}⚠${NC} Проблемы совместимости с sing-box"
+  echo -e "${CYAN} 4)${NC} VLESS + TCP + Reality + Vision ${YELLOW}(случайный высокий порт)${NC}"
+  echo -e "    ${GREEN}✓${NC} Быстрый вариант для проводных / домашних ISP"
+  echo -e "    ${YELLOW}⚠${NC} На мобильных сетях режется чаще, чем XHTTP/Mux"
+  echo -e "    ${YELLOW}⚠${NC} Порт 443 для Vision теперь только вручную и с предупреждением"
   echo ""
-  echo -e "${CYAN} 5)${NC} VLESS + XHTTP + Reality ${GREEN}(порт 9443)${NC}"
-  echo -e "    ${GREEN}✓${NC} Современный протокол с низкой задержкой"
-  echo -e "    ${GREEN}✓${NC} Padding + xmux для минимизации обнаружения"
-  echo -e "    ${YELLOW}⚠${NC} Требует клиенты с поддержкой XHTTP"
+  echo -e "${CYAN} 5)${NC} VLESS + TCP + Reality + Vision + uTLS ${MAGENTA}(случайный высокий порт, Firefox)${NC}"
+  echo -e "    ${GREEN}✓${NC} Подменяет TLS fingerprint под Firefox"
+  echo -e "    ${BLUE}ℹ${NC} Имеет смысл на проводных линиях, где обычный Vision режется по fingerprint"
+  echo -e "    ${YELLOW}⚠${NC} На мобильных сетях всё равно лучше сначала пробовать XHTTP"
   echo ""
-  echo -e "${CYAN} 6)${NC} VLESS + TCP + Reality + Vision + XUDP ${GREEN}(порт 443, anti-Tele2)${NC}"
-  echo -e "    ${GREEN}✓${NC} Обходит жесткие блокировки Tele2"
+  echo -e "${CYAN} 6)${NC} VLESS + TCP + Reality + Vision + XUDP ${YELLOW}(случайный высокий порт, anti-Tele2)${NC}"
+  echo -e "    ${GREEN}✓${NC} Может помочь на самых жёстких мобильных фильтрах"
   echo -e "    ${GREEN}✓${NC} xtls-rprx-vision + xudp"
   echo -e "    ${GREEN}✓${NC} SNI: api-maps.yandex.ru по умолчанию"
-  echo -e "    ${BLUE}ℹ${NC} Специальная конфигурация против DPI"
+  echo -e "    ${YELLOW}⚠${NC} Узкий сценарий, не базовый дефолт"
   echo ""
   echo -e "${CYAN} 0)${NC} Назад в главное меню"
   echo ""
@@ -774,12 +964,12 @@ create_profile_menu() {
   echo -n -e "${YELLOW}Ваш выбор: ${NC}"
   read route_choice
   case $route_choice in
-    1) create_profile "$profile_name" "tcp-mux" "443" "chrome" ;;
-    2) create_profile "$profile_name" "tcp" "8443" "chrome" ;;
-    3) create_profile "$profile_name" "tcp-utls" "8443" "firefox" ;;
-    4) create_profile "$profile_name" "grpc" "2053" "chrome" ;;
-    5) create_profile "$profile_name" "xhttp" "9443" "chrome" ;;
-    6) create_profile "$profile_name" "tcp-xudp" "443" "chrome" "api-maps.yandex.ru" ;;
+    1) create_profile "$profile_name" "xhttp" "" "chrome" ;;
+    2) create_profile "$profile_name" "tcp-mux" "" "chrome" ;;
+    3) create_profile "$profile_name" "grpc" "" "chrome" ;;
+    4) create_profile "$profile_name" "tcp" "" "chrome" ;;
+    5) create_profile "$profile_name" "tcp-utls" "" "firefox" ;;
+    6) create_profile "$profile_name" "tcp-xudp" "" "chrome" "api-maps.yandex.ru" ;;
     0) return ;;
     *) echo -e "${RED}Неверный выбор${NC}"; sleep 2; return ;;
   esac
@@ -791,11 +981,24 @@ create_profile() {
   local transport=$2
   local port=$3
   local fingerprint=$4
-
   local custom_sni=$5  # Опциональный кастомный SNI
+  local grpc_service_name=$6
+  local xhttp_path=$7
   local uuid=$(uuidgen)
 
   local default_sni=""
+  local defaults=""
+
+  if [[ -z "$port" ]]; then
+    if ! defaults=$(build_transport_defaults "$transport"); then
+      echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
+      read
+      return 1
+    fi
+    IFS='|' read -r port generated_grpc_service_name generated_xhttp_path <<< "$defaults"
+    [[ -z "$grpc_service_name" ]] && grpc_service_name="$generated_grpc_service_name"
+    [[ -z "$xhttp_path" ]] && xhttp_path="$generated_xhttp_path"
+  fi
 
   # gRPC требует SNI с поддержкой HTTP/2 (только зарубежные!)
   if [[ "$transport" == "grpc" ]]; then
@@ -810,6 +1013,30 @@ create_profile() {
   # Используем кастомный SNI если передан
   [[ -n "$custom_sni" ]] && default_sni="$custom_sni"
 
+  case "$transport" in
+    grpc)
+      [[ -z "$grpc_service_name" ]] && grpc_service_name="grpc"
+      ;;
+    xhttp)
+      [[ -z "$xhttp_path" ]] && xhttp_path="/xhttp"
+      ;;
+  esac
+
+  if [[ "$port" == "443" ]] && [[ "$transport" == "tcp" || "$transport" == "tcp-utls" || "$transport" == "tcp-xudp" ]]; then
+    if ! confirm_vision_443_risk; then
+      echo -e "${CYAN}✓ Создание профиля отменено${NC}"
+      sleep 1
+      return 0
+    fi
+  fi
+
+  local transport_metadata=""
+  if [[ "$transport" == "grpc" ]]; then
+    transport_metadata=$(printf ',\n  "grpc_service_name": "%s"' "$grpc_service_name")
+  elif [[ "$transport" == "xhttp" ]]; then
+    transport_metadata=$(printf ',\n  "xhttp_path": "%s"' "$xhttp_path")
+  fi
+
   cat > "$PROFILES_DIR/$name.json" << EOF
 {
   "name": "$name",
@@ -818,11 +1045,12 @@ create_profile() {
   "port": "$port",
   "fingerprint": "$fingerprint",
   "sni": "$default_sni",
+${transport_metadata}
   "created": "$(date +%Y-%m-%d\ %H:%M:%S)"
 }
 EOF
 
-  if ! add_inbound "$uuid" "$transport" "$port" "$default_sni" "$fingerprint"; then
+  if ! add_inbound "$uuid" "$transport" "$port" "$default_sni" "$fingerprint" "$grpc_service_name" "$xhttp_path"; then
     rm -f "$PROFILES_DIR/$name.json"
     echo ""
     echo -e "${RED}╔═══════════════════════════════════════════════${NC}"
@@ -869,6 +1097,8 @@ add_inbound() {
   local port=$3
   local sni=$4
   local fingerprint=${5:-"chrome"}
+  local grpc_service_name=$6
+  local xhttp_path=$7
   local short_id=$(openssl rand -hex 4)
 
   local existing_tag=$(jq -r --argjson port "$port" '.inbounds[] | select(.port == $port) | .tag' "$CONFIG_FILE" 2>/dev/null)
@@ -943,6 +1173,18 @@ add_inbound() {
           break
         fi
       done
+    fi
+
+    local profile_file=""
+    profile_file=$(find_profile_file_by_uuid "$uuid")
+    if [[ -n "$profile_file" ]]; then
+      local inbound_metadata=""
+      local inbound_grpc_service_name=""
+      local inbound_xhttp_path=""
+      inbound_metadata=$(read_inbound_transport_metadata "$port" "$transport")
+      IFS='|' read -r inbound_grpc_service_name inbound_xhttp_path <<< "$inbound_metadata"
+      write_profile_transport_metadata "$profile_file" "$inbound_grpc_service_name" "$inbound_xhttp_path" || \
+        echo -e "${YELLOW}  ⚠ Не удалось синхронизировать transport metadata профиля $(basename "$profile_file")${NC}"
     fi
 
     echo -e "${CYAN} → Добавление клиента в существующий inbound на порту $port${NC}"
@@ -1038,7 +1280,7 @@ TCPEOF
   "streamSettings": {
     "network": "grpc",
     "security": "reality",
-    "grpcSettings": {"serviceName": "grpc"},
+    "grpcSettings": {"serviceName": "$grpc_service_name"},
     "realitySettings": {
       "show": false,
       "dest": "$sni:443",
@@ -1070,7 +1312,7 @@ GRPCEOF
     "security": "reality",
     "xhttpSettings": {
       "mode": "auto",
-      "path": "/xhttp",
+      "path": "$xhttp_path",
       "host": "$sni",
       "extra": {
         "xPaddingBytes": "100-1000",
@@ -1243,6 +1485,14 @@ generate_connection() {
   local fingerprint=$(jq -r '.fingerprint // "chrome"' "$profile_file")
   local current_sni=$(jq -r '.sni // "www.ozon.ru"' "$profile_file")
   local clean_public_key=$(cat "$PUBLIC_KEY_FILE")
+  local transport_metadata=""
+  local grpc_service_name=""
+  local xhttp_path=""
+  local encoded_xhttp_path=""
+
+  transport_metadata=$(read_profile_transport_metadata "$profile_file")
+  IFS='|' read -r grpc_service_name xhttp_path <<< "$transport_metadata"
+  encoded_xhttp_path=$(jq -nr --arg path "$xhttp_path" '$path|@uri')
 
   # Read shortId from config for this port's inbound
   local short_id=$(jq -r --argjson port "$port" \
@@ -1266,11 +1516,11 @@ generate_connection() {
       ;;
     grpc)
       # gRPC Reality
-      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=${short_id}&type=grpc&serviceName=grpc#${profile_name}"
+      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=${short_id}&type=grpc&serviceName=${grpc_service_name}#${profile_name}"
       ;;
     xhttp)
       # XHTTP Reality - требует современные клиенты (sing-box 1.8+, v2rayN 6.x+)
-      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=${short_id}&type=xhttp&path=%2Fxhttp&host=${current_sni}#${profile_name}"
+      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=${short_id}&type=xhttp&path=${encoded_xhttp_path}&host=${current_sni}#${profile_name}"
       ;;
   esac
   echo -e "${BLUE}Ссылка для подключения:${NC}"
@@ -1306,11 +1556,13 @@ generate_connection() {
   if [[ "$transport" == "tcp" ]] || [[ "$transport" == "tcp-utls" ]] || [[ "$transport" == "tcp-xudp" ]] || [[ "$transport" == "tcp-mux" ]]; then
     echo -e "${CYAN}SpiderX:${NC} /"
   elif [[ "$transport" == "grpc" ]]; then
-    echo -e "${CYAN}serviceName:${NC} grpc"
+    echo -e "${CYAN}serviceName:${NC} $grpc_service_name"
+    echo -e "${YELLOW}ℹ gRPC:${NC} нужен SNI с живым HTTP/2; на части РУ-провайдеров капризнее XHTTP"
   elif [[ "$transport" == "xhttp" ]]; then
-    echo -e "${CYAN}Path:${NC} /xhttp"
+    echo -e "${CYAN}Path:${NC} $xhttp_path"
     echo -e "${CYAN}Host:${NC} $current_sni"
     echo ""
+    echo -e "${YELLOW}ℹ XHTTP:${NC} текущий рекомендуемый вариант под ТСПУ-2026"
     echo -e "${YELLOW}⚠ XHTTP требует современные клиенты:${NC}"
     echo -e "  ${GREEN}✓${NC} sing-box 1.8+, v2rayN 6.x+, v2rayNG 1.8.x+"
     echo -e "  ${RED}✗${NC} Clash Meta, старые версии клиентов"
@@ -1810,29 +2062,37 @@ change_port_menu() {
   local old_port=$(jq -r '.port' "$profile_file")
   echo ""
   echo -e "${CYAN}Текущий порт профиля '$profile_name':${NC} ${GREEN}$old_port${NC}\n"
-  echo -e "${YELLOW}Популярные порты для обхода блокировок:${NC}\n"
-  echo -e "  ${GREEN}1)${NC} 443   ${BLUE}- HTTPS (самый популярный, наименее подозрительный)${NC}"
-  echo -e "  ${GREEN}2)${NC} 8443  ${BLUE}- HTTPS альтернативный (часто используется)${NC}"
-  echo -e "  ${GREEN}3)${NC} 2053  ${BLUE}- альтернативный HTTPS, хорош для gRPC${NC}"
-  echo -e "  ${GREEN}4)${NC} 2083  ${BLUE}- Cloudflare альтернативный SSL${NC}"
-  echo -e "  ${GREEN}5)${NC} 2087  ${BLUE}- Cloudflare альтернативный SSL${NC}"
-  echo -e "  ${GREEN}6)${NC} 2096  ${BLUE}- Cloudflare альтернативный SSL${NC}"
-  echo -e "  ${GREEN}7)${NC} 8080  ${BLUE}- HTTP альтернативный прокси${NC}"
-  echo -e "  ${GREEN}8)${NC} 9443  ${BLUE}- для XHTTP протокола${NC}"
-  echo -e "  ${CYAN}9)${NC} Свой порт (введу вручную)\n"
+  echo -e "${YELLOW}Рекомендуемый сценарий для 2026:${NC}\n"
+  echo -e "  ${GREEN}1)${NC} Случайный высокий порт 30000-60000 ${MAGENTA}- рекомендуется${NC}"
+  echo -e "  ${CYAN}2)${NC} 443   ${YELLOW}- вручную / рискованно для Vision${NC}"
+  echo -e "  ${CYAN}3)${NC} 8443  ${BLUE}- явный альтернативный HTTPS-порт${NC}"
+  echo -e "  ${CYAN}4)${NC} 2053  ${BLUE}- ручной вариант, иногда удобен для gRPC${NC}"
+  echo -e "  ${CYAN}5)${NC} 2083  ${BLUE}- Cloudflare альтернативный SSL${NC}"
+  echo -e "  ${CYAN}6)${NC} 2087  ${BLUE}- Cloudflare альтернативный SSL${NC}"
+  echo -e "  ${CYAN}7)${NC} 2096  ${BLUE}- Cloudflare альтернативный SSL${NC}"
+  echo -e "  ${CYAN}8)${NC} 9443  ${BLUE}- ручной XHTTP-style вариант, не дефолт${NC}"
+  echo -e "  ${CYAN}9)${NC} 8080  ${BLUE}- HTTP альтернативный прокси${NC}"
+  echo -e "  ${CYAN}10)${NC} Свой порт (введу вручную)\n"
   echo -n -e "${YELLOW}Выберите порт: ${NC}"
   read port_choice
   local new_port=""
   case $port_choice in
-    1) new_port="443" ;;
-    2) new_port="8443" ;;
-    3) new_port="2053" ;;
-    4) new_port="2083" ;;
-    5) new_port="2087" ;;
-    6) new_port="2096" ;;
-    7) new_port="8080" ;;
+    1)
+      if ! new_port=$(find_available_random_port); then
+        echo -n -e "${YELLOW}Нажмите Enter...${NC}"
+        read
+        return
+      fi
+      ;;
+    2) new_port="443" ;;
+    3) new_port="8443" ;;
+    4) new_port="2053" ;;
+    5) new_port="2083" ;;
+    6) new_port="2087" ;;
+    7) new_port="2096" ;;
     8) new_port="9443" ;;
-    9)
+    9) new_port="8080" ;;
+    10)
       echo -n -e "${YELLOW}Введите номер порта (1-65535): ${NC}"
       read new_port
       ;;
@@ -1853,17 +2113,38 @@ change_port_menu() {
   # Get profile transport and UUID
   local profile_transport=$(jq -r '.transport' "$profile_file")
   local profile_uuid=$(jq -r '.uuid' "$profile_file")
+  local profile_metadata=""
+  local profile_grpc_service_name=""
+  local profile_xhttp_path=""
+
+  profile_metadata=$(read_profile_transport_metadata "$profile_file")
+  IFS='|' read -r profile_grpc_service_name profile_xhttp_path <<< "$profile_metadata"
+
+  if [[ "$new_port" == "443" ]] && [[ "$profile_transport" == "tcp" || "$profile_transport" == "tcp-utls" || "$profile_transport" == "tcp-xudp" ]]; then
+    if ! confirm_vision_443_risk; then
+      echo -e "${CYAN}✓ Смена порта отменена${NC}"
+      sleep 1
+      return
+    fi
+  fi
 
   # Check if target port is already in use
   local target_inbound_tag=$(jq -r --argjson port "$new_port" '.inbounds[] | select(.port == $port) | .tag' "$CONFIG_FILE" 2>/dev/null)
   local target_inbound_transport=""
   local target_inbound_sni=""
+  local target_inbound_fp=""
+  local target_inbound_metadata=""
+  local target_inbound_grpc_service_name=""
+  local target_inbound_xhttp_path=""
   local move_to_existing=false
 
   if [[ -n "$target_inbound_tag" ]]; then
     # Port is in use - check transport compatibility
     target_inbound_transport=$(jq -r --argjson port "$new_port" '.inbounds[] | select(.port == $port) | .streamSettings.network' "$CONFIG_FILE")
     target_inbound_sni=$(jq -r --argjson port "$new_port" '.inbounds[] | select(.port == $port) | .streamSettings.realitySettings.serverNames[0]' "$CONFIG_FILE")
+    target_inbound_fp=$(jq -r --argjson port "$new_port" '.inbounds[] | select(.port == $port) | .streamSettings.realitySettings.fingerprint // "chrome"' "$CONFIG_FILE")
+    target_inbound_metadata=$(read_inbound_transport_metadata "$new_port" "$profile_transport")
+    IFS='|' read -r target_inbound_grpc_service_name target_inbound_xhttp_path <<< "$target_inbound_metadata"
 
     # Normalize transport for comparison (tcp-utls, tcp-xudp, tcp-mux use tcp network)
     local profile_network="$profile_transport"
@@ -1965,12 +2246,10 @@ change_port_menu() {
     fi
 
     # Шаг 4: Обновить файл профиля (port + sni + fingerprint целевого inbound)
-    local target_fp=$(jq -r --argjson port "$new_port" \
-      '.inbounds[] | select(.port == $port) | .streamSettings.realitySettings.fingerprint' \
-      "$CONFIG_FILE" 2>/dev/null)
-    [[ -z "$target_fp" ]] && target_fp="chrome"
-    safe_jq_write --argjson port "$new_port" --arg sni "$target_inbound_sni" --arg fp "$target_fp" \
+    [[ -z "$target_inbound_fp" ]] && target_inbound_fp="chrome"
+    safe_jq_write --argjson port "$new_port" --arg sni "$target_inbound_sni" --arg fp "$target_inbound_fp" \
       '.port = $port | .sni = $sni | .fingerprint = $fp' "$profile_file"
+    write_profile_transport_metadata "$profile_file" "$target_inbound_grpc_service_name" "$target_inbound_xhttp_path"
 
   else
     # Move entire inbound to new port (original logic)
