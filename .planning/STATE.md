@@ -9,10 +9,10 @@ See: .planning/PROJECT.md (updated 2026-03-08)
 
 ## Current Position
 
-Phase: 3 of 3 (Transport Modernization) -- READY TO PLAN
-Plan: 0 of 1 in current phase -- NOT PLANNED
-Status: Phase 2 complete
-Last activity: 2026-03-10 -- Completed 02-01-PLAN.md and 02-02-PLAN.md
+Phase: 3 of 3 (Transport Modernization) -- READY TO EXECUTE
+Plan: 1 of 1 in current phase -- PLANNED
+Status: Phase 3 planned and verified
+Last activity: 2026-03-10 -- Created and verified 03-01-PLAN.md
 
 Progress: [███████░░░] 67%
 
@@ -57,6 +57,8 @@ Recent decisions affecting current work:
 - [02-01]: Freedom outbound uses jq path assignment for UseIPv4 to preserve existing settings like fragment
 - [02-02]: Fresh installs now write the fully optimized Phase 2 config template and create .config_optimized immediately
 - [02-02]: update.sh treats https+local:// as canonical DNS while preserving 127.0.0.1 and legacy AdGuard DoH compatibility
+- [03-Plan]: Phase 3 remains a single executable plan because all required transport work stays inside xrayebator
+- [03-Plan]: Randomized XHTTP path and gRPC serviceName require additive profile metadata so QR/link export stays correct
 
 ### Pending Todos
 
@@ -70,5 +72,5 @@ None yet.
 ## Session Continuity
 
 Last session: 2026-03-10
-Stopped at: Phase 2 complete; next step is discuss/plan Phase 3 (Transport Modernization)
+Stopped at: Phase 3 planned and verified; next step is execute 03-01 for Transport Modernization
 Resume file: None
