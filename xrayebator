@@ -1030,25 +1030,25 @@ create_profile() {
     fi
   fi
 
-  local transport_metadata=""
+  local jq_args=(
+    --arg name "$name"
+    --arg uuid "$uuid"
+    --arg transport "$transport"
+    --argjson port "$port"
+    --arg fingerprint "$fingerprint"
+    --arg sni "$default_sni"
+    --arg created "$(date +%Y-%m-%d\ %H:%M:%S)"
+  )
+  local jq_expr='{name: $name, uuid: $uuid, transport: $transport, port: $port, fingerprint: $fingerprint, sni: $sni'
   if [[ "$transport" == "grpc" ]]; then
-    transport_metadata=$(printf ',\n  "grpc_service_name": "%s"' "$grpc_service_name")
+    jq_args+=(--arg grpc_service_name "$grpc_service_name")
+    jq_expr+=', grpc_service_name: $grpc_service_name'
   elif [[ "$transport" == "xhttp" ]]; then
-    transport_metadata=$(printf ',\n  "xhttp_path": "%s"' "$xhttp_path")
+    jq_args+=(--arg xhttp_path "$xhttp_path")
+    jq_expr+=', xhttp_path: $xhttp_path'
   fi
-
-  cat > "$PROFILES_DIR/$name.json" << EOF
-{
-  "name": "$name",
-  "uuid": "$uuid",
-  "transport": "$transport",
-  "port": "$port",
-  "fingerprint": "$fingerprint",
-  "sni": "$default_sni",
-${transport_metadata}
-  "created": "$(date +%Y-%m-%d\ %H:%M:%S)"
-}
-EOF
+  jq_expr+=', created: $created}'
+  jq -n "${jq_args[@]}" "$jq_expr" > "$PROFILES_DIR/$name.json"
 
   if ! add_inbound "$uuid" "$transport" "$port" "$default_sni" "$fingerprint" "$grpc_service_name" "$xhttp_path"; then
     rm -f "$PROFILES_DIR/$name.json"
