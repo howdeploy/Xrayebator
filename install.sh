@@ -122,7 +122,7 @@ echo -e "${GREEN}✓ Директории созданы${NC}\n"
 echo -e "${BLUE}[5/10]${NC} ${YELLOW}Генерация ключей Reality...${NC}"
 KEYS_OUTPUT=$(/usr/local/bin/xray x25519 2>&1)
 PRIVATE_KEY=$(echo "$KEYS_OUTPUT" | grep "PrivateKey:" | cut -d' ' -f2)
-PUBLIC_KEY=$(echo "$KEYS_OUTPUT" | grep "Password:" | cut -d' ' -f2)
+PUBLIC_KEY=$(echo "$KEYS_OUTPUT" | grep "Password (PublicKey):" | cut -d' ' -f3)
 
 if [[ -z "$PRIVATE_KEY" ]] || [[ -z "$PUBLIC_KEY" ]]; then
   echo -e "${RED}✗ Ошибка генерации ключей${NC}"
