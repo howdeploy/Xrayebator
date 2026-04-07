@@ -121,8 +121,8 @@ echo -e "${GREEN}✓ Директории созданы${NC}\n"
 # [5/10] Генерация ключей Reality
 echo -e "${BLUE}[5/10]${NC} ${YELLOW}Генерация ключей Reality...${NC}"
 KEYS_OUTPUT=$(/usr/local/bin/xray x25519 2>&1)
-PRIVATE_KEY=$(echo "$KEYS_OUTPUT" | grep "PrivateKey:" | cut -d' ' -f2)
-PUBLIC_KEY=$(echo "$KEYS_OUTPUT" | grep "Password:" | cut -d' ' -f2)
+PRIVATE_KEY=$(echo "$KEYS_OUTPUT" | grep "PrivateKey" | awk '{print $NF}')
+PUBLIC_KEY=$(echo "$KEYS_OUTPUT" | grep -E "Password|PublicKey" | awk '{print $NF}')
 
 if [[ -z "$PRIVATE_KEY" ]] || [[ -z "$PUBLIC_KEY" ]]; then
   echo -e "${RED}✗ Ошибка генерации ключей${NC}"
