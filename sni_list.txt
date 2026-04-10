@@ -64,18 +64,13 @@ raw.githubusercontent.com|foreign|3
 api.github.com|foreign|3
 www.cloudflare.com|foreign|3
 cdn.cloudflare.net|foreign|3
-www.google.com|foreign|3
-www.microsoft.com|foreign|3
-www.apple.com|foreign|3
 aws.amazon.com|foreign|3
-www.bbc.com|foreign|3
 
 # ═══════════════════════════════════════════════════════════
 # FALLBACK (экстренный случай, часто уходит под подозрение DPI)
 # Использовать ТОЛЬКО если ничего не сработало
 # ═══════════════════════════════════════════════════════════
 
-www.yahoo.com|fallback|4
 www.mozilla.org|fallback|4
 www.ubuntu.com|fallback|4
 www.debian.org|fallback|4

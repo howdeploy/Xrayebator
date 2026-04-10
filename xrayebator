@@ -49,7 +49,8 @@ fi
 
 # Получение внешнего IP
 get_server_ip() {
-  local ip=$(curl -s4 ifconfig.me 2>/dev/null || curl -s4 icanhazip.com 2>/dev/null)
+  local ip=$(curl -s4 --connect-timeout 5 --max-time 10 ifconfig.me 2>/dev/null || \
+             curl -s4 --connect-timeout 5 --max-time 10 icanhazip.com 2>/dev/null)
   if [[ -z "$ip" ]]; then
     ip=$(hostname -I | awk '{print $1}')
   fi
@@ -77,23 +78,14 @@ update_transport_settings_for_sni() {
 
   echo -e "${CYAN}  → Обновление SNI на порту $port (транспорт: $transport)...${NC}"
 
-  local temp_config=$(mktemp)
-
   # Base updates (ALL transports) - search by port number, not tag
-  jq --argjson port "$port_num" --arg sni "$new_sni" '
+  if ! safe_jq_write --argjson port "$port_num" --arg sni "$new_sni" '
     (.inbounds[] | select(.port == $port) | .streamSettings.realitySettings.dest) |= ($sni + ":443") |
     (.inbounds[] | select(.port == $port) | .streamSettings.realitySettings.serverNames) |= [$sni]
-  ' "$config_file" > "$temp_config"
-
-  if [[ $? -ne 0 ]] || [[ ! -s "$temp_config" ]]; then
+  ' "$config_file"; then
     echo -e "${RED}  ✗ Ошибка обновления SNI${NC}"
-    rm -f "$temp_config"
     return 1
   fi
-
-  mv "$temp_config" "$config_file"
-  chown root:root "$config_file" 2>/dev/null
-  chmod 644 "$config_file" 2>/dev/null
   echo -e "${GREEN}  ✓ Reality SNI обновлен → $new_sni${NC}"
 
   # Transport-specific updates
@@ -107,6 +99,149 @@ update_transport_settings_for_sni() {
       return 1
     fi
   fi
+}
+
+find_profile_file_by_uuid() {
+  local uuid=$1
+  local profile_file
+
+  for profile_file in "$PROFILES_DIR"/*.json; do
+    [[ ! -f "$profile_file" ]] && continue
+    if [[ "$(jq -r '.uuid // ""' "$profile_file" 2>/dev/null)" == "$uuid" ]]; then
+      echo "$profile_file"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+find_available_random_port() {
+  local min_port=30000
+  local max_port=60000
+  local attempts=0
+  local port
+
+  while [[ $attempts -lt 200 ]]; do
+    port=$((min_port + ((RANDOM << 15 | RANDOM) % (max_port - min_port + 1))))
+    # Проверяем и конфиг Xray, и реально слушающие порты
+    if ! jq -e --argjson port "$port" '.inbounds[] | select(.port == $port)' \
+      "$CONFIG_FILE" >/dev/null 2>&1 && \
+      ! ss -tuln 2>/dev/null | grep -q ":${port} "; then
+      echo "$port"
+      return 0
+    fi
+    ((attempts++))
+  done
+
+  echo -e "${RED}✗ Не удалось подобрать свободный случайный порт 30000-60000${NC}" >&2
+  return 1
+}
+
+generate_transport_token() {
+  local prefix=$1
+  local bytes=${2:-4}
+  echo "${prefix}-$(openssl rand -hex "$bytes")"
+}
+
+build_transport_defaults() {
+  local transport=$1
+  local port
+  local grpc_service_name=""
+  local xhttp_path=""
+
+  if ! port=$(find_available_random_port); then
+    return 1
+  fi
+
+  case "$transport" in
+    grpc)
+      grpc_service_name=$(generate_transport_token "grpc")
+      ;;
+    xhttp)
+      xhttp_path="/$(generate_transport_token "xhttp")"
+      ;;
+  esac
+
+  printf '%s|%s|%s\n' "$port" "$grpc_service_name" "$xhttp_path"
+}
+
+read_inbound_transport_metadata() {
+  local port=$1
+  local transport=$2
+  local grpc_service_name=""
+  local xhttp_path=""
+
+  case "$transport" in
+    grpc)
+      grpc_service_name=$(jq -r --argjson port "$port" \
+        '.inbounds[] | select(.port == $port) | .streamSettings.grpcSettings.serviceName // "grpc"' \
+        "$CONFIG_FILE" 2>/dev/null)
+      [[ -z "$grpc_service_name" || "$grpc_service_name" == "null" ]] && grpc_service_name="grpc"
+      ;;
+    xhttp)
+      xhttp_path=$(jq -r --argjson port "$port" \
+        '.inbounds[] | select(.port == $port) | .streamSettings.xhttpSettings.path // "/xhttp"' \
+        "$CONFIG_FILE" 2>/dev/null)
+      [[ -z "$xhttp_path" || "$xhttp_path" == "null" ]] && xhttp_path="/xhttp"
+      ;;
+  esac
+
+  printf '%s|%s\n' "$grpc_service_name" "$xhttp_path"
+}
+
+read_profile_transport_metadata() {
+  local profile_file=$1
+  local transport
+  local grpc_service_name=""
+  local xhttp_path=""
+
+  transport=$(jq -r '.transport // "tcp"' "$profile_file" 2>/dev/null)
+
+  case "$transport" in
+    grpc)
+      grpc_service_name=$(jq -r '.grpc_service_name // "grpc"' "$profile_file" 2>/dev/null)
+      [[ -z "$grpc_service_name" || "$grpc_service_name" == "null" ]] && grpc_service_name="grpc"
+      ;;
+    xhttp)
+      xhttp_path=$(jq -r '.xhttp_path // "/xhttp"' "$profile_file" 2>/dev/null)
+      [[ -z "$xhttp_path" || "$xhttp_path" == "null" ]] && xhttp_path="/xhttp"
+      ;;
+  esac
+
+  printf '%s|%s\n' "$grpc_service_name" "$xhttp_path"
+}
+
+write_profile_transport_metadata() {
+  local profile_file=$1
+  local grpc_service_name=$2
+  local xhttp_path=$3
+
+  if ! safe_jq_write --arg grpc_service_name "$grpc_service_name" --arg xhttp_path "$xhttp_path" '
+    if .transport == "grpc" then
+      .grpc_service_name = ($grpc_service_name | select(length > 0))
+    elif .transport == "xhttp" then
+      .xhttp_path = ($xhttp_path | select(length > 0))
+    else
+      .
+    end
+  ' "$profile_file"; then
+    return 1
+  fi
+
+  return 0
+}
+
+confirm_vision_443_risk() {
+  echo ""
+  echo -e "${RED}╔═══════════════════════════════════════════════════════════╗${NC}"
+  echo -e "${RED}║         ⚠ VISION НА 443 — РУЧНОЙ РИСКОВЫЙ РЕЖИМ         ║${NC}"
+  echo -e "${RED}╚═══════════════════════════════════════════════════════════╝${NC}"
+  echo -e "${YELLOW}В 2026 году ТСПУ часто режет Vision на 443, особенно на мобильных сетях.${NC}"
+  echo -e "${YELLOW}Используйте 443 только осознанно, если случайный высокий порт/XHTTP не подходят.${NC}"
+  echo -n -e "${YELLOW}Продолжить несмотря на риск? (y/N): ${NC}"
+  read confirm
+  [[ "$confirm" =~ ^[yYдД]$ ]]
 }
 
 # Безопасная запись через jq — проверяет результат перед перезаписью
@@ -129,15 +264,79 @@ safe_jq_write() {
   local dst_file="$src_file"
   local jq_args=("${args[@]:0:$((nargs-1))}")
 
+  # Сохраняем исходные права и владельца
+  local orig_mode orig_owner
+  orig_mode=$(stat -c %a "$src_file" 2>/dev/null || echo "644")
+  orig_owner=$(stat -c %U:%G "$src_file" 2>/dev/null || echo "root:root")
+
   local tmp=$(mktemp)
   if jq "${jq_args[@]}" "$src_file" > "$tmp" 2>/dev/null && [[ -s "$tmp" ]]; then
     mv "$tmp" "$dst_file"
-    chown root:root "$dst_file" 2>/dev/null
-    chmod 644 "$dst_file" 2>/dev/null
+    chmod "$orig_mode" "$dst_file" 2>/dev/null
+    chown "$orig_owner" "$dst_file" 2>/dev/null
     return 0
   else
     echo -e "${RED}  ✗ Ошибка jq — файл НЕ изменён: $dst_file${NC}" >&2
     rm -f "$tmp"
+    return 1
+  fi
+}
+
+# Создание бэкапа config.json перед миграцией
+# Args: $1=migration_name (optional, for logging)
+backup_config() {
+  local migration_name=${1:-"manual"}
+  local backup_dir="/usr/local/etc/xray/backups"
+  mkdir -p "$backup_dir"
+  chmod 700 "$backup_dir" 2>/dev/null
+  chown xray:xray "$backup_dir" 2>/dev/null
+  local backup_file="$backup_dir/config_$(date +%Y%m%d_%H%M%S)_${migration_name}.json"
+  cp "$CONFIG_FILE" "$backup_file"
+  chmod 600 "$backup_file" 2>/dev/null
+  chown xray:xray "$backup_file" 2>/dev/null
+  echo -e "${CYAN}  -> Бэкап конфига: $(basename "$backup_file")${NC}"
+}
+
+# Восстановление прав файлов для пользователя xray
+fix_xray_permissions() {
+  chown -R xray:xray /usr/local/etc/xray/ 2>/dev/null || true
+  chmod 600 /usr/local/etc/xray/.private_key 2>/dev/null || true
+}
+
+# Безопасный перезапуск Xray с валидацией конфига
+# Returns: 0=success, 1=validation failed (Xray НЕ перезапущен)
+safe_restart_xray() {
+  if [[ ! -x /usr/local/bin/xray ]]; then
+    echo -e "${RED}  ✗ Бинарник /usr/local/bin/xray не найден${NC}"
+    return 1
+  fi
+
+  local test_output
+  test_output=$(/usr/local/bin/xray run -test -config "$CONFIG_FILE" 2>&1)
+
+  if [[ $? -ne 0 ]]; then
+    echo -e "${RED}  ✗ Конфиг не прошёл валидацию -- Xray НЕ перезапущен${NC}"
+    echo -e "${YELLOW}  Ошибка: ${test_output}${NC}"
+
+    # Rollback: restore from latest backup if exists
+    local latest_backup
+    latest_backup=$(ls -t /usr/local/etc/xray/backups/config_*.json 2>/dev/null | head -1)
+    if [[ -n "$latest_backup" ]]; then
+      echo -e "${YELLOW}  -> Восстанавливаю конфиг из бэкапа...${NC}"
+      cp "$latest_backup" "$CONFIG_FILE"
+      echo -e "${GREEN}  ✓ Конфиг восстановлен из: $(basename "$latest_backup")${NC}"
+    fi
+    return 1
+  fi
+
+  systemctl restart xray
+  sleep 1
+
+  if systemctl is-active --quiet xray; then
+    echo -e "${GREEN}  ✓ Xray перезапущен${NC}"
+    return 0
+  else
+    echo -e "${RED}  ✗ Xray не запустился после перезапуска${NC}"
     return 1
   fi
 }
@@ -158,6 +357,11 @@ open_firewall_port() {
   # Check if UFW is installed and active
   if ! command -v ufw &>/dev/null; then
     echo -e "${YELLOW}  ⚠ UFW не установлен${NC}" >&2
+    return 1
+  fi
+
+  if ! ufw status | grep -q "Status: active"; then
+    echo -e "${YELLOW}  ⚠ UFW не активен — правило не применено${NC}" >&2
     return 1
   fi
 
@@ -250,11 +454,56 @@ update_all_profiles_on_port() {
   done
 }
 
+migrate_transport_profile_metadata() {
+  local migrated=0
+  local profile_file
+
+  echo -e "${CYAN}Проверка transport metadata профилей...${NC}"
+  backup_config "transport_profile_metadata"
+
+  for profile_file in "$PROFILES_DIR"/*.json; do
+    [[ ! -f "$profile_file" ]] && continue
+
+    local transport
+    transport=$(jq -r '.transport // ""' "$profile_file" 2>/dev/null)
+
+    case "$transport" in
+      grpc)
+        if [[ "$(jq -r 'has("grpc_service_name")' "$profile_file" 2>/dev/null)" != "true" ]]; then
+          echo -e "${YELLOW}  → Backfill grpc_service_name: $(basename "$profile_file" .json)${NC}"
+          if safe_jq_write '.grpc_service_name = "grpc"' "$profile_file"; then
+            ((migrated++))
+          fi
+        fi
+        ;;
+      xhttp)
+        if [[ "$(jq -r 'has("xhttp_path")' "$profile_file" 2>/dev/null)" != "true" ]]; then
+          echo -e "${YELLOW}  → Backfill xhttp_path: $(basename "$profile_file" .json)${NC}"
+          if safe_jq_write '.xhttp_path = "/xhttp"' "$profile_file"; then
+            ((migrated++))
+          fi
+        fi
+        ;;
+    esac
+  done
+
+  fix_xray_permissions
+
+  if [[ $migrated -gt 0 ]]; then
+    echo -e "${GREEN}✓ Transport metadata backfill: $migrated профилей${NC}"
+  else
+    echo -e "${GREEN}✓ Transport metadata backfill не требуется${NC}"
+  fi
+
+  return 0
+}
+
 # Migration function for existing XHTTP profiles
 migrate_xhttp_profiles() {
   local migrated=0
 
   echo -e "${CYAN}Проверка XHTTP профилей для миграции...${NC}"
+  backup_config "xhttp_profiles"
 
   for profile_file in "$PROFILES_DIR"/*.json; do
     [[ ! -f "$profile_file" ]] && continue
@@ -283,7 +532,7 @@ migrate_xhttp_profiles() {
 
   if [[ $migrated -gt 0 ]]; then
     echo -e "${GREEN}✓ Мигрировано $migrated XHTTP профилей${NC}"
-    systemctl restart xray
+    safe_restart_xray
   else
     echo -e "${GREEN}✓ Миграция не требуется${NC}"
   fi
@@ -293,6 +542,7 @@ migrate_xhttp_profiles() {
 # Adds default "direct" rule if missing
 migrate_routing_config() {
   echo -e "${CYAN}Проверка конфигурации маршрутизации...${NC}"
+  backup_config "routing_v132"
 
   # Check if default direct rule exists
   local has_direct_rule=$(jq -r '
@@ -302,21 +552,14 @@ migrate_routing_config() {
   if [[ -z "$has_direct_rule" ]]; then
     echo -e "${YELLOW}  → Добавляю default direct rule...${NC}"
 
-    local temp_config=$(mktemp)
-    jq '.routing.rules += [{
+    if safe_jq_write '.routing.rules += [{
       "type": "field",
       "network": "tcp,udp",
       "outboundTag": "direct"
-    }]' "$CONFIG_FILE" > "$temp_config"
-
-    if [[ $? -eq 0 ]] && [[ -s "$temp_config" ]]; then
-      mv "$temp_config" "$CONFIG_FILE"
-      chown root:root "$CONFIG_FILE"
-      chmod 644 "$CONFIG_FILE"
+    }]' "$CONFIG_FILE"; then
       echo -e "${GREEN}  ✓ Маршрутизация исправлена${NC}"
       return 0  # Needs restart
     else
-      rm -f "$temp_config"
       echo -e "${RED}  ✗ Ошибка миграции маршрутизации${NC}"
       return 1
     fi
@@ -331,6 +574,7 @@ migrate_routing_config() {
 # NOTE: extra settings preserved — they are critical for DPI bypass
 migrate_xhttp_mode() {
   echo -e "${CYAN}Проверка XHTTP mode для миграции...${NC}"
+  backup_config "xhttp_mode"
 
   local migrated=0
 
@@ -347,23 +591,15 @@ migrate_xhttp_mode() {
     if [[ "$current_mode" == "stream" ]]; then
       echo -e "${YELLOW}  → Миграция XHTTP mode на порту $port: stream → auto${NC}"
 
-      local temp_config=$(mktemp)
-      jq --argjson port "$port" '
+      if safe_jq_write --argjson port "$port" '
         (.inbounds[] | select(.port == $port) | .streamSettings.xhttpSettings.mode) = "auto"
-      ' "$CONFIG_FILE" > "$temp_config"
-
-      if [[ $? -eq 0 ]] && [[ -s "$temp_config" ]]; then
-        mv "$temp_config" "$CONFIG_FILE"
+      ' "$CONFIG_FILE"; then
         ((migrated++))
-      else
-        rm -f "$temp_config"
       fi
     fi
   done
 
   if [[ $migrated -gt 0 ]]; then
-    chown root:root "$CONFIG_FILE"
-    chmod 644 "$CONFIG_FILE"
     echo -e "${GREEN}✓ Мигрировано $migrated XHTTP inbound(ов)${NC}"
     return 0  # Needs restart
   else
@@ -376,6 +612,7 @@ migrate_xhttp_mode() {
 # Without extra (padding, xmux, post limits) XHTTP is easily detected by DPI
 migrate_xhttp_extra_restore() {
   echo -e "${CYAN}Проверка XHTTP extra для восстановления...${NC}"
+  backup_config "xhttp_extra_restore"
 
   local restored=0
 
@@ -392,8 +629,7 @@ migrate_xhttp_extra_restore() {
     if [[ "$extra_keys" == "0" ]] || [[ -z "$extra_keys" ]]; then
       echo -e "${YELLOW}  → Восстановление XHTTP extra на порту $port${NC}"
 
-      local temp_config=$(mktemp)
-      jq --argjson port "$port" '
+      if safe_jq_write --argjson port "$port" '
         (.inbounds[] | select(.port == $port) | .streamSettings.xhttpSettings.extra) = {
           "xPaddingBytes": "100-1000",
           "xmux": {
@@ -404,26 +640,140 @@ migrate_xhttp_extra_restore() {
           "scMaxEachPostBytes": "1000000-2000000",
           "scMinPostsIntervalMs": "10-50"
         }
-      ' "$CONFIG_FILE" > "$temp_config"
-
-      if [[ $? -eq 0 ]] && [[ -s "$temp_config" ]]; then
-        mv "$temp_config" "$CONFIG_FILE"
+      ' "$CONFIG_FILE"; then
         ((restored++))
-      else
-        rm -f "$temp_config"
       fi
     fi
   done
 
   if [[ $restored -gt 0 ]]; then
-    chown root:root "$CONFIG_FILE"
-    chmod 644 "$CONFIG_FILE"
     echo -e "${GREEN}✓ Восстановлено extra для $restored XHTTP inbound(ов)${NC}"
     return 0  # Needs restart
   else
     echo -e "${GREEN}✓ XHTTP extra в порядке${NC}"
     return 1  # No restart needed
   fi
+}
+
+# Migration: config optimization (Phase 2)
+# Applies DNS DoH Local, freedom UseIPv4, sniffing routeOnly,
+# access log none, policy bufferSize, and BitTorrent blocking
+migrate_config_optimization() {
+  echo -e "${CYAN}Оптимизация конфигурации...${NC}"
+  backup_config "config_optimization"
+
+  local changed=false
+
+  local current_dns=$(jq -r '.dns.servers[0] // ""' "$CONFIG_FILE" 2>/dev/null)
+  if [[ "$current_dns" == "127.0.0.1" ]]; then
+    echo -e "${GREEN}  ✓ DNS -> 127.0.0.1 (AdGuard Home) сохранён${NC}"
+  elif [[ "$current_dns" == "https+local://1.1.1.1/dns-query" ]]; then
+    echo -e "${GREEN}  ✓ DNS уже оптимизирован${NC}"
+  else
+    echo -e "${YELLOW}  → DNS: миграция на DoH Local${NC}"
+    if safe_jq_write '.dns = {
+      "servers": [
+        "https+local://1.1.1.1/dns-query",
+        "localhost"
+      ],
+      "queryStrategy": "UseIPv4",
+      "disableCache": false
+    }' "$CONFIG_FILE"; then
+      echo -e "${GREEN}  ✓ DNS переведён на DoH Local${NC}"
+      changed=true
+    else
+      echo -e "${RED}  ✗ Ошибка миграции DNS${NC}"
+    fi
+  fi
+
+  local freedom_strategy=$(jq -r '.outbounds[] | select(.protocol == "freedom") | .settings.domainStrategy // "none"' "$CONFIG_FILE" 2>/dev/null)
+  if [[ "$freedom_strategy" == "UseIPv4" ]]; then
+    echo -e "${GREEN}  ✓ Freedom уже использует UseIPv4${NC}"
+  else
+    echo -e "${YELLOW}  → Freedom: добавляю UseIPv4${NC}"
+    if safe_jq_write '
+      (.outbounds[] | select(.protocol == "freedom")).settings.domainStrategy = "UseIPv4"
+    ' "$CONFIG_FILE"; then
+      echo -e "${GREEN}  ✓ Freedom переведён на UseIPv4${NC}"
+      changed=true
+    else
+      echo -e "${RED}  ✗ Ошибка обновления Freedom outbound${NC}"
+    fi
+  fi
+
+  local route_only_missing=$(jq '[.inbounds[] | select(.sniffing.routeOnly != true)] | length' "$CONFIG_FILE" 2>/dev/null)
+  if [[ "$route_only_missing" -gt 0 ]]; then
+    echo -e "${YELLOW}  → Sniffing: включаю routeOnly для $route_only_missing inbound(ов)${NC}"
+    if safe_jq_write '
+      .inbounds[] |= (if .sniffing then .sniffing.routeOnly = true else . end)
+    ' "$CONFIG_FILE"; then
+      echo -e "${GREEN}  ✓ Sniffing routeOnly включён${NC}"
+      changed=true
+    else
+      echo -e "${RED}  ✗ Ошибка включения sniffing routeOnly${NC}"
+    fi
+  else
+    echo -e "${GREEN}  ✓ Sniffing routeOnly уже включён${NC}"
+  fi
+
+  local access_log=$(jq -r '.log.access // "not_set"' "$CONFIG_FILE" 2>/dev/null)
+  if [[ "$access_log" == "none" ]]; then
+    echo -e "${GREEN}  ✓ Access log уже отключён${NC}"
+  else
+    echo -e "${YELLOW}  → Логирование: отключаю access log${NC}"
+    if safe_jq_write '.log.access = "none"' "$CONFIG_FILE"; then
+      echo -e "${GREEN}  ✓ Access log отключён${NC}"
+      changed=true
+    else
+      echo -e "${RED}  ✗ Ошибка отключения access log${NC}"
+    fi
+  fi
+
+  local policy_section=$(jq '.policy // empty' "$CONFIG_FILE" 2>/dev/null)
+  if [[ -n "$policy_section" ]]; then
+    echo -e "${GREEN}  ✓ Policy уже настроен${NC}"
+  else
+    echo -e "${YELLOW}  → Policy: добавляю bufferSize=4${NC}"
+    if safe_jq_write '.policy = {
+      "levels": {
+        "0": {
+          "handshake": 4,
+          "connIdle": 300,
+          "uplinkOnly": 2,
+          "downlinkOnly": 5,
+          "bufferSize": 4
+        }
+      }
+    }' "$CONFIG_FILE"; then
+      echo -e "${GREEN}  ✓ Policy добавлен (bufferSize=4)${NC}"
+      changed=true
+    else
+      echo -e "${RED}  ✗ Ошибка добавления policy${NC}"
+    fi
+  fi
+
+  local bittorrent_rule_count=$(jq -r '[.routing.rules[] | select(.protocol != null) | .protocol[] | select(. == "bittorrent")] | length' "$CONFIG_FILE" 2>/dev/null)
+  if [[ -n "$bittorrent_rule_count" ]] && [[ "$bittorrent_rule_count" != "0" ]]; then
+    echo -e "${GREEN}  ✓ Блокировка BitTorrent уже настроена${NC}"
+  else
+    echo -e "${YELLOW}  → Маршрутизация: блокирую BitTorrent${NC}"
+    if safe_jq_write '
+      .routing.rules |= (.[:-1] + [{"type":"field","protocol":["bittorrent"],"outboundTag":"block"}] + .[-1:])
+    ' "$CONFIG_FILE"; then
+      echo -e "${GREEN}  ✓ BitTorrent заблокирован${NC}"
+      changed=true
+    else
+      echo -e "${RED}  ✗ Ошибка добавления правила BitTorrent${NC}"
+    fi
+  fi
+
+  fix_xray_permissions
+
+  if [[ "$changed" == "true" ]]; then
+    return 0
+  fi
+
+  return 1
 }
 
 # ═══════════════════════════════════════════════════════════
@@ -494,11 +844,27 @@ main_menu() {
     fi
   fi
 
+  if [[ ! -f /usr/local/etc/xray/.transport_profile_metadata_migrated ]]; then
+    if migrate_transport_profile_metadata; then
+      touch /usr/local/etc/xray/.transport_profile_metadata_migrated
+    fi
+  fi
+
+  # Config optimization migration (Phase 2)
+  if [[ ! -f /usr/local/etc/xray/.config_optimized ]]; then
+    if migrate_config_optimization; then
+      touch /usr/local/etc/xray/.config_optimized
+      needs_restart=true
+    fi
+  fi
+
   if [[ "$needs_restart" == "true" ]]; then
     echo -e "${CYAN}Перезапуск Xray после миграций...${NC}"
-    systemctl restart xray
+    safe_restart_xray
     sleep 2
   fi
+
+  fix_xray_permissions
 
   while true; do
     show_ascii
@@ -584,37 +950,36 @@ create_profile_menu() {
   echo -e "${BLUE}║              ВЫБЕРИТЕ ТИП МАРШРУТА                        ║${NC}"
   echo -e "${BLUE}╚════════════════════════════════════════════════════════════╝${NC}"
   echo ""
-  echo -e "${CYAN} 1)${NC} VLESS + TCP + Reality + Mux ${GREEN}(порт 443)${NC} ${MAGENTA}— РЕКОМЕНДУЕТСЯ${NC}"
-  echo -e "    ${GREEN}✓${NC} Обходит блокировку Vision по паттерну множественных TLS"
-  echo -e "    ${GREEN}✓${NC} Мультиплексирование на стороне клиента"
-  echo -e "    ${GREEN}✓${NC} Безопасен на мобильных сетях (без >15KB детекции)"
+  echo -e "${CYAN} 1)${NC} VLESS + XHTTP + Reality ${GREEN}(случайный высокий порт)${NC} ${MAGENTA}— РЕКОМЕНДУЕТСЯ${NC}"
+  echo -e "    ${GREEN}✓${NC} Самый ровный вариант под ТСПУ-2026: мобильные сети и домашние ISP"
+  echo -e "    ${GREEN}✓${NC} Path и порт генерируются случайно, host берётся из текущего SNI"
+  echo -e "    ${YELLOW}⚠${NC} Нужен свежий клиент с поддержкой XHTTP"
   echo ""
-  echo -e "${CYAN} 2)${NC} VLESS + TCP + Reality + Vision ${YELLOW}(порт 8443)${NC}"
-  echo -e "    ${GREEN}✓${NC} Стабильный и быстрый"
-  echo -e "    ${GREEN}✓${NC} Маскируется под обычный HTTPS трафик"
-  echo -e "    ${YELLOW}⚠${NC} Vision на 443 детектируется ТСПУ (декабрь 2025+)"
+  echo -e "${CYAN} 2)${NC} VLESS + TCP + Reality + Mux ${GREEN}(случайный высокий порт)${NC}"
+  echo -e "    ${GREEN}✓${NC} Хороший запасной вариант, если XHTTP-клиента нет"
+  echo -e "    ${GREEN}✓${NC} Часто ведёт себя лучше Vision на мобильных сетях"
+  echo -e "    ${BLUE}ℹ${NC} Mux включается на клиенте, без Vision-flow"
   echo ""
-  echo -e "${CYAN} 3)${NC} VLESS + TCP + Reality + Vision + uTLS ${MAGENTA}(порт 8443, Firefox)${NC}"
-  echo -e "    ${GREEN}✓${NC} Трафик маскируется под Firefox HTTPS"
-  echo -e "    ${GREEN}✓${NC} Решает проблему TLS fingerprint"
-  echo -e "    ${GREEN}✓${NC} TCP BBR congestion control"
-  echo -e "    ${BLUE}ℹ${NC} Идеален для обхода продвинутой DPI фильтрации"
+  echo -e "${CYAN} 3)${NC} VLESS + gRPC + Reality ${YELLOW}(случайный высокий порт)${NC}"
+  echo -e "    ${YELLOW}⚠${NC} Работает только с SNI, где стабилен HTTP/2"
+  echo -e "    ${YELLOW}⚠${NC} На части РУ-провайдеров и старых клиентов совместимость хуже"
+  echo -e "    ${BLUE}ℹ${NC} serviceName генерируется случайно и сохраняется в профиле"
   echo ""
-  echo -e "${CYAN} 4)${NC} VLESS + gRPC + Reality ${YELLOW}(порт 2053)${NC}"
-  echo -e "    ${YELLOW}⚠${NC} Требует SNI с поддержкой HTTP/2 (google.com, cloudflare.com)"
-  echo -e "    ${YELLOW}⚠${NC} РУ-домены (госуслуги, сбер) часто НЕ работают!"
-  echo -e "    ${YELLOW}⚠${NC} Проблемы совместимости с sing-box"
+  echo -e "${CYAN} 4)${NC} VLESS + TCP + Reality + Vision ${YELLOW}(случайный высокий порт)${NC}"
+  echo -e "    ${GREEN}✓${NC} Быстрый вариант для проводных / домашних ISP"
+  echo -e "    ${YELLOW}⚠${NC} На мобильных сетях режется чаще, чем XHTTP/Mux"
+  echo -e "    ${YELLOW}⚠${NC} Порт 443 для Vision теперь только вручную и с предупреждением"
   echo ""
-  echo -e "${CYAN} 5)${NC} VLESS + XHTTP + Reality ${GREEN}(порт 9443)${NC}"
-  echo -e "    ${GREEN}✓${NC} Современный протокол с низкой задержкой"
-  echo -e "    ${GREEN}✓${NC} Padding + xmux для минимизации обнаружения"
-  echo -e "    ${YELLOW}⚠${NC} Требует клиенты с поддержкой XHTTP"
+  echo -e "${CYAN} 5)${NC} VLESS + TCP + Reality + Vision + uTLS ${MAGENTA}(случайный высокий порт, Firefox)${NC}"
+  echo -e "    ${GREEN}✓${NC} Подменяет TLS fingerprint под Firefox"
+  echo -e "    ${BLUE}ℹ${NC} Имеет смысл на проводных линиях, где обычный Vision режется по fingerprint"
+  echo -e "    ${YELLOW}⚠${NC} На мобильных сетях всё равно лучше сначала пробовать XHTTP"
   echo ""
-  echo -e "${CYAN} 6)${NC} VLESS + TCP + Reality + Vision + XUDP ${GREEN}(порт 443, anti-Tele2)${NC}"
-  echo -e "    ${GREEN}✓${NC} Обходит жесткие блокировки Tele2"
+  echo -e "${CYAN} 6)${NC} VLESS + TCP + Reality + Vision + XUDP ${YELLOW}(случайный высокий порт, anti-Tele2)${NC}"
+  echo -e "    ${GREEN}✓${NC} Может помочь на самых жёстких мобильных фильтрах"
   echo -e "    ${GREEN}✓${NC} xtls-rprx-vision + xudp"
   echo -e "    ${GREEN}✓${NC} SNI: api-maps.yandex.ru по умолчанию"
-  echo -e "    ${BLUE}ℹ${NC} Специальная конфигурация против DPI"
+  echo -e "    ${YELLOW}⚠${NC} Узкий сценарий, не базовый дефолт"
   echo ""
   echo -e "${CYAN} 0)${NC} Назад в главное меню"
   echo ""
@@ -622,12 +987,12 @@ create_profile_menu() {
   echo -n -e "${YELLOW}Ваш выбор: ${NC}"
   read route_choice
   case $route_choice in
-    1) create_profile "$profile_name" "tcp-mux" "443" "chrome" ;;
-    2) create_profile "$profile_name" "tcp" "8443" "chrome" ;;
-    3) create_profile "$profile_name" "tcp-utls" "8443" "firefox" ;;
-    4) create_profile "$profile_name" "grpc" "2053" "chrome" ;;
-    5) create_profile "$profile_name" "xhttp" "9443" "chrome" ;;
-    6) create_profile "$profile_name" "tcp-xudp" "443" "chrome" "api-maps.yandex.ru" ;;
+    1) create_profile "$profile_name" "xhttp" "" "chrome" ;;
+    2) create_profile "$profile_name" "tcp-mux" "" "chrome" ;;
+    3) create_profile "$profile_name" "grpc" "" "chrome" ;;
+    4) create_profile "$profile_name" "tcp" "" "chrome" ;;
+    5) create_profile "$profile_name" "tcp-utls" "" "firefox" ;;
+    6) create_profile "$profile_name" "tcp-xudp" "" "chrome" "api-maps.yandex.ru" ;;
     0) return ;;
     *) echo -e "${RED}Неверный выбор${NC}"; sleep 2; return ;;
   esac
@@ -639,39 +1004,76 @@ create_profile() {
   local transport=$2
   local port=$3
   local fingerprint=$4
-
-local custom_sni=$5  # Опциональный кастомный SNI
+  local custom_sni=$5  # Опциональный кастомный SNI
+  local grpc_service_name=$6
+  local xhttp_path=$7
   local uuid=$(uuidgen)
 
   local default_sni=""
+  local defaults=""
+
+  if [[ -z "$port" ]]; then
+    if ! defaults=$(build_transport_defaults "$transport"); then
+      echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
+      read
+      return 1
+    fi
+    IFS='|' read -r port generated_grpc_service_name generated_xhttp_path <<< "$defaults"
+    [[ -z "$grpc_service_name" ]] && grpc_service_name="$generated_grpc_service_name"
+    [[ -z "$xhttp_path" ]] && xhttp_path="$generated_xhttp_path"
+  fi
 
   # gRPC требует SNI с поддержкой HTTP/2 (только зарубежные!)
   if [[ "$transport" == "grpc" ]]; then
-    default_sni="www.google.com"
+    default_sni="www.cloudflare.com"
     echo -e "${YELLOW}⚠ gRPC: используется SNI ${CYAN}$default_sni${YELLOW} (требуется HTTP/2)${NC}"
   else
     # Read first valid SNI (skip comments and empty lines)
     default_sni=$(grep -v '^#' "$SNI_LIST" 2>/dev/null | grep -v '^[[:space:]]*$' | head -n 1 | cut -d'|' -f1)
-    [[ -z "$default_sni" ]] && default_sni="www.microsoft.com"
+    [[ -z "$default_sni" ]] && default_sni="www.ozon.ru"
   fi
 
-# Используем кастомный SNI если передан
+  # Используем кастомный SNI если передан
+  [[ -n "$custom_sni" ]] && default_sni="$custom_sni"
 
-[[ -n "$custom_sni" ]] && default_sni="$custom_sni"
+  case "$transport" in
+    grpc)
+      [[ -z "$grpc_service_name" ]] && grpc_service_name="grpc"
+      ;;
+    xhttp)
+      [[ -z "$xhttp_path" ]] && xhttp_path="/xhttp"
+      ;;
+  esac
 
-  cat > "$PROFILES_DIR/$name.json" << EOF
-{
-  "name": "$name",
-  "uuid": "$uuid",
-  "transport": "$transport",
-  "port": "$port",
-  "fingerprint": "$fingerprint",
-  "sni": "$default_sni",
-  "created": "$(date +%Y-%m-%d\ %H:%M:%S)"
-}
-EOF
+  if [[ "$port" == "443" ]] && [[ "$transport" == "tcp" || "$transport" == "tcp-utls" || "$transport" == "tcp-xudp" ]]; then
+    if ! confirm_vision_443_risk; then
+      echo -e "${CYAN}✓ Создание профиля отменено${NC}"
+      sleep 1
+      return 0
+    fi
+  fi
 
-  if ! add_inbound "$uuid" "$transport" "$port" "$default_sni" "$fingerprint"; then
+  local jq_args=(
+    --arg name "$name"
+    --arg uuid "$uuid"
+    --arg transport "$transport"
+    --argjson port "$port"
+    --arg fingerprint "$fingerprint"
+    --arg sni "$default_sni"
+    --arg created "$(date +%Y-%m-%d\ %H:%M:%S)"
+  )
+  local jq_expr='{name: $name, uuid: $uuid, transport: $transport, port: $port, fingerprint: $fingerprint, sni: $sni'
+  if [[ "$transport" == "grpc" ]]; then
+    jq_args+=(--arg grpc_service_name "$grpc_service_name")
+    jq_expr+=', grpc_service_name: $grpc_service_name'
+  elif [[ "$transport" == "xhttp" ]]; then
+    jq_args+=(--arg xhttp_path "$xhttp_path")
+    jq_expr+=', xhttp_path: $xhttp_path'
+  fi
+  jq_expr+=', created: $created}'
+  jq -n "${jq_args[@]}" "$jq_expr" > "$PROFILES_DIR/$name.json"
+
+  if ! add_inbound "$uuid" "$transport" "$port" "$default_sni" "$fingerprint" "$grpc_service_name" "$xhttp_path"; then
     rm -f "$PROFILES_DIR/$name.json"
     echo ""
     echo -e "${RED}╔═══════════════════════════════════════════════${NC}"
@@ -686,7 +1088,7 @@ EOF
     return 1
   fi
 
-  systemctl restart xray
+  safe_restart_xray
 
   # Читаем актуальный SNI из файла (мог измениться при SNI-конфликте)
   local actual_sni=$(jq -r '.sni' "$PROFILES_DIR/$name.json" 2>/dev/null)
@@ -706,6 +1108,7 @@ EOF
   echo ""
   echo -e "${CYAN}Используйте меню 'Подключиться по профилю' для получения ссылки${NC}"
   echo ""
+  fix_xray_permissions
   echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
   read
 }
@@ -717,6 +1120,9 @@ add_inbound() {
   local port=$3
   local sni=$4
   local fingerprint=${5:-"chrome"}
+  local grpc_service_name=$6
+  local xhttp_path=$7
+  local short_id=$(openssl rand -hex 4)
 
   local existing_tag=$(jq -r --argjson port "$port" '.inbounds[] | select(.port == $port) | .tag' "$CONFIG_FILE" 2>/dev/null)
   if [[ -n "$existing_tag" ]]; then
@@ -792,6 +1198,18 @@ add_inbound() {
       done
     fi
 
+    local profile_file=""
+    profile_file=$(find_profile_file_by_uuid "$uuid")
+    if [[ -n "$profile_file" ]]; then
+      local inbound_metadata=""
+      local inbound_grpc_service_name=""
+      local inbound_xhttp_path=""
+      inbound_metadata=$(read_inbound_transport_metadata "$port" "$transport")
+      IFS='|' read -r inbound_grpc_service_name inbound_xhttp_path <<< "$inbound_metadata"
+      write_profile_transport_metadata "$profile_file" "$inbound_grpc_service_name" "$inbound_xhttp_path" || \
+        echo -e "${YELLOW}  ⚠ Не удалось синхронизировать transport metadata профиля $(basename "$profile_file")${NC}"
+    fi
+
     echo -e "${CYAN} → Добавление клиента в существующий inbound на порту $port${NC}"
     # Определяем flow по типу транспорта нового профиля (не копируем слепо от первого клиента)
     local client_flow=""
@@ -833,11 +1251,11 @@ add_inbound() {
       "xver": 0,
       "serverNames": ["$sni"],
       "privateKey": "$PRIVATE_KEY",
-      "shortIds": [""],
+      "shortIds": ["$short_id"],
       "fingerprint": "$fingerprint"
     }
   },
-  "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]},
+  "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"], "routeOnly": true},
   "tag": "inbound-$port"
 }
 TCPMUXEOF
@@ -862,11 +1280,11 @@ TCPMUXEOF
       "xver": 0,
       "serverNames": ["$sni"],
       "privateKey": "$PRIVATE_KEY",
-      "shortIds": [""],
+      "shortIds": ["$short_id"],
       "fingerprint": "$fingerprint"
     }
   },
-  "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]},
+  "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"], "routeOnly": true},
   "tag": "inbound-$port"
 }
 TCPEOF
@@ -885,18 +1303,18 @@ TCPEOF
   "streamSettings": {
     "network": "grpc",
     "security": "reality",
-    "grpcSettings": {"serviceName": "grpc"},
+    "grpcSettings": {"serviceName": "$grpc_service_name"},
     "realitySettings": {
       "show": false,
       "dest": "$sni:443",
       "xver": 0,
       "serverNames": ["$sni"],
       "privateKey": "$PRIVATE_KEY",
-      "shortIds": [""],
+      "shortIds": ["$short_id"],
       "fingerprint": "$fingerprint"
     }
   },
-  "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]},
+  "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"], "routeOnly": true},
   "tag": "inbound-$port"
 }
 GRPCEOF
@@ -917,7 +1335,7 @@ GRPCEOF
     "security": "reality",
     "xhttpSettings": {
       "mode": "auto",
-      "path": "/xhttp",
+      "path": "$xhttp_path",
       "host": "$sni",
       "extra": {
         "xPaddingBytes": "100-1000",
@@ -936,11 +1354,11 @@ GRPCEOF
       "xver": 0,
       "serverNames": ["$sni"],
       "privateKey": "$PRIVATE_KEY",
-      "shortIds": [""],
+      "shortIds": ["$short_id"],
       "fingerprint": "$fingerprint"
     }
   },
-  "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]},
+  "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"], "routeOnly": true},
   "tag": "inbound-$port"
 }
 XHTTPEOF
@@ -1023,7 +1441,8 @@ delete_profile_menu() {
         # Close firewall port if not used by other profiles
         close_firewall_port "$port"
 
-        systemctl restart xray
+        safe_restart_xray
+        fix_xray_permissions
         echo ""
         echo -e "${GREEN}✓ Профиль '$profile_name' успешно удален${NC}"
       else
@@ -1087,8 +1506,22 @@ generate_connection() {
   local transport=$(jq -r '.transport' "$profile_file")
   local port=$(jq -r '.port' "$profile_file")
   local fingerprint=$(jq -r '.fingerprint // "chrome"' "$profile_file")
-  local current_sni=$(jq -r '.sni // "www.microsoft.com"' "$profile_file")
+  local current_sni=$(jq -r '.sni // "www.ozon.ru"' "$profile_file")
   local clean_public_key=$(cat "$PUBLIC_KEY_FILE")
+  local transport_metadata=""
+  local grpc_service_name=""
+  local xhttp_path=""
+  local encoded_xhttp_path=""
+
+  transport_metadata=$(read_profile_transport_metadata "$profile_file")
+  IFS='|' read -r grpc_service_name xhttp_path <<< "$transport_metadata"
+  encoded_xhttp_path=$(jq -nr --arg path "$xhttp_path" '$path|@uri')
+
+  # Read shortId from config for this port's inbound
+  local short_id=$(jq -r --argjson port "$port" \
+    '.inbounds[] | select(.port == $port) | .streamSettings.realitySettings.shortIds[0]' \
+    "$CONFIG_FILE" 2>/dev/null)
+  [[ -z "$short_id" || "$short_id" == "null" ]] && short_id=""
 
   show_ascii
   echo -e "${GREEN}═══════════════════════════════════════════════${NC}"
@@ -1098,19 +1531,19 @@ generate_connection() {
   case $transport in
     tcp|tcp-utls|tcp-xudp)
       # TCP Reality + Vision
-      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=&type=tcp&headerType=none#${profile_name}"
+      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=${short_id}&type=tcp&headerType=none#${profile_name}"
       ;;
     tcp-mux)
       # TCP Reality + Mux (без Vision, мультиплексирование на клиенте)
-      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=&type=tcp&headerType=none#${profile_name}"
+      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=${short_id}&type=tcp&headerType=none#${profile_name}"
       ;;
     grpc)
       # gRPC Reality
-      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=&type=grpc&serviceName=grpc#${profile_name}"
+      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=${short_id}&type=grpc&serviceName=${grpc_service_name}#${profile_name}"
       ;;
     xhttp)
       # XHTTP Reality - требует современные клиенты (sing-box 1.8+, v2rayN 6.x+)
-      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=&type=xhttp&path=%2Fxhttp&host=${current_sni}#${profile_name}"
+      vless_link="vless://${uuid}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=${current_sni}&fp=${fingerprint}&pbk=${clean_public_key}&sid=${short_id}&type=xhttp&path=${encoded_xhttp_path}&host=${current_sni}#${profile_name}"
       ;;
   esac
   echo -e "${BLUE}Ссылка для подключения:${NC}"
@@ -1142,15 +1575,17 @@ generate_connection() {
   echo -e "${CYAN}SNI:${NC} $current_sni"
   echo -e "${CYAN}Fingerprint:${NC} $fingerprint"
   echo -e "${CYAN}PublicKey:${NC} $clean_public_key"
-  echo -e "${CYAN}ShortID:${NC} (пустой)"
+  echo -e "${CYAN}ShortID:${NC} ${short_id:-(пустой)}"
   if [[ "$transport" == "tcp" ]] || [[ "$transport" == "tcp-utls" ]] || [[ "$transport" == "tcp-xudp" ]] || [[ "$transport" == "tcp-mux" ]]; then
     echo -e "${CYAN}SpiderX:${NC} /"
   elif [[ "$transport" == "grpc" ]]; then
-    echo -e "${CYAN}serviceName:${NC} grpc"
+    echo -e "${CYAN}serviceName:${NC} $grpc_service_name"
+    echo -e "${YELLOW}ℹ gRPC:${NC} нужен SNI с живым HTTP/2; на части РУ-провайдеров капризнее XHTTP"
   elif [[ "$transport" == "xhttp" ]]; then
-    echo -e "${CYAN}Path:${NC} /xhttp"
+    echo -e "${CYAN}Path:${NC} $xhttp_path"
     echo -e "${CYAN}Host:${NC} $current_sni"
     echo ""
+    echo -e "${YELLOW}ℹ XHTTP:${NC} текущий рекомендуемый вариант под ТСПУ-2026"
     echo -e "${YELLOW}⚠ XHTTP требует современные клиенты:${NC}"
     echo -e "  ${GREEN}✓${NC} sing-box 1.8+, v2rayN 6.x+, v2rayNG 1.8.x+"
     echo -e "  ${RED}✗${NC} Clash Meta, старые версии клиентов"
@@ -1200,7 +1635,7 @@ change_sni_menu() {
   fi
 
   local selected="${profiles[$((choice-1))]}"
-  local current_sni=$(jq -r '.sni // "www.microsoft.com"' "$PROFILES_DIR/$selected.json")
+  local current_sni=$(jq -r '.sni // "www.ozon.ru"' "$PROFILES_DIR/$selected.json")
   local transport=$(jq -r '.transport // "tcp"' "$PROFILES_DIR/$selected.json")
 
   echo ""
@@ -1217,19 +1652,19 @@ change_sni_menu() {
     echo -e "${YELLOW}Российские сайты (Ozon, WB, Sber и др.) НЕ поддерживают HTTP/2.${NC}"
     echo ""
     echo -e "${GREEN}Рекомендуемые SNI для gRPC:${NC}"
-    echo -e "  ${CYAN}1)${NC} www.google.com ${BLUE}(рекомендуется)${NC}"
-    echo -e "  ${CYAN}2)${NC} www.cloudflare.com"
-    echo -e "  ${CYAN}3)${NC} www.microsoft.com"
-    echo -e "  ${CYAN}4)${NC} github.com"
+    echo -e "  ${CYAN}1)${NC} www.cloudflare.com ${BLUE}(рекомендуется)${NC}"
+    echo -e "  ${CYAN}2)${NC} github.com"
+    echo -e "  ${CYAN}3)${NC} aws.amazon.com"
+    echo -e "  ${CYAN}4)${NC} cdn.cloudflare.net"
     echo -e "  ${CYAN}0)${NC} Назад\n"
     echo -n -e "${YELLOW}Выберите SNI для gRPC: ${NC}"
     read grpc_choice
 
     case $grpc_choice in
-      1) new_sni="www.google.com" ;;
-      2) new_sni="www.cloudflare.com" ;;
-      3) new_sni="www.microsoft.com" ;;
-      4) new_sni="github.com" ;;
+      1) new_sni="www.cloudflare.com" ;;
+      2) new_sni="github.com" ;;
+      3) new_sni="aws.amazon.com" ;;
+      4) new_sni="cdn.cloudflare.net" ;;
       0|*) return ;;
     esac
 
@@ -1274,7 +1709,7 @@ change_sni_menu() {
         sleep 2
         return
       fi
-      systemctl restart xray
+      safe_restart_xray
 
       echo ""
       echo -e "${GREEN}✓ SNI профиля '$selected' изменен на: ${YELLOW}$new_sni${NC}"
@@ -1316,8 +1751,7 @@ change_sni_menu() {
   sni_desc["suggest.yandex.ru"]="Яндекс подсказки"
   sni_desc["www.github.com"]="Только если российские не работают!"
   sni_desc["www.cloudflare.com"]="Для корпоративных каналов"
-  sni_desc["www.microsoft.com"]="Часто фильтруется"
-  sni_desc["www.bbc.com"]="Редко работает"
+  sni_desc["aws.amazon.com"]="AWS CDN, запасной вариант для gRPC"
 
   echo -e "${YELLOW}ТОП-20 доменов для маскировки:${NC}\n"
   local idx=1
@@ -1438,7 +1872,7 @@ change_sni_menu() {
     return
   fi
 
-  systemctl restart xray
+  safe_restart_xray
 
   echo ""
   echo -e "${GREEN}✓ SNI профиля '$selected' изменен на: ${YELLOW}$new_sni${NC}"
@@ -1600,7 +2034,7 @@ change_fingerprint_menu() {
     return
   fi
 
-  systemctl restart xray
+  safe_restart_xray
 
   echo ""
   echo -e "${GREEN}✓ Fingerprint профиля '$selected' изменен на: ${YELLOW}$new_fp${NC}"
@@ -1651,29 +2085,37 @@ change_port_menu() {
   local old_port=$(jq -r '.port' "$profile_file")
   echo ""
   echo -e "${CYAN}Текущий порт профиля '$profile_name':${NC} ${GREEN}$old_port${NC}\n"
-  echo -e "${YELLOW}Популярные порты для обхода блокировок:${NC}\n"
-  echo -e "  ${GREEN}1)${NC} 443   ${BLUE}- HTTPS (самый популярный, наименее подозрительный)${NC}"
-  echo -e "  ${GREEN}2)${NC} 8443  ${BLUE}- HTTPS альтернативный (часто используется)${NC}"
-  echo -e "  ${GREEN}3)${NC} 2053  ${BLUE}- альтернативный HTTPS, хорош для gRPC${NC}"
-  echo -e "  ${GREEN}4)${NC} 2083  ${BLUE}- Cloudflare альтернативный SSL${NC}"
-  echo -e "  ${GREEN}5)${NC} 2087  ${BLUE}- Cloudflare альтернативный SSL${NC}"
-  echo -e "  ${GREEN}6)${NC} 2096  ${BLUE}- Cloudflare альтернативный SSL${NC}"
-  echo -e "  ${GREEN}7)${NC} 8080  ${BLUE}- HTTP альтернативный прокси${NC}"
-  echo -e "  ${GREEN}8)${NC} 9443  ${BLUE}- для XHTTP протокола${NC}"
-  echo -e "  ${CYAN}9)${NC} Свой порт (введу вручную)\n"
+  echo -e "${YELLOW}Рекомендуемый сценарий для 2026:${NC}\n"
+  echo -e "  ${GREEN}1)${NC} Случайный высокий порт 30000-60000 ${MAGENTA}- рекомендуется${NC}"
+  echo -e "  ${CYAN}2)${NC} 443   ${YELLOW}- вручную / рискованно для Vision${NC}"
+  echo -e "  ${CYAN}3)${NC} 8443  ${BLUE}- явный альтернативный HTTPS-порт${NC}"
+  echo -e "  ${CYAN}4)${NC} 2053  ${BLUE}- ручной вариант, иногда удобен для gRPC${NC}"
+  echo -e "  ${CYAN}5)${NC} 2083  ${BLUE}- Cloudflare альтернативный SSL${NC}"
+  echo -e "  ${CYAN}6)${NC} 2087  ${BLUE}- Cloudflare альтернативный SSL${NC}"
+  echo -e "  ${CYAN}7)${NC} 2096  ${BLUE}- Cloudflare альтернативный SSL${NC}"
+  echo -e "  ${CYAN}8)${NC} 9443  ${BLUE}- ручной XHTTP-style вариант, не дефолт${NC}"
+  echo -e "  ${CYAN}9)${NC} 8080  ${BLUE}- HTTP альтернативный прокси${NC}"
+  echo -e "  ${CYAN}10)${NC} Свой порт (введу вручную)\n"
   echo -n -e "${YELLOW}Выберите порт: ${NC}"
   read port_choice
   local new_port=""
   case $port_choice in
-    1) new_port="443" ;;
-    2) new_port="8443" ;;
-    3) new_port="2053" ;;
-    4) new_port="2083" ;;
-    5) new_port="2087" ;;
-    6) new_port="2096" ;;
-    7) new_port="8080" ;;
+    1)
+      if ! new_port=$(find_available_random_port); then
+        echo -n -e "${YELLOW}Нажмите Enter...${NC}"
+        read
+        return
+      fi
+      ;;
+    2) new_port="443" ;;
+    3) new_port="8443" ;;
+    4) new_port="2053" ;;
+    5) new_port="2083" ;;
+    6) new_port="2087" ;;
+    7) new_port="2096" ;;
     8) new_port="9443" ;;
-    9)
+    9) new_port="8080" ;;
+    10)
       echo -n -e "${YELLOW}Введите номер порта (1-65535): ${NC}"
       read new_port
       ;;
@@ -1694,17 +2136,38 @@ change_port_menu() {
   # Get profile transport and UUID
   local profile_transport=$(jq -r '.transport' "$profile_file")
   local profile_uuid=$(jq -r '.uuid' "$profile_file")
+  local profile_metadata=""
+  local profile_grpc_service_name=""
+  local profile_xhttp_path=""
+
+  profile_metadata=$(read_profile_transport_metadata "$profile_file")
+  IFS='|' read -r profile_grpc_service_name profile_xhttp_path <<< "$profile_metadata"
+
+  if [[ "$new_port" == "443" ]] && [[ "$profile_transport" == "tcp" || "$profile_transport" == "tcp-utls" || "$profile_transport" == "tcp-xudp" ]]; then
+    if ! confirm_vision_443_risk; then
+      echo -e "${CYAN}✓ Смена порта отменена${NC}"
+      sleep 1
+      return
+    fi
+  fi
 
   # Check if target port is already in use
   local target_inbound_tag=$(jq -r --argjson port "$new_port" '.inbounds[] | select(.port == $port) | .tag' "$CONFIG_FILE" 2>/dev/null)
   local target_inbound_transport=""
   local target_inbound_sni=""
+  local target_inbound_fp=""
+  local target_inbound_metadata=""
+  local target_inbound_grpc_service_name=""
+  local target_inbound_xhttp_path=""
   local move_to_existing=false
 
   if [[ -n "$target_inbound_tag" ]]; then
     # Port is in use - check transport compatibility
     target_inbound_transport=$(jq -r --argjson port "$new_port" '.inbounds[] | select(.port == $port) | .streamSettings.network' "$CONFIG_FILE")
     target_inbound_sni=$(jq -r --argjson port "$new_port" '.inbounds[] | select(.port == $port) | .streamSettings.realitySettings.serverNames[0]' "$CONFIG_FILE")
+    target_inbound_fp=$(jq -r --argjson port "$new_port" '.inbounds[] | select(.port == $port) | .streamSettings.realitySettings.fingerprint // "chrome"' "$CONFIG_FILE")
+    target_inbound_metadata=$(read_inbound_transport_metadata "$new_port" "$profile_transport")
+    IFS='|' read -r target_inbound_grpc_service_name target_inbound_xhttp_path <<< "$target_inbound_metadata"
 
     # Normalize transport for comparison (tcp-utls, tcp-xudp, tcp-mux use tcp network)
     local profile_network="$profile_transport"
@@ -1806,12 +2269,10 @@ change_port_menu() {
     fi
 
     # Шаг 4: Обновить файл профиля (port + sni + fingerprint целевого inbound)
-    local target_fp=$(jq -r --argjson port "$new_port" \
-      '.inbounds[] | select(.port == $port) | .streamSettings.realitySettings.fingerprint' \
-      "$CONFIG_FILE" 2>/dev/null)
-    [[ -z "$target_fp" ]] && target_fp="chrome"
-    safe_jq_write --argjson port "$new_port" --arg sni "$target_inbound_sni" --arg fp "$target_fp" \
+    [[ -z "$target_inbound_fp" ]] && target_inbound_fp="chrome"
+    safe_jq_write --argjson port "$new_port" --arg sni "$target_inbound_sni" --arg fp "$target_inbound_fp" \
       '.port = $port | .sni = $sni | .fingerprint = $fp' "$profile_file"
+    write_profile_transport_metadata "$profile_file" "$target_inbound_grpc_service_name" "$target_inbound_xhttp_path"
 
   else
     # Move entire inbound to new port (original logic)
@@ -1837,7 +2298,8 @@ change_port_menu() {
     close_firewall_port "$old_port"
   fi
 
-  systemctl restart xray
+  fix_xray_permissions
+  safe_restart_xray
   echo ""
   echo -e "${GREEN}✓ Порт профиля '$profile_name' изменен: ${YELLOW}$old_port → $new_port${NC}"
   echo ""
@@ -2207,20 +2669,14 @@ open('/opt/AdGuardHome/AdGuardHome.yaml', 'w').write(data)
   # Шаг 6: Интеграция с Xray DNS
   echo -e "${CYAN}Шаг 6/7: Интеграция с Xray...${NC}"
   if [[ -f "$CONFIG_FILE" ]]; then
-    local temp_config=$(mktemp)
-    jq '.dns = {
+    backup_config "adguard_dns"
+    if safe_jq_write '.dns = {
       "servers": ["127.0.0.1"],
       "queryStrategy": "UseIPv4",
       "disableCache": false
-    }' "$CONFIG_FILE" > "$temp_config"
-
-    if [[ $? -eq 0 ]] && [[ -s "$temp_config" ]]; then
-      mv "$temp_config" "$CONFIG_FILE"
-      chown root:root "$CONFIG_FILE"
-      chmod 644 "$CONFIG_FILE"
+    }' "$CONFIG_FILE"; then
       echo -e "${GREEN}  ✓ Xray DNS → 127.0.0.1 (AdGuard Home)${NC}"
     else
-      rm -f "$temp_config"
       echo -e "${RED}  ✗ Ошибка обновления Xray DNS${NC}"
     fi
   fi
@@ -2229,11 +2685,9 @@ open('/opt/AdGuardHome/AdGuardHome.yaml', 'w').write(data)
   echo -e "${CYAN}Шаг 7/7: Запуск служб...${NC}"
   systemctl start AdGuardHome
   systemctl enable AdGuardHome 2>/dev/null || true
-  systemctl restart xray
+  safe_restart_xray
 
-  # Открываем DNS порт (UDP + TCP) — только для Xray (127.0.0.1)
-  open_firewall_port 53
-  open_firewall_port 53 udp
+  # Порт 53 НЕ открываем — Xray обращается к AdGuard Home на 127.0.0.1 (loopback, UFW не нужен)
   # Порт 3000 НЕ открываем — Web UI доступен только через SSH-туннель
 
   echo ""
@@ -2286,7 +2740,7 @@ uninstall_adguard_home() {
   echo -e "  ${CYAN}•${NC} Фильтры и статистика"
   echo -e "  ${CYAN}•${NC} Интеграция с Xray DNS"
   echo ""
-  echo -e "${CYAN}Xray DNS будет восстановлен на AdGuard DoH (dns.adguard-dns.com).${NC}"
+  echo -e "${CYAN}Xray DNS будет восстановлен на DoH Local (1.1.1.1).${NC}"
   echo ""
   echo -n -e "${RED}Вы уверены? (y/N): ${NC}"
   read confirm
@@ -2313,27 +2767,17 @@ uninstall_adguard_home() {
   # Шаг 5: Восстановление Xray DNS
   echo -e "${CYAN}Шаг 3/6: Восстановление Xray DNS...${NC}"
   if [[ -f "$CONFIG_FILE" ]]; then
-    local temp_config=$(mktemp)
-    jq '.dns = {
+    backup_config "adguard_dns_restore"
+    if safe_jq_write '.dns = {
       "servers": [
-        {
-          "address": "https://dns.adguard-dns.com/dns-query",
-          "domains": ["geosite:category-ads-all"],
-          "expectIPs": ["127.0.0.1"]
-        },
-        "https://dns.adguard-dns.com/dns-query"
+        "https+local://1.1.1.1/dns-query",
+        "localhost"
       ],
       "queryStrategy": "UseIPv4",
       "disableCache": false
-    }' "$CONFIG_FILE" > "$temp_config"
-
-    if [[ $? -eq 0 ]] && [[ -s "$temp_config" ]]; then
-      mv "$temp_config" "$CONFIG_FILE"
-      chown root:root "$CONFIG_FILE"
-      chmod 644 "$CONFIG_FILE"
-      echo -e "${GREEN}  ✓ Xray DNS → AdGuard DoH${NC}"
+    }' "$CONFIG_FILE"; then
+      echo -e "${GREEN}  ✓ Xray DNS → DoH Local${NC}"
     else
-      rm -f "$temp_config"
       echo -e "${RED}  ✗ Ошибка восстановления Xray DNS${NC}"
     fi
   fi
@@ -2355,6 +2799,8 @@ uninstall_adguard_home() {
   # Закрытие портов
   echo -e "${CYAN}Шаг 5/6: Закрытие портов...${NC}"
   if command -v ufw &>/dev/null; then
+    ufw delete allow 53/tcp >/dev/null 2>&1
+    ufw delete allow 53/udp >/dev/null 2>&1
     ufw delete allow 3000/tcp >/dev/null 2>&1  # На случай если открывали вручную
     ufw reload >/dev/null 2>&1
   fi
@@ -2362,15 +2808,14 @@ uninstall_adguard_home() {
 
   # Перезапуск Xray
   echo -e "${CYAN}Шаг 6/6: Перезапуск Xray...${NC}"
-  systemctl restart xray
-  echo -e "${GREEN}  ✓ Xray перезапущен${NC}"
+  safe_restart_xray
 
   echo ""
   echo -e "${GREEN}╔═══════════════════════════════════════════════════════════╗${NC}"
   echo -e "${GREEN}║         ✓ ADGUARD HOME УСПЕШНО УДАЛЁН                   ║${NC}"
   echo -e "${GREEN}╚═══════════════════════════════════════════════════════════╝${NC}"
   echo ""
-  echo -e "${CYAN}Xray DNS восстановлен на AdGuard DoH (dns.adguard-dns.com).${NC}"
+  echo -e "${CYAN}Xray DNS восстановлен на DoH Local (1.1.1.1).${NC}"
   echo ""
   echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
   read

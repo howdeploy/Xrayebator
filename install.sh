@@ -60,19 +60,49 @@ fi
 
 # [2/10] Установка Xray-core
 echo -e "${BLUE}[2/10]${NC} ${YELLOW}Установка Xray-core...${NC}"
-bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install > /dev/null 2>&1
-if [[ $? -eq 0 ]]; then
-  echo -e "${GREEN}✓ Xray-core установлен${NC}\n"
-else
+INSTALL_SCRIPT=$(curl -fsSL https://github.com/XTLS/Xray-install/raw/main/install-release.sh 2>/dev/null)
+if [[ -z "$INSTALL_SCRIPT" ]]; then
+  echo -e "${RED}✗ Не удалось скачать установщик Xray (проблема с сетью или GitHub)${NC}"
+  echo -e "${YELLOW}  Проверьте доступность github.com с этого сервера${NC}"
+  exit 1
+fi
+bash -c "$INSTALL_SCRIPT" @ install > /dev/null 2>&1
+if [[ $? -ne 0 ]]; then
   echo -e "${RED}✗ Ошибка установки Xray-core${NC}"
   exit 1
 fi
+# Проверяем, что бинарник действительно появился
+if ! command -v xray &>/dev/null && [[ ! -x /usr/local/bin/xray ]]; then
+  echo -e "${RED}✗ Бинарник Xray не найден после установки${NC}"
+  echo -e "${YELLOW}  Попробуйте установить вручную: https://github.com/XTLS/Xray-install${NC}"
+  exit 1
+fi
+XRAY_VERSION=$(/usr/local/bin/xray version 2>/dev/null | head -1)
+echo -e "${GREEN}✓ Xray-core установлен${NC}"
+echo -e "${CYAN}  ${XRAY_VERSION}${NC}\n"
 
-# [3/10] Исправление systemd сервиса
+# [3/10] Настройка Xray сервиса (non-root с capabilities)
 echo -e "${BLUE}[3/10]${NC} ${YELLOW}Настройка Xray сервиса...${NC}"
-sed -i 's/^User=nobody/User=root/' /etc/systemd/system/xray.service
+
+# Create xray system user if not exists
+if ! id "xray" &>/dev/null; then
+  useradd -r -s /usr/sbin/nologin -M xray
+  echo -e "${GREEN}  ✓ Пользователь xray создан${NC}"
+fi
+
+# Create systemd drop-in for non-root with capabilities
+mkdir -p /etc/systemd/system/xray.service.d
+cat > /etc/systemd/system/xray.service.d/security.conf << 'SVCEOF'
+[Service]
+User=xray
+Group=xray
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+SVCEOF
+
 systemctl daemon-reload
-echo -e "${GREEN}✓ Сервис настроен${NC}\n"
+echo -e "${GREEN}✓ Сервис настроен (User=xray, CAP_NET_BIND_SERVICE)${NC}\n"
 
 # [3.5/10] Загрузка расширенных geo-баз (Loyalsoldier)
 echo -e "${BLUE}[3.5/10]${NC} ${YELLOW}Загрузка расширенных geo-баз...${NC}"
@@ -116,18 +146,42 @@ echo -e "${BLUE}[4/10]${NC} ${YELLOW}Создание структуры дир�
 mkdir -p "$PROFILES_DIR"
 mkdir -p "$DATA_DIR"
 mkdir -p "$SCRIPTS_DIR"
+mkdir -p /var/log/xray
+chown xray:xray /var/log/xray
+chown -R xray:xray /usr/local/etc/xray/
 echo -e "${GREEN}✓ Директории созданы${NC}\n"
 
 # [5/10] Генерация ключей Reality
 echo -e "${BLUE}[5/10]${NC} ${YELLOW}Генерация ключей Reality...${NC}"
+
+if [[ ! -x /usr/local/bin/xray ]]; then
+  echo -e "${RED}✗ Бинарник /usr/local/bin/xray не найден или не исполняемый${NC}"
+  echo -e "${YELLOW}  Установка Xray на шаге [2/10] могла завершиться некорректно${NC}"
+  exit 1
+fi
+
 KEYS_OUTPUT=$(/usr/local/bin/xray x25519 2>&1)
-PRIVATE_KEY=$(echo "$KEYS_OUTPUT" | awk -F': ' '/^PrivateKey:/ {print $2}')
-PUBLIC_KEY=$(echo "$KEYS_OUTPUT" | awk -F': ' '/^Password(:| \(.+\)):/ {print $2}')
+KEYS_EXIT=$?
+
+if [[ $KEYS_EXIT -ne 0 ]]; then
+  echo -e "${RED}✗ Команда xray x25519 завершилась с ошибкой (код $KEYS_EXIT)${NC}"
+  echo "Вывод:"
+  echo "$KEYS_OUTPUT"
+  exit 1
+fi
+
+# Парсинг всех форматов вывода xray x25519:
+#   Старый (до v25.8):     Private key: ... / Public key: ...
+#   Средний (v25.8-v26.3): PrivateKey: ...  / Password: ...
+#   Новый (v26.3.27+):     PrivateKey: ...  / Password (PublicKey): ...
+PRIVATE_KEY=$(echo "$KEYS_OUTPUT" | awk -F': ' '/^Private [Kk]ey:/ || /^PrivateKey:/ {print $2; exit}')
+PUBLIC_KEY=$(echo "$KEYS_OUTPUT" | awk -F': ' '/^Public [Kk]ey:/ || /^Password/ {print $2; exit}')
 
 if [[ -z "$PRIVATE_KEY" ]] || [[ -z "$PUBLIC_KEY" ]]; then
-  echo -e "${RED}✗ Ошибка генерации ключей${NC}"
-  echo "Вывод xray x25519:"
+  echo -e "${RED}✗ Не удалось распарсить ключи из вывода xray x25519${NC}"
+  echo -e "${YELLOW}Вывод команды:${NC}"
   echo "$KEYS_OUTPUT"
+  echo -e "${YELLOW}Возможно, формат вывода изменился в новой версии Xray${NC}"
   exit 1
 fi
 
@@ -139,20 +193,22 @@ echo -e "${GREEN}✓ Ключи сгенерированы${NC}"
 echo -e "${CYAN}  Private: ${PRIVATE_KEY:0:16}...${NC}"
 echo -e "${CYAN}  Public: ${PUBLIC_KEY:0:16}...${NC}\n"
 
+# Set file ownership for xray user
+chown -R xray:xray /usr/local/etc/xray/
+chmod 600 "$PRIVATE_KEY_FILE"
+chmod 644 "$PUBLIC_KEY_FILE"
+
 # [6/10] Создание базовой конфигурации
 echo -e "${BLUE}[6/10]${NC} ${YELLOW}Создание конфигурации Xray...${NC}"
 cat > "$CONFIG_FILE" << 'EOF'
 {
   "log": {
-    "loglevel": "warning"
+    "loglevel": "warning",
+    "access": "none"
   },
   "dns": {
     "servers": [
-      "https://dns.adguard-dns.com/dns-query",
-      {
-        "address": "1.1.1.1",
-        "domains": ["geosite:geolocation-!cn"]
-      },
+      "https+local://1.1.1.1/dns-query",
       "localhost"
     ],
     "queryStrategy": "UseIPv4",
@@ -173,6 +229,11 @@ cat > "$CONFIG_FILE" << 'EOF'
       },
       {
         "type": "field",
+        "protocol": ["bittorrent"],
+        "outboundTag": "block"
+      },
+      {
+        "type": "field",
         "network": "udp",
         "port": 443,
         "outboundTag": "block"
@@ -188,17 +249,34 @@ cat > "$CONFIG_FILE" << 'EOF'
   "outbounds": [
     {
       "protocol": "freedom",
+      "settings": {
+        "domainStrategy": "UseIPv4"
+      },
       "tag": "direct"
     },
     {
       "protocol": "blackhole",
       "tag": "block"
     }
-  ]
+  ],
+  "policy": {
+    "levels": {
+      "0": {
+        "handshake": 4,
+        "connIdle": 300,
+        "uplinkOnly": 2,
+        "downlinkOnly": 5,
+        "bufferSize": 4
+      }
+    }
+  }
 }
 EOF
 
-chown root:root "$CONFIG_FILE"
+chown xray:xray "$CONFIG_FILE"
+# Mark config as already optimized (skip migration on first launch)
+touch /usr/local/etc/xray/.config_optimized
+chown xray:xray /usr/local/etc/xray/.config_optimized
 chmod 644 "$CONFIG_FILE"
 echo -e "${GREEN}✓ Конфигурация создана${NC}\n"
 
