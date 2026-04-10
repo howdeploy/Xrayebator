@@ -204,18 +204,19 @@ echo "$GITHUB_BRANCH" > /usr/local/etc/xray/.current_branch 2>/dev/null
 # ОБНОВЛЕНИЕ СКРИПТА update.sh
 # ═══════════════════════════════════════════════════════════
 echo -e "${YELLOW}Проверка обновлений update.sh...${NC}"
-curl -fsSL "${RAW_BASE_URL}/update.sh" -o /tmp/update_new.sh
+UPDATE_TMP=$(mktemp /tmp/update_new_XXXXXX.sh)
+curl -fsSL --connect-timeout 10 --max-time 30 "${RAW_BASE_URL}/update.sh" -o "$UPDATE_TMP"
 
-if [[ $? -eq 0 ]] && [[ -s /tmp/update_new.sh ]]; then
-  chmod +x /tmp/update_new.sh
+if [[ $? -eq 0 ]] && [[ -s "$UPDATE_TMP" ]]; then
+  chmod +x "$UPDATE_TMP"
 
   # Проверяем что скрипт валидный
-  if head -n 1 /tmp/update_new.sh | grep -q "^#!/bin/bash"; then
+  if head -n 1 "$UPDATE_TMP" | grep -q "^#!/bin/bash"; then
     mkdir -p /usr/local/etc/xray/scripts
 
     # Сравниваем с текущей версией
-    if ! cmp -s /tmp/update_new.sh /usr/local/etc/xray/scripts/update.sh 2>/dev/null; then
-      mv /tmp/update_new.sh /usr/local/etc/xray/scripts/update.sh
+    if ! cmp -s "$UPDATE_TMP" /usr/local/etc/xray/scripts/update.sh 2>/dev/null; then
+      mv "$UPDATE_TMP" /usr/local/etc/xray/scripts/update.sh
       echo -e "${GREEN}✓ Скрипт update.sh обновлён${NC}"
       echo -e "${YELLOW}⚠ Перезапуск для применения изменений${NC}"
       sleep 2
@@ -225,14 +226,15 @@ if [[ $? -eq 0 ]] && [[ -s /tmp/update_new.sh ]]; then
       exit 0
     else
       echo -e "${GREEN}✓ update.sh актуален${NC}"
-      rm /tmp/update_new.sh
+      rm -f "$UPDATE_TMP"
     fi
   else
     echo -e "${YELLOW}⚠ Скачанный скрипт некорректен${NC}"
-    rm /tmp/update_new.sh
+    rm -f "$UPDATE_TMP"
   fi
 else
   echo -e "${YELLOW}⚠ Не удалось обновить update.sh${NC}"
+  rm -f "$UPDATE_TMP"
 fi
 echo ""
 
@@ -242,16 +244,17 @@ echo ""
 
 # Обновление xrayebator
 echo -e "${YELLOW}Обновление xrayebator...${NC}"
-curl -fsSL "${RAW_BASE_URL}/xrayebator" -o /tmp/xrayebator_new
+XRAY_TMP=$(mktemp /tmp/xrayebator_new_XXXXXX)
+curl -fsSL --connect-timeout 10 --max-time 60 "${RAW_BASE_URL}/xrayebator" -o "$XRAY_TMP"
 
-if [[ $? -eq 0 ]] && [[ -s /tmp/xrayebator_new ]]; then
-  chmod +x /tmp/xrayebator_new
-  mv /tmp/xrayebator_new /usr/local/bin/xrayebator
+if [[ $? -eq 0 ]] && [[ -s "$XRAY_TMP" ]]; then
+  chmod +x "$XRAY_TMP"
+  mv "$XRAY_TMP" /usr/local/bin/xrayebator
   echo -e "${GREEN}✓ xrayebator обновлён${NC}\n"
 else
   echo -e "${RED}✗ Ошибка загрузки xrayebator${NC}"
   echo -e "${YELLOW}Проверьте доступность ветки '${GITHUB_BRANCH}' на GitHub${NC}"
-  rm -f "$UPDATE_SESSION_FILE" "$UPDATE_SESSION_FILE.warned"
+  rm -f "$XRAY_TMP" "$UPDATE_SESSION_FILE" "$UPDATE_SESSION_FILE.warned"
   exit 1
 fi
 

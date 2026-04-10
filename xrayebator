@@ -49,7 +49,8 @@ fi
 
 # Получение внешнего IP
 get_server_ip() {
-  local ip=$(curl -s4 ifconfig.me 2>/dev/null || curl -s4 icanhazip.com 2>/dev/null)
+  local ip=$(curl -s4 --connect-timeout 5 --max-time 10 ifconfig.me 2>/dev/null || \
+             curl -s4 --connect-timeout 5 --max-time 10 icanhazip.com 2>/dev/null)
   if [[ -z "$ip" ]]; then
     ip=$(hostname -I | awk '{print $1}')
   fi
@@ -123,8 +124,10 @@ find_available_random_port() {
 
   while [[ $attempts -lt 200 ]]; do
     port=$((min_port + ((RANDOM << 15 | RANDOM) % (max_port - min_port + 1))))
+    # Проверяем и конфиг Xray, и реально слушающие порты
     if ! jq -e --argjson port "$port" '.inbounds[] | select(.port == $port)' \
-      "$CONFIG_FILE" >/dev/null 2>&1; then
+      "$CONFIG_FILE" >/dev/null 2>&1 && \
+      ! ss -tuln 2>/dev/null | grep -q ":${port} "; then
       echo "$port"
       return 0
     fi
@@ -261,10 +264,16 @@ safe_jq_write() {
   local dst_file="$src_file"
   local jq_args=("${args[@]:0:$((nargs-1))}")
 
+  # Сохраняем исходные права и владельца
+  local orig_mode orig_owner
+  orig_mode=$(stat -c %a "$src_file" 2>/dev/null || echo "644")
+  orig_owner=$(stat -c %U:%G "$src_file" 2>/dev/null || echo "root:root")
+
   local tmp=$(mktemp)
   if jq "${jq_args[@]}" "$src_file" > "$tmp" 2>/dev/null && [[ -s "$tmp" ]]; then
     mv "$tmp" "$dst_file"
-    chmod 644 "$dst_file" 2>/dev/null
+    chmod "$orig_mode" "$dst_file" 2>/dev/null
+    chown "$orig_owner" "$dst_file" 2>/dev/null
     return 0
   else
     echo -e "${RED}  ✗ Ошибка jq — файл НЕ изменён: $dst_file${NC}" >&2
@@ -279,8 +288,12 @@ backup_config() {
   local migration_name=${1:-"manual"}
   local backup_dir="/usr/local/etc/xray/backups"
   mkdir -p "$backup_dir"
+  chmod 700 "$backup_dir" 2>/dev/null
+  chown xray:xray "$backup_dir" 2>/dev/null
   local backup_file="$backup_dir/config_$(date +%Y%m%d_%H%M%S)_${migration_name}.json"
   cp "$CONFIG_FILE" "$backup_file"
+  chmod 600 "$backup_file" 2>/dev/null
+  chown xray:xray "$backup_file" 2>/dev/null
   echo -e "${CYAN}  -> Бэкап конфига: $(basename "$backup_file")${NC}"
 }
 
@@ -293,6 +306,11 @@ fix_xray_permissions() {
 # Безопасный перезапуск Xray с валидацией конфига
 # Returns: 0=success, 1=validation failed (Xray НЕ перезапущен)
 safe_restart_xray() {
+  if [[ ! -x /usr/local/bin/xray ]]; then
+    echo -e "${RED}  ✗ Бинарник /usr/local/bin/xray не найден${NC}"
+    return 1
+  fi
+
   local test_output
   test_output=$(/usr/local/bin/xray run -test -config "$CONFIG_FILE" 2>&1)
 
@@ -339,6 +357,11 @@ open_firewall_port() {
   # Check if UFW is installed and active
   if ! command -v ufw &>/dev/null; then
     echo -e "${YELLOW}  ⚠ UFW не установлен${NC}" >&2
+    return 1
+  fi
+
+  if ! ufw status | grep -q "Status: active"; then
+    echo -e "${YELLOW}  ⚠ UFW не активен — правило не применено${NC}" >&2
     return 1
   fi
 

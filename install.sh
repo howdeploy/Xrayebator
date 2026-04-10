@@ -60,13 +60,26 @@ fi
 
 # [2/10] Установка Xray-core
 echo -e "${BLUE}[2/10]${NC} ${YELLOW}Установка Xray-core...${NC}"
-bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install > /dev/null 2>&1
-if [[ $? -eq 0 ]]; then
-  echo -e "${GREEN}✓ Xray-core установлен${NC}\n"
-else
+INSTALL_SCRIPT=$(curl -fsSL https://github.com/XTLS/Xray-install/raw/main/install-release.sh 2>/dev/null)
+if [[ -z "$INSTALL_SCRIPT" ]]; then
+  echo -e "${RED}✗ Не удалось скачать установщик Xray (проблема с сетью или GitHub)${NC}"
+  echo -e "${YELLOW}  Проверьте доступность github.com с этого сервера${NC}"
+  exit 1
+fi
+bash -c "$INSTALL_SCRIPT" @ install > /dev/null 2>&1
+if [[ $? -ne 0 ]]; then
   echo -e "${RED}✗ Ошибка установки Xray-core${NC}"
   exit 1
 fi
+# Проверяем, что бинарник действительно появился
+if ! command -v xray &>/dev/null && [[ ! -x /usr/local/bin/xray ]]; then
+  echo -e "${RED}✗ Бинарник Xray не найден после установки${NC}"
+  echo -e "${YELLOW}  Попробуйте установить вручную: https://github.com/XTLS/Xray-install${NC}"
+  exit 1
+fi
+XRAY_VERSION=$(/usr/local/bin/xray version 2>/dev/null | head -1)
+echo -e "${GREEN}✓ Xray-core установлен${NC}"
+echo -e "${CYAN}  ${XRAY_VERSION}${NC}\n"
 
 # [3/10] Настройка Xray сервиса (non-root с capabilities)
 echo -e "${BLUE}[3/10]${NC} ${YELLOW}Настройка Xray сервиса...${NC}"
@@ -140,15 +153,35 @@ echo -e "${GREEN}✓ Директории созданы${NC}\n"
 
 # [5/10] Генерация ключей Reality
 echo -e "${BLUE}[5/10]${NC} ${YELLOW}Генерация ключей Reality...${NC}"
+
+if [[ ! -x /usr/local/bin/xray ]]; then
+  echo -e "${RED}✗ Бинарник /usr/local/bin/xray не найден или не исполняемый${NC}"
+  echo -e "${YELLOW}  Установка Xray на шаге [2/10] могла завершиться некорректно${NC}"
+  exit 1
+fi
+
 KEYS_OUTPUT=$(/usr/local/bin/xray x25519 2>&1)
-# Support both old format (Private key:/Public key:) and new format (PrivateKey:/Password:)
-PRIVATE_KEY=$(echo "$KEYS_OUTPUT" | grep -E "^Private" | awk '{print $NF}')
-PUBLIC_KEY=$(echo "$KEYS_OUTPUT" | grep -E "^Public|^Password" | awk '{print $NF}')
+KEYS_EXIT=$?
+
+if [[ $KEYS_EXIT -ne 0 ]]; then
+  echo -e "${RED}✗ Команда xray x25519 завершилась с ошибкой (код $KEYS_EXIT)${NC}"
+  echo "Вывод:"
+  echo "$KEYS_OUTPUT"
+  exit 1
+fi
+
+# Парсинг всех форматов вывода xray x25519:
+#   Старый (до v25.8):     Private key: ... / Public key: ...
+#   Средний (v25.8-v26.3): PrivateKey: ...  / Password: ...
+#   Новый (v26.3.27+):     PrivateKey: ...  / Password (PublicKey): ...
+PRIVATE_KEY=$(echo "$KEYS_OUTPUT" | awk -F': ' '/^Private [Kk]ey:/ || /^PrivateKey:/ {print $2; exit}')
+PUBLIC_KEY=$(echo "$KEYS_OUTPUT" | awk -F': ' '/^Public [Kk]ey:/ || /^Password/ {print $2; exit}')
 
 if [[ -z "$PRIVATE_KEY" ]] || [[ -z "$PUBLIC_KEY" ]]; then
-  echo -e "${RED}✗ Ошибка генерации ключей${NC}"
-  echo "Вывод xray x25519:"
+  echo -e "${RED}✗ Не удалось распарсить ключи из вывода xray x25519${NC}"
+  echo -e "${YELLOW}Вывод команды:${NC}"
   echo "$KEYS_OUTPUT"
+  echo -e "${YELLOW}Возможно, формат вывода изменился в новой версии Xray${NC}"
   exit 1
 fi
 
