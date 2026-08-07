@@ -6,8 +6,8 @@ import subprocess
 
 import pytest
 
-from xrayebator_gui.core.subscription import parse_link
 from xrayebator_gui.core.routing import RoutingProfile
+from xrayebator_gui.core.subscription import parse_link
 from xrayebator_gui.core.xray import build_tun_client_config
 
 

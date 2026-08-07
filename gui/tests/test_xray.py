@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from xrayebator_gui.core.routing import RoutingProfile
@@ -148,6 +150,13 @@ def test_parse_dgst_accepts_actual_xray_release_format():
     assert _parse_dgst(text, "Xray-linux-64.zip") == digest
 
 
+POSIX_MODE_TEST = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only file permission check (os.fchmod absent on Windows)",
+)
+
+
+@POSIX_MODE_TEST
 def test_xray_runtime_files_are_owner_only(monkeypatch, tmp_path):
     binary = tmp_path / "xray"
     binary.write_bytes(b"binary")

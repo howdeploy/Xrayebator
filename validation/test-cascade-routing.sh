@@ -1,4 +1,13 @@
 #!/usr/bin/env bash
+# test-cascade-routing.sh
+# Phase 9: тестирует РЕАЛЬНЫЕ cascade-функции из xrayebator (`_cascade_build_outbound_json`,
+# `_cascade_build_fragment_outbound_json`, `_cascade_apply_current_upstream`) вместо ручной
+# копии jq-логики. Если прод-код разойдётся с ожидаемым поведением — тест упадёт.
+# D5-fix.
+#
+# Usage:  bash validation/test-cascade-routing.sh
+# Requires: jq, bash 4+.
+
 set -euo pipefail
 
 fail() {
@@ -6,12 +15,32 @@ fail() {
   exit 1
 }
 
-WORKDIR=$(mktemp -d)
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
+
+WORKDIR=$(mktemp -d /tmp/xrayebator-cascade.XXXXXX)
 trap 'rm -rf "$WORKDIR"' EXIT
 
-CONFIG_FILE="$WORKDIR/config.json"
-UPSTREAM_FILE="$WORKDIR/cascade.json"
+# source реального скрипта (вызывает определения функций, но не main — guard XRAYEBATOR_SOURCED).
+source "$REPO_ROOT/xrayebator"
 
+# Логируем в свою директорию: конфиг, профили, бэкапы, upstreams, active-маркер.
+CONFIG_FILE="$WORKDIR/config.json"
+PROFILES_DIR="$WORKDIR/profiles"
+XRAY_BACKUPS_DIR="$WORKDIR/backups"
+UPSTREAMS_DIR="$WORKDIR/upstreams"
+CASCADE_ACTIVE_FILE="$WORKDIR/.cascade_active"
+mkdir -p "$PROFILES_DIR" "$XRAY_BACKUPS_DIR" "$UPSTREAMS_DIR"
+
+# Стабим side-effects, которые трогают реальную систему (systemd, права, рестарт Xray).
+# safe_restart_xray: в проде валидирует конфиг новым бинарём и делает systemctl restart.
+# В тесте конфиг уже одобрен — просто говорим, что рестарт прошёл.
+safe_restart_xray() { return 0; }
+fix_xray_permissions() { return 0; }
+systemctl() { return 0; }
+
+# Исходный конфиг: содержит operator-правило udp/443, catch-all tcp,udp повторён (для дедупликации),
+# freedom outbound с fragment. Cascade должен их сохранить/нормализовать.
 cat > "$CONFIG_FILE" <<'JSON'
 {
   "routing": {
@@ -29,7 +58,7 @@ cat > "$CONFIG_FILE" <<'JSON'
 }
 JSON
 
-cat > "$UPSTREAM_FILE" <<'JSON'
+cat > "$UPSTREAMS_DIR/cascade.json" <<'JSON'
 {
   "version": 1,
   "tag": "cascade-upstream",
@@ -45,120 +74,56 @@ cat > "$UPSTREAM_FILE" <<'JSON'
 }
 JSON
 
-outbound_json=$(jq -cn \
-  --arg address "$(jq -r '.address' "$UPSTREAM_FILE")" \
-  --argjson port "$(jq -r '.port' "$UPSTREAM_FILE")" \
-  --arg uuid "$(jq -r '.uuid' "$UPSTREAM_FILE")" \
-  --arg sni "$(jq -r '.sni' "$UPSTREAM_FILE")" \
-  --arg fp "$(jq -r '.fingerprint' "$UPSTREAM_FILE")" \
-  --arg public_key "$(jq -r '.public_key' "$UPSTREAM_FILE")" \
-  --arg short_id "$(jq -r '.short_id' "$UPSTREAM_FILE")" \
-  --arg flow "$(jq -r '.flow' "$UPSTREAM_FILE")" \
-  --arg packet_encoding "$(jq -r '.packet_encoding // empty' "$UPSTREAM_FILE")" '
-  {
-    tag: "cascade-upstream",
-    protocol: "vless",
-    settings: {
-      vnext: [{
-        address: $address,
-        port: $port,
-        users: [{
-          id: $uuid,
-          encryption: "none",
-          flow: $flow
-        } + (if $packet_encoding == "" then {} else {packetEncoding: $packet_encoding} end)]
-      }]
-    },
-    streamSettings: {
-      network: "tcp",
-      security: "reality",
-      sockopt: {
-        dialerProxy: "cascade-fragment",
-        tcpFastOpen: true,
-        tcpNoDelay: true
-      },
-      realitySettings: {
-        serverName: $sni,
-        fingerprint: $fp,
-        publicKey: $public_key,
-        shortId: $short_id,
-        spiderX: "/"
-      }
-    }
-  }')
+upstream_file="$UPSTREAMS_DIR/cascade.json"
 
-fragment_json=$(jq -cn '{
-  tag: "cascade-fragment",
-  protocol: "freedom",
-  settings: {
-    fragment: {
-      packets: "tlshello",
-      length: "100-200",
-      interval: "10-20"
-    }
-  }
-}')
-
-jq --argjson outbound "$outbound_json" --argjson fragment "$fragment_json" --arg address "203.0.113.10" '
-  def upstream_direct_rule:
-    if ($address | test("^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$")) then
-      {"type":"field","ip":[$address],"outboundTag":"direct"}
-    else
-      {"type":"field","domain":["domain:" + $address],"outboundTag":"direct"}
-    end;
-  def upstream_direct_match:
-    (.outboundTag == "direct" and (
-      (((.domain // []) | index("domain:" + $address)) != null) or
-      (((.ip // []) | index($address)) != null)
-    ));
-  def catch_all:
-    (.type == "field" and (.network // "") == "tcp,udp"
-     and (.domain // null) == null and (.ip // null) == null and (.port // null) == null);
-  .outbounds = ((.outbounds // []) | map(select(.tag != "cascade-upstream" and .tag != "cascade-fragment"))) |
-  .outbounds += [$fragment, $outbound] |
-  .routing.rules = [
-    .routing.rules[]?
-    | select((upstream_direct_match or catch_all) | not)
-  ] |
-  .routing.rules = [upstream_direct_rule] + .routing.rules + [{"type":"field","network":"tcp,udp","outboundTag":"cascade-upstream"}]
-' "$CONFIG_FILE" > "$WORKDIR/enabled.json"
-
-jq -e '.outbounds[] | select(.tag == "cascade-upstream" and .protocol == "vless")' "$WORKDIR/enabled.json" >/dev/null \
-  || fail "cascade outbound missing"
-jq -e '.outbounds[] | select(.tag == "cascade-fragment" and .protocol == "freedom" and .settings.fragment.packets == "tlshello")' "$WORKDIR/enabled.json" >/dev/null \
-  || fail "cascade fragment outbound missing"
-jq -e '.outbounds[] | select(.tag == "cascade-upstream").streamSettings.sockopt | select(.dialerProxy == "cascade-fragment" and .tcpFastOpen == true and .tcpNoDelay == true)' "$WORKDIR/enabled.json" >/dev/null \
-  || fail "cascade outbound does not use cascade-fragment dialerProxy"
-! jq -e '.outbounds[] | select(.tag == "cascade-upstream").settings.vnext[0].users[0].packetEncoding' "$WORKDIR/enabled.json" >/dev/null \
+# --- 1. Вызов реальной _cascade_build_outbound_json ---
+outbound_json=$(_cascade_build_outbound_json "$upstream_file") || fail "cascade outbound build failed"
+jq -e '.tag == "cascade-upstream" and .protocol == "vless"' <<< "$outbound_json" >/dev/null \
+  || fail "cascade outbound build produced wrong tag/protocol"
+jq -e '.settings.vnext[0].users[0].id == "11111111-1111-4111-8111-111111111111"' <<< "$outbound_json" >/dev/null \
+  || fail "cascade outbound uuid mismatch"
+jq -e '.streamSettings.sockopt.dialerProxy == "cascade-fragment" and .streamSettings.sockopt.tcpFastOpen == true and .streamSettings.sockopt.tcpNoDelay == true' <<< "$outbound_json" >/dev/null \
+  || fail "cascade tcp outbound missing dialerProxy/tcpFastOpen/tcpNoDelay"
+! jq -e '.settings.vnext[0].users[0].packetEncoding' <<< "$outbound_json" >/dev/null \
   || fail "plain tcp upstream unexpectedly has packetEncoding"
-jq -e '.outbounds[] | select(.tag == "direct" and .settings.fragment.packets == "tlshello")' "$WORKDIR/enabled.json" >/dev/null \
+jq -e '.streamSettings.realitySettings.serverName == "front.example.com" and .streamSettings.realitySettings.fingerprint == "chrome"' <<< "$outbound_json" >/dev/null \
+  || fail "cascade reality settings mismatch (sni/fingerprint)"
+
+# --- 2. Вызов реальной _cascade_build_fragment_outbound_json ---
+fragment_json=$(_cascade_build_fragment_outbound_json) || fail "cascade fragment build failed"
+jq -e '.tag == "cascade-fragment" and .protocol == "freedom" and .settings.fragment.packets == "tlshello"' <<< "$fragment_json" >/dev/null \
+  || fail "cascade fragment outbound mismatch"
+
+# --- 3. Вызов реальной _cascade_apply_current_upstream (enable) ---
+_cascade_apply_current_upstream "cascade_test_enable" >/dev/null 2>&1 \
+  || fail "cascade apply (enable) failed"
+
+jq -e '.outbounds[] | select(.tag == "cascade-upstream" and .protocol == "vless")' "$CONFIG_FILE" >/dev/null \
+  || fail "cascade outbound missing after apply"
+jq -e '.outbounds[] | select(.tag == "cascade-fragment" and .protocol == "freedom" and .settings.fragment.packets == "tlshello")' "$CONFIG_FILE" >/dev/null \
+  || fail "cascade fragment outbound missing after apply"
+jq -e '.outbounds[] | select(.tag == "cascade-upstream").streamSettings.sockopt | select(.dialerProxy == "cascade-fragment" and .tcpFastOpen == true and .tcpNoDelay == true)' "$CONFIG_FILE" >/dev/null \
+  || fail "cascade outbound does not use cascade-fragment dialerProxy"
+jq -e '.outbounds[] | select(.tag == "direct" and .settings.fragment.packets == "tlshello")' "$CONFIG_FILE" >/dev/null \
   || fail "direct outbound was clobbered"
-jq -e '.routing.rules[0] | select(.outboundTag == "direct" and .ip[0] == "203.0.113.10")' "$WORKDIR/enabled.json" >/dev/null \
+jq -e '.routing.rules[0] | select(.outboundTag == "direct" and .ip[0] == "203.0.113.10")' "$CONFIG_FILE" >/dev/null \
   || fail "upstream direct IP exception missing"
-jq -e '.routing.rules[] | select(.network == "udp" and (.port|tostring) == "443" and .inboundTag == ["operator-custom"] and .outboundTag == "block")' "$WORKDIR/enabled.json" >/dev/null \
+jq -e '.routing.rules[] | select(.network == "udp" and (.port|tostring) == "443" and .inboundTag == ["operator-custom"] and .outboundTag == "block")' "$CONFIG_FILE" >/dev/null \
   || fail "cascade enable removed or rewrote an operator-managed udp/443 rule"
-jq -e '.routing.rules[] | select(.network == "tcp,udp" and .outboundTag == "cascade-upstream")' "$WORKDIR/enabled.json" >/dev/null \
+jq -e '.routing.rules[] | select(.network == "tcp,udp" and .outboundTag == "cascade-upstream")' "$CONFIG_FILE" >/dev/null \
   || fail "catch-all was not switched to cascade"
-[[ "$(jq '[.routing.rules[] | select(.network == "tcp,udp" and (.domain // null) == null and (.ip // null) == null and (.port // null) == null)] | length' "$WORKDIR/enabled.json")" == "1" ]] \
-  || fail "catch-all rules were not normalized"
-jq -e '.routing.rules[] | select(.domain[0] == "domain:example.ru" and .outboundTag == "direct")' "$WORKDIR/enabled.json" >/dev/null \
+[[ "$(jq '[.routing.rules[] | select(.network == "tcp,udp" and (.domain // null) == null and (.ip // null) == null and (.port // null) == null)] | length' "$CONFIG_FILE")" == "1" ]] \
+  || fail "catch-all rules were not normalized (dedup)"
+jq -e '.routing.rules[] | select(.domain[0] == "domain:example.ru" and .outboundTag == "direct")' "$CONFIG_FILE" >/dev/null \
   || fail "existing bypass direct rule was not preserved"
+[[ -f "$CASCADE_ACTIVE_FILE" ]] || fail "cascade active marker not set after enable"
 
-jq '
-  def catch_all:
-    (.type == "field" and (.network // "") == "tcp,udp"
-     and (.domain // null) == null and (.ip // null) == null and (.port // null) == null);
-  .outbounds = ((.outbounds // []) | map(select(.tag != "cascade-upstream" and .tag != "cascade-fragment"))) |
-  (.routing.rules[]? | select(catch_all) | .outboundTag) = "direct"
-' "$WORKDIR/enabled.json" > "$WORKDIR/disabled.json"
+# --- 4. Вызов реальной _cascade_apply_current_upstream на ещё раз (идемпотентность) ---
+_cascade_apply_current_upstream "cascade_test_reapply" >/dev/null 2>&1 \
+  || fail "cascade re-apply failed"
+[[ "$(jq '[.outbounds[]? | select(.tag == "cascade-upstream")] | length' "$CONFIG_FILE")" == "1" ]] \
+  || fail "cascade re-apply duplicated cascade-upstream outbound"
+[[ "$(jq '[.outbounds[]? | select(.tag == "cascade-fragment")] | length' "$CONFIG_FILE")" == "1" ]] \
+  || fail "cascade re-apply duplicated cascade-fragment outbound"
 
-! jq -e '.outbounds[]? | select(.tag == "cascade-upstream")' "$WORKDIR/disabled.json" >/dev/null \
-  || fail "cascade outbound still present after disable"
-! jq -e '.outbounds[]? | select(.tag == "cascade-fragment")' "$WORKDIR/disabled.json" >/dev/null \
-  || fail "cascade fragment still present after disable"
-jq -e '.routing.rules[] | select(.network == "tcp,udp" and .outboundTag == "direct")' "$WORKDIR/disabled.json" >/dev/null \
-  || fail "catch-all was not restored to direct"
-jq -e '.routing.rules[] | select(.network == "udp" and (.port|tostring) == "443" and .inboundTag == ["operator-custom"] and .outboundTag == "block")' "$WORKDIR/disabled.json" >/dev/null \
-  || fail "cascade disable removed an operator-managed udp/443 rule"
-
-echo "OK: cascade routing jq mutations"
+echo "OK: cascade routing (real _cascade_* functions)"

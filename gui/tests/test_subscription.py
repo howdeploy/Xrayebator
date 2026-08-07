@@ -4,7 +4,6 @@ import base64
 
 from xrayebator_gui.core.subscription import parse, pick_default
 
-
 VISION = (
     "vless://11111111-1111-1111-1111-111111111111@vpn.example.com:443"
     "?type=tcp&security=reality&sni=www.example.com&fp=chrome"

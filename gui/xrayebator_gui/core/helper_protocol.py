@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 from .routing import RoutingProfile
 from .subscription import VlessLink, parse_link
@@ -30,14 +30,14 @@ class ProtocolError(ValueError):
 class HelperRequest:
     request_id: str
     action: str
-    route: Optional[VlessLink] = None
-    routing_profile: Optional[RoutingProfile] = None
+    route: VlessLink | None = None
+    routing_profile: RoutingProfile | None = None
 
 
 def encode_request(
     action: str,
-    route: Optional[VlessLink] = None,
-    routing_profile: Optional[RoutingProfile] = None,
+    route: VlessLink | None = None,
+    routing_profile: RoutingProfile | None = None,
 ) -> bytes:
     if action not in COMMANDS:
         raise ProtocolError(f"Неизвестная команда helper: {action}")
@@ -108,8 +108,8 @@ def encode_response(
     *,
     ok: bool,
     state: str,
-    external_ip: Optional[str] = None,
-    error: Optional[str] = None,
+    external_ip: str | None = None,
+    error: str | None = None,
 ) -> bytes:
     payload = {
         "version": PROTOCOL_VERSION,
@@ -185,7 +185,7 @@ def _require_exact_keys(
     payload: dict[str, Any],
     *,
     required: set[str],
-    optional: Optional[set[str]] = None,
+    optional: set[str] | None = None,
 ) -> None:
     optional = optional or set()
     missing = required - payload.keys()

@@ -34,7 +34,7 @@ Xrayebator/
 /usr/local/bin/
 ├── xray                          # ядро
 ├── xrayebator                    # менеджер
-├── subhttp                       # backend подписки
+├── subhttp.sh                       # backend подписки
 ├── xrayebator-update
 └── xrayebator-uninstall
 
@@ -42,7 +42,7 @@ Xrayebator/
 ├── config.json                   # инбаунды, outbounds, routing, DNS
 ├── profiles/<name>.json          # метаданные профиля: routes, sub_token, SNI, fingerprint
 ├── upstreams/cascade.json        # параметры upstream каскада
-├── backups/<timestamp>/          # бэкапы конфига перед каждой правкой
+├── backups/config_<timestamp>_<op>.json          # бэкапы конфига перед каждой правкой
 ├── .private_key / .public_key    # ключи Reality, генерируются один раз при установке
 ├── .vless_decryption             # PQ-ключи для xhttp-pq
 ├── .vless_encryption
@@ -94,7 +94,7 @@ https://<домен-или-ip>/sub/<32-hex-token>
 Любое изменение проходит один и тот же путь:
 
 ```text
-backup_config ────► /usr/local/etc/xray/backups/<timestamp>
+backup_config ────► /usr/local/etc/xray/backups/config_<timestamp>_<op>.json
 safe_jq_write ────► временный файл в целевом каталоге → валидация → атомарный rename
 safe_restart_xray ► xray run -test -config → systemctl restart
                     при ошибке — rollback из бэкапа, Xray работает на старом конфиге

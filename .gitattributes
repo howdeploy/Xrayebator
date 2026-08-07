@@ -1,0 +1,28 @@
+# Bash/скриптовые артефакты — всегда LF (нативный bash на сервере/GUI-дистр
+# не переварит CRLF: `$'\r': command not found`, сломанные shebang и т.п.)
+* text=auto eol=lf
+*.sh text eol=lf
+*.service text eol=lf
+*.txt text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+xrayebator text eol=lf
+
+# Python — LF для единообразия
+*.py text eol=lf
+
+# Бинарики ОБЯЗАТЕЛЬНО без трансформации (hash-проверки)
+*.zip binary
+*.exe binary
+*.png binary
+*.ico binary
+*.icns binary
+*.whl binary
+*.tar.gz binary
+*.gz binary
+*.pyc binary
+
+# НЕ нормализовать чужие файлы в .venv
+gui/.venv/** -text

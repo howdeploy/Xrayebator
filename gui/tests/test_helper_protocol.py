@@ -14,7 +14,6 @@ from xrayebator_gui.core.helper_protocol import (
 from xrayebator_gui.core.routing import RoutingProfile
 from xrayebator_gui.core.subscription import parse_link
 
-
 ROUTE = (
     "vless://11111111-1111-1111-1111-111111111111@vpn.example.com:443"
     "?type=tcp&security=reality&sni=www.example.com&fp=chrome"

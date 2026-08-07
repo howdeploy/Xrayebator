@@ -84,6 +84,8 @@ UFW установщик настраивает сам: ставит пакет 
 | `sudo xrayebator` | Открыть интерактивное меню |
 | `sudo xrayebator update` | Обновить **только ядро Xray-core**, сам Xrayebator не трогается |
 | `sudo xrayebator probe-test` | Проверить с VPS доступность SNI перед его сменой |
+| `sudo xrayebator quickstart --email <адрес>` | Нон-интерактивный полный деплой (используется десктопным GUI): установит subscription-сервер, получит IP-TLS сертификат и создаст multi-route HAPP-профиль. Печатает JSON-результат |
+| `sudo xrayebator happ-setup` | Идемпотентное повторное создание HAPP multi-route профиля: установит/перезапустит subscription-сервис и выведет тот же JSON, что и `quickstart` |
 | `sudo xrayebator-update` | Обновить **сам Xrayebator** из ветки, запомненной в `.current_branch` |
 | `sudo xrayebator-update main` | Обновить сам Xrayebator принудительно из ветки `main` |
 | `sudo xrayebator-uninstall` | Снять сервис и конфигурацию |

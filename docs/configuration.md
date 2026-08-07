@@ -84,6 +84,8 @@ change, force a subscription refresh in the client or fetch the raw route again 
 | `sudo xrayebator` | Open the interactive menu |
 | `sudo xrayebator update` | Update **only the Xray-core binary**; Xrayebator itself is untouched |
 | `sudo xrayebator probe-test` | Check SNI reachability from the VPS before switching |
+| `sudo xrayebator quickstart --email <address>` | Non-interactive one-shot deploy used by the desktop GUI: sets up the subscription server, obtains an IP-TLS certificate and creates the multi-route HAPP profile. Prints a JSON result line |
+| `sudo xrayebator happ-setup` | Idempotent re-entry point for the HAPP multi-route profile: installs/restarts the subscription service and prints the same JSON payload as `quickstart` |
 | `sudo xrayebator-update` | Update **Xrayebator itself** from the branch stored in `.current_branch` |
 | `sudo xrayebator-update main` | Update Xrayebator itself, forced from the `main` branch |
 | `sudo xrayebator-uninstall` | Remove the service and configuration |

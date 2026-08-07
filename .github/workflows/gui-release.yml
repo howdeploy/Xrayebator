@@ -2,9 +2,6 @@ name: GUI desktop release
 
 on:
   pull_request:
-    paths:
-      - ".github/workflows/gui-release.yml"
-      - "gui/**"
   workflow_dispatch:
     inputs:
       release_tag:
@@ -45,6 +42,24 @@ jobs:
           python -m ruff check --config gui/pyproject.toml gui
           python -m pytest -q gui/tests
           python -m build --wheel gui
+
+      # Bash smoke subset kept here for fast feedback on GUI-PR touching bash;
+      # the FULL suite (all validation/test-*.sh) runs in ci-linux.yml.
+      - name: Bash syntax smoke (GUI job)
+        run: |
+          for test in \
+            validation/test-quickstart-migration-parity.sh \
+            validation/test-quickstart-subscription-port.sh \
+            validation/test-vless-url-generation.sh; do
+            echo "=== $test ==="
+            # CRLF safe: tests already normalize via tr -d '\r' internally
+            bash "$test"
+          done
+          # Syntax check of core bash files (POSIX grep on Linux; Git Bash on Windows)
+          bash -n xrayebator
+          bash -n install.sh
+          bash -n update.sh
+          bash -n uninstall.sh
 
   build:
     needs: test

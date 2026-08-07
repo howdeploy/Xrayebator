@@ -36,13 +36,18 @@ curl -fsSLo ./xrayebator-install.sh \
   https://raw.githubusercontent.com/howdeploy/Xrayebator/main/install.sh
 less ./xrayebator-install.sh          # review the script before running it
 sudo bash ./xrayebator-install.sh
+
+# Step-control flags (interrupt-safe install):
+#   --check   Show which of the 10 steps are already done
+#   --resume  Continue from the first unfinished step
+#   --fresh   Reset all markers and start from zero
 ```
 
 <div align="center">
 
 <p>
 Debian 12/13 · Ubuntu 22.04/24.04 · 512 MB RAM or more · <code>root</code> or <code>sudo</code><br>
-Then run <code>sudo xrayebator</code>, pick item <code>9</code>, and the subscription is ready.
+Then run <code>sudo xrayebator</code>, pick item <code>6</code>, and the subscription is ready.
 Details: <a href="#quick-start">Quick start</a>
 </p>
 

@@ -1,9 +1,24 @@
+"""Server store operations.
+
+POSIX-only checks for file permissions (st_mode) are skipped on Windows:
+there's no st_mode sensitivity here, and os.fchmod is unavailable.
+"""
 from __future__ import annotations
+
+import sys
+
+import pytest
 
 from xrayebator_gui.core import servers
 from xrayebator_gui.core.servers import ServerStore
 
+server_marks = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only file permission check (os.fchmod absent on Windows)",
+)
 
+
+@server_marks
 def test_server_metadata_with_subscription_is_owner_only(monkeypatch, tmp_path):
     monkeypatch.setattr(servers.keyring, "set_password", lambda *args: None)
     store = ServerStore(tmp_path)

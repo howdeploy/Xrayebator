@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from .connection import ConnectionMode, TunnelBackend
 from .helper_client import HelperClient, HelperTunBackend
 from .local_proxy import LocalProxyBackend
@@ -15,15 +13,15 @@ class DesktopBackend:
     def __init__(
         self,
         *,
-        local: Optional[TunnelBackend] = None,
-        tun: Optional[TunnelBackend] = None,
-        helper_client: Optional[HelperClient] = None,
+        local: TunnelBackend | None = None,
+        tun: TunnelBackend | None = None,
+        helper_client: HelperClient | None = None,
     ):
         self._local = local or LocalProxyBackend()
         self._helper_client = helper_client or HelperClient()
         self._tun = tun or HelperTunBackend(self._helper_client)
-        self._selected: Optional[TunnelBackend] = None
-        self._mode: Optional[ConnectionMode] = None
+        self._selected: TunnelBackend | None = None
+        self._mode: ConnectionMode | None = None
 
     @property
     def tun_available(self) -> bool:
@@ -53,7 +51,7 @@ class DesktopBackend:
             raise RuntimeError("Backend не подготовлен")
         self._selected.start(route, mode, routing_profile)
 
-    def verify(self) -> Optional[str]:
+    def verify(self) -> str | None:
         if self._selected is None:
             return None
         return self._selected.verify()

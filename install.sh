@@ -28,12 +28,156 @@ DATA_DIR="/usr/local/etc/xray/data"
 SCRIPTS_DIR="/usr/local/etc/xray/scripts"
 PRIVATE_KEY_FILE="/usr/local/etc/xray/.private_key"
 PUBLIC_KEY_FILE="/usr/local/etc/xray/.public_key"
+APT_LOG="/tmp/xrayebator-apt.log"
 
-# Проверка прав root
-if [[ $EUID -ne 0 ]]; then
-  echo -e "${RED}✗ Требуются права root для установки${NC}"
+# ═══ Детекция IPv6-only VPS (shared helper) ═══
+# Используется при выборе dns.queryStrategy/freedom.domainStrategy.
+# На IPv6-only VPS Xray не сможет резолвить A-records через UseIPv4 →
+# весь клиентский трафик встанет. Проверяем наличие global-scope IPv4
+# address или маршрута до IPv4-адреса; если ни одного нет → UseIP.
+#
+# Использование: if _detect_ipv6_only; then queryStrategy="UseIP"; fi
+_detect_ipv6_only() {
+  if ip -4 addr show scope global 2>/dev/null | grep -q 'inet '; then
+    return 1
+  fi
+  if ip route get 1.1.1.1 2>/dev/null | grep -q .; then
+    return 1
+  fi
+  return 0
+}
+
+# Возвращает строку для Xray dns.queryStrategy / freedom.domainStrategy.
+# Использование: QUERY_STRATEGY=$(_ipv6_query_strategy)
+_ipv6_query_strategy() {
+  if _detect_ipv6_only; then
+    echo "UseIP"
+  else
+    echo "UseIPv4"
+  fi
+}
+
+# ═══ Префлайт проверки (DPI, OS, systemd) ═══
+# Без этого блока 30% реальных сбоев дают нечитаемые ошибки
+# (например, apt: command not found на CentOS как "bash: apt: command not found").
+if [[ -z "$BASH_VERSION" ]]; then
+  echo "Запустите через bash: curl ... | sudo bash" >&2
   exit 1
 fi
+
+if [[ $EUID -ne 0 ]]; then
+  echo -e "${RED}✗ Требуются права root для установки${NC}" >&2
+  echo -e "${YELLOW}Запустите:${NC} ${CYAN}sudo bash $0${NC}" >&2
+  exit 1
+fi
+
+# ОС: только Debian/Ubuntu (apt-based)
+if [[ ! -f /etc/debian_version ]] && ! command -v apt-get >/dev/null 2>&1; then
+  echo -e "${RED}✗ Xrayebator поддерживает только Debian/Ubuntu (apt-based)${NC}" >&2
+  [[ -f /etc/os-release ]] && head -3 /etc/os-release
+  echo -e "${CYAN}Для CentOS/RHEL используйте docker исходник или ручную установку Xray.${NC}" >&2
+  exit 1
+fi
+
+# systemd обязательно (без него systemctl упадут на OpenVZ/LXC/Docker)
+if ! command -v systemctl >/dev/null 2>&1 || [[ ! -d /run/systemd/system ]]; then
+  echo -e "${RED}✗ systemd не обнаружен (OpenVZ/LXC/Docker окружение)${NC}" >&2
+  echo -e "${YELLOW}Xrayebator требует systemd. Возьмите KVM-VPS.${NC}" >&2
+  exit 1
+fi
+
+# === Install state machine: --check / --resume / --fresh ===
+STEP_DIR="/usr/local/etc/xray"
+STEP_ORDER=(1 2 3 35 4 5 6 7 8 9)
+declare -A STEP_LABELS=(
+  [1]="apt packages" [2]="Xray-core" [3]="systemd unit" [35]="GeoIP/GeoSite"
+  [4]="Directories" [5]="Reality + VLESS keys" [6]="Base config.json"
+  [7]="UFW firewall" [8]="sni_list + ascii_art" [9]="bin + start Xray"
+)
+_step_marker() { echo "${STEP_DIR}/.install_step_$1_ok"; }
+_step_done()  { [[ -f "$(_step_marker "$1")" ]]; }
+_step_mark()  { mkdir -p "$STEP_DIR" 2>/dev/null; touch "$(_step_marker "$1")"; }
+
+# P2-fix: регистрируем правило UFW, открытое именно Xrayebator, в root-owned манифесте
+# /usr/local/etc/xray/.ufw_owned. uninstall.sh удалит ТОЛЬКО порты отсюда и динамические
+# порты из config.json — чужие правила 443/8443/8080 не затрагиваются.
+# Аргументы: $1=string "port/proto". Идемпотентно.
+_ufw_own_entry() {
+  local entry="$1"
+  local manifest="${UFW_OWNED_MANIFEST:-/usr/local/etc/xray/.ufw_owned}"
+  mkdir -p /usr/local/etc/xray 2>/dev/null || true
+  if [[ ! -f "$manifest" ]]; then
+    printf '%s\n' "$entry" > "$manifest"
+  else
+    grep -qxF "$entry" "$manifest" 2>/dev/null || printf '%s\n' "$entry" >> "$manifest"
+  fi
+  chmod 644 "$manifest" 2>/dev/null || true
+  chown root:root "$manifest" 2>/dev/null || true
+}
+
+_first_pending_step() {
+  local s
+  for s in "${STEP_ORDER[@]}"; do
+    _step_done "$s" || { echo "$s"; return 0; }
+  done
+  return 1
+}
+
+INSTALL_MODE="auto"
+RESUME_FROM=""
+for _arg in "$@"; do
+  case "$_arg" in
+    --check)
+      echo "=== Xrayebator install status ==="
+      for s in "${STEP_ORDER[@]}"; do
+        if _step_done "$s"; then printf '  [OK]   [%s] %s\n' "$s" "${STEP_LABELS[$s]}"; else printf '  [TODO] [%s] %s\n' "$s" "${STEP_LABELS[$s]}"; fi
+      done
+      next=$(_first_pending_step || true)
+      if [[ -n "$next" ]]; then printf '\nNext step to resume: %s (%s)\n' "$next" "${STEP_LABELS[$next]}"; else printf '\nAll steps done.\n'; fi
+      exit 0
+      ;;
+    --resume)
+      INSTALL_MODE="resume"
+      next=$(_first_pending_step || true)
+      if [[ -z "$next" ]]; then echo "Nothing to install -- all steps done." >&2; exit 0; fi
+      RESUME_FROM="$next"
+      echo "Resume: continue from step $next (${STEP_LABELS[$next]})..." >&2
+      ;;
+    --fresh)
+      INSTALL_MODE="fresh"
+      rm -f "${STEP_DIR}"/.install_step_*_ok 2>/dev/null || true
+      RESUME_FROM=""
+      echo "Fresh: markers cleared, installing from scratch." >&2
+      ;;
+  esac
+done
+
+if [[ "$INSTALL_MODE" == "auto" ]]; then
+  next=$(_first_pending_step || true)
+  if [[ -z "$next" ]]; then
+    echo "All steps are already marked done."
+    echo "To reinstall from scratch: sudo bash install.sh --fresh"
+    exit 0
+  fi
+  if [[ "$next" != "1" ]]; then
+    RESUME_FROM="$next"
+    echo "Resuming from step $next (${STEP_LABELS[$next]})."
+    echo "(To start over: sudo bash install.sh --fresh)"
+    sleep 2
+  fi
+fi
+
+_should_run() {
+  [[ -z "${RESUME_FROM:-}" ]] && return 0
+  [[ "$1" == "${RESUME_FROM}" ]] && return 0
+  local target_idx="" me_idx="" i
+  for i in "${!STEP_ORDER[@]}"; do
+    [[ "${STEP_ORDER[i]}" == "${RESUME_FROM}" ]] && target_idx=$i
+    [[ "${STEP_ORDER[i]}" == "$1" ]] && me_idx=$i
+  done
+  [[ -n "$me_idx" && -n "$target_idx" ]] || return 0
+  [[ $me_idx -ge $target_idx ]]
+}
 
 clear
 echo -e "${CYAN}"
@@ -47,16 +191,69 @@ echo -e "${NC}\n"
 echo -e "${YELLOW}Начало установки...${NC}\n"
 sleep 2
 
+if _should_run 1; then
+
 # [1/9] Установка зависимостей
 echo -e "${BLUE}[1/9]${NC} ${YELLOW}Установка необходимых пакетов...${NC}"
-apt update > /dev/null 2>&1
-apt install -y ca-certificates curl wget jq qrencode uuid-runtime ufw unzip openssl socat > /dev/null 2>&1
-if [[ $? -eq 0 ]]; then
-  echo -e "${GREEN}✓ Зависимости установлены${NC}\n"
-else
-  echo -e "${RED}✗ Ошибка установки зависимостей${NC}"
+
+# Диагностика DNS до apt: если резолв не работает, apt упадёт с непонятной ошибкой.
+# A2-fix: проверяем резолв через getent (не привязываясь к Ubuntu-зеркалам), а при
+# подмене resolv.conf заменяем симлинк реальным файлом (иначе printf пишет сквозь
+# symlink systemd-resolved в /run/systemd/resolve/stub-resolv.conf и бэкап неверен).
+# DNS-бустреп перед apt: если IPv4-резолверы недоступны (IPv6-only VPS), используем
+# IPv6-совместимые. P1-ipv6-fix: раньше жёстко писался 1.1.1.1/9.9.9.9, на IPv6-only
+# хосте bootstrap мог сорвать apt. Теперь resolver выбирается family-aware.
+if ! getent hosts archive.ubuntu.com >/dev/null 2>&1 && ! getent hosts deb.debian.org >/dev/null 2>&1; then
+  if _detect_ipv6_only; then
+    echo -e "${YELLOW}⚠ DNS не резолвит зеркала (IPv6-only) — подменяю /etc/resolv.conf на IPv6-резолверы${NC}"
+    local_v6_resolvers="nameserver 2606:4700:4700::1111\nnameserver 2001:4860:4860::8888\n"
+    if [[ -L /etc/resolv.conf ]]; then
+      # Не пишем сквозь symlink systemd-resolved: сохраняем target отдельно, заменяем сам symlink.
+      local_resolv_target="$(readlink /etc/resolv.conf)"
+      cp -a "/etc/resolv.conf" "/etc/resolv.conf.bak.xrayebator" 2>/dev/null || true
+      echo -e "${YELLOW}  (symlink → ${local_resolv_target}; заменяю файлом, резерв: /etc/resolv.conf.bak.xrayebator)${NC}"
+      rm -f /etc/resolv.conf
+    else
+      cp /etc/resolv.conf /etc/resolv.conf.bak.xrayebator 2>/dev/null || true
+    fi
+    printf '%b' "$local_v6_resolvers" > /etc/resolv.conf
+  else
+    echo -e "${YELLOW}⚠ DNS не резолвит пакетные зеркала — подменяю /etc/resolv.conf на 1.1.1.1${NC}"
+    if [[ -L /etc/resolv.conf ]]; then
+      # Не пишем сквозь symlink systemd-resolved: сохраняем target отдельно, заменяем сам symlink.
+      local_resolv_target="$(readlink /etc/resolv.conf)"
+      cp -a "/etc/resolv.conf" "/etc/resolv.conf.bak.xrayebator" 2>/dev/null || true
+      echo -e "${YELLOW}  (symlink → ${local_resolv_target}; заменяю файлом, резерв: /etc/resolv.conf.bak.xrayebator)${NC}"
+      rm -f /etc/resolv.conf
+    else
+      cp /etc/resolv.conf /etc/resolv.conf.bak.xrayebator 2>/dev/null || true
+    fi
+    printf 'nameserver 1.1.1.1\nnameserver 9.9.9.9\n' > /etc/resolv.conf
+  fi
+  if ! getent hosts archive.ubuntu.com >/dev/null 2>&1 && ! getent hosts deb.debian.org >/dev/null 2>&1; then
+    echo -e "${YELLOW}  ⚠ Всё ещё нет резолва — продолжаю, apt может не сработать${NC}"
+  fi
+fi
+
+echo -e "${CYAN}  → apt update...${NC}"
+if ! apt update >"$APT_LOG" 2>&1; then
+  echo -e "${RED}✗ apt update не прошёл. Проверьте /etc/resolv.conf:${NC}"
+  tail -5 "$APT_LOG"
+  cat /etc/resolv.conf 2>/dev/null
+  echo -e "${YELLOW}Попробуйте: echo 'nameserver 1.1.1.1' > /etc/resolv.conf${NC}"
   exit 1
 fi
+if ! apt install -y ca-certificates curl wget jq qrencode uuid-runtime ufw unzip openssl socat >"$APT_LOG" 2>&1; then
+  echo -e "${RED}✗ Ошибка установки зависимостей${NC}"
+  tail -10 "$APT_LOG"
+  exit 1
+fi
+echo -e "${GREEN}✓ Зависимости установлены${NC}\n"
+
+_step_mark 1
+fi
+
+if _should_run 2; then
 
 # [2/9] Установка Xray-core (REQ-B03 single source of truth)
 echo -e "${BLUE}[2/9]${NC} ${YELLOW}Установка Xray-core...${NC}"
@@ -223,7 +420,7 @@ update_xray_core() {
   if [[ -f "$CONFIG_FILE" ]]; then
     local test_output
     test_output=$("${TMPDIR}/extract/xray" run -test -config "$CONFIG_FILE" 2>&1)
-    if ! grep -qx "Configuration OK." <<< "$test_output"; then
+    if ! grep -q "Configuration OK" <<< "$test_output"; then
       echo -e "${RED}✗ config.json не валиден против $TARGET_VERSION${NC}"
       echo -e "${YELLOW}Подробности:${NC}"
       echo "$test_output" | head -10
@@ -353,6 +550,11 @@ XRAY_VERSION=$(/usr/local/bin/xray version 2>/dev/null | head -1)
 echo -e "${GREEN}✓ Xray-core установлен${NC}"
 echo -e "${CYAN}  ${XRAY_VERSION}${NC}\n"
 
+_step_mark 2
+fi
+
+if _should_run 3; then
+
 # [3/9] Настройка Xray сервиса (non-root с capabilities)
 echo -e "${BLUE}[3/9]${NC} ${YELLOW}Настройка Xray сервиса...${NC}"
 
@@ -419,6 +621,11 @@ SVCEOF
 systemctl daemon-reload
 echo -e "${GREEN}✓ Сервис настроен (User=xray, CAP_NET_BIND_SERVICE)${NC}\n"
 
+_step_mark 3
+fi
+
+if _should_run 35; then
+
 # [3.5/10] Загрузка расширенных geo-баз (Loyalsoldier)
 echo -e "${BLUE}[3.5/10]${NC} ${YELLOW}Загрузка расширенных geo-баз...${NC}"
 XRAY_DAT_DIR="/usr/local/share/xray"
@@ -456,6 +663,11 @@ fi
 
 echo -e "${GREEN}✓ Geo-базы настроены (Loyalsoldier enhanced)${NC}\n"
 
+_step_mark 35
+fi
+
+if _should_run 4; then
+
 # [4/9] Создание структуры директорий
 echo -e "${BLUE}[4/9]${NC} ${YELLOW}Создание структуры директорий...${NC}"
 mkdir -p "$PROFILES_DIR"
@@ -463,8 +675,16 @@ mkdir -p "$DATA_DIR"
 mkdir -p "$SCRIPTS_DIR"
 mkdir -p /var/log/xray
 chown xray:xray /var/log/xray
-chown -R xray:xray /usr/local/etc/xray/
+# Privilege boundary (P0-fix): /usr/local/etc/xray принадлежит root:root,
+# xray получает только чтение. Root-скрипты и markers не подменяемы xray.
+chown root:root /usr/local/etc/xray/ /usr/local/etc/xray/profiles /usr/local/etc/xray/data /usr/local/etc/xray/scripts
+chmod 755 /usr/local/etc/xray/ /usr/local/etc/xray/profiles /usr/local/etc/xray/data /usr/local/etc/xray/scripts
 echo -e "${GREEN}✓ Директории созданы${NC}\n"
+
+_step_mark 4
+fi
+
+if _should_run 5; then
 
 # [5/9] Генерация ключей Reality
 echo -e "${BLUE}[5/9]${NC} ${YELLOW}Генерация ключей Reality...${NC}"
@@ -474,6 +694,12 @@ if [[ ! -x /usr/local/bin/xray ]]; then
   echo -e "${YELLOW}  Установка Xray на шаге [2/9] могла завершиться некорректно${NC}"
   exit 1
 fi
+
+# Идемпотентность: повторный запуск install.sh НЕ должен перегенерировать ключи —
+# они уже могут использоваться существующими профилями.
+if [[ -s "$PRIVATE_KEY_FILE" && -s "$PUBLIC_KEY_FILE" ]]; then
+  echo -e "${CYAN}  → Ключи уже существуют, перегенерация пропущена${NC}\n"
+else
 
 KEYS_OUTPUT=$(/usr/local/bin/xray x25519 2>&1)
 KEYS_EXIT=$?
@@ -534,10 +760,13 @@ echo -e "${GREEN}✓ Ключи сгенерированы${NC}"
 echo -e "${CYAN}  Private: ${PRIVATE_KEY:0:16}...${NC}"
 echo -e "${CYAN}  Public: ${PUBLIC_KEY:0:16}...${NC}\n"
 
-# Set file ownership for xray user
-chown -R xray:xray /usr/local/etc/xray/
+# Set ownership for root (privilege boundary): приватный ключ — root:root 600,
+# публичный — root:root 644. Сервис xray читает ключи из config.json, не из файлов.
+chown root:root "$PRIVATE_KEY_FILE" "$PUBLIC_KEY_FILE"
 chmod 600 "$PRIVATE_KEY_FILE"
 chmod 644 "$PUBLIC_KEY_FILE"
+
+fi  # end keys idempotency guard
 
 # ── VLESS Encryption keys (Phase 6 REQ-A01) ────────────────────
 # Генерация PQ decryption/encryption пары через xray vlessenc.
@@ -546,6 +775,16 @@ echo -e "${BLUE}[5b/10]${NC} ${YELLOW}Генерация VLESS Encryption клю
 
 VLESS_DECRYPTION_FILE="/usr/local/etc/xray/.vless_decryption"
 VLESS_ENCRYPTION_FILE="/usr/local/etc/xray/.vless_encryption"
+
+# Идемпотентность: как Reality keys (:618), повторный запуск / --resume / --fresh
+# НЕ должен перегенерировать ключи — иначе все существующие PQ-профили клиентов
+# становятся orphaned (их encryption string больше не соответствует серверному decryption).
+if [[ -s "$VLESS_DECRYPTION_FILE" && -s "$VLESS_ENCRYPTION_FILE" ]] \
+   && grep -q '^mlkem768x25519plus\.' "$VLESS_DECRYPTION_FILE" 2>/dev/null; then
+  echo -e "${CYAN}  → VLESS Encryption ключи уже существуют, перегенерация пропущена${NC}\n"
+  _step_mark 5
+  # продолжаем к следующему шагу (step 6 обрабатывается следующим if-блоком)
+else
 
 VLESSENC_OUTPUT=$(/usr/local/bin/xray vlessenc 2>&1)
 VLESSENC_EXIT=$?
@@ -585,15 +824,51 @@ fi
 
 printf "%s" "$VLESS_DECRYPTION" > "$VLESS_DECRYPTION_FILE"
 printf "%s" "$VLESS_ENCRYPTION" > "$VLESS_ENCRYPTION_FILE"
-chmod 600 "$VLESS_DECRYPTION_FILE" "$VLESS_ENCRYPTION_FILE"
-chown xray:xray "$VLESS_DECRYPTION_FILE" "$VLESS_ENCRYPTION_FILE" 2>/dev/null || true
+# Privilege boundary (P0-fix): decryption (приватная часть) — root:root 600;
+# encryption (публичная часть, читается subhttp для генерации VLESS URL) — root:root 644.
+chmod 600 "$VLESS_DECRYPTION_FILE"
+chmod 644 "$VLESS_ENCRYPTION_FILE"
+chown root:root "$VLESS_DECRYPTION_FILE" "$VLESS_ENCRYPTION_FILE" 2>/dev/null || true
 
 echo -e "${GREEN}✓ VLESS Encryption ключи сгенерированы${NC}"
 echo -e "${CYAN}  decryption: ${VLESS_DECRYPTION:0:48}...${NC}"
 
+fi  # end VLESS keys idempotency guard
+
+_step_mark 5
+fi
+
+if _should_run 6; then
+
 # [6/9] Создание базовой конфигурации
 echo -e "${BLUE}[6/9]${NC} ${YELLOW}Создание конфигурации Xray...${NC}"
-cat > "$CONFIG_FILE" << 'EOF'
+
+# IPv6-only детекция: на VPS без публичного IPv4 указываем queryStrategy/domainStrategy
+# как UseIP (иначе Xray не сможет резолвить AAAA и клиентский трафик встанет).
+QUERY_STRATEGY=$(_ipv6_query_strategy)
+FREEDOM_STRATEGY=$(_ipv6_query_strategy)
+if _detect_ipv6_only; then
+  echo -e "${CYAN}  IPv4 не обнаружен — DNS/outbound strategy = UseIP (IPv6-compatible)${NC}"
+fi
+
+# DNS-бустреп: на IPv6-only VPS нет маршрута до IPv4-резолверов (1.1.1.1),
+# поэтому используем IPv6-совместимый DoH (Google) вместе с IPv4 DoH.
+dns_main_doh="https+local://1.1.1.1/dns-query"
+dns_fallback_doh="localhost"
+if _detect_ipv6_only; then
+  dns_main_doh="https+local://dns.google/dns-query"
+fi
+
+# A1-fix: при переустановке сохраняем существующий конфиг перед перезаписью,
+# чтобы не потерять боевые inbound/профили (иначе сервер остаётся без инбаундов).
+if [[ -s "$CONFIG_FILE" ]]; then
+  local_backup_dir="${BACKUP_DIR:-/usr/local/etc/xray/backups}"
+  mkdir -p "$local_backup_dir"
+  cp -a "$CONFIG_FILE" "$local_backup_dir/pre-fresh-$(date +%Y%m%d-%H%M%S).json" 2>/dev/null || true
+  echo -e "${YELLOW}⚠ Существующий config.json сохранён в $local_backup_dir (бэкап перед переустановкой)${NC}"
+fi
+
+cat > "$CONFIG_FILE" << EOF
 {
   "log": {
     "loglevel": "warning",
@@ -601,10 +876,10 @@ cat > "$CONFIG_FILE" << 'EOF'
   },
   "dns": {
     "servers": [
-      "https+local://1.1.1.1/dns-query",
-      "localhost"
+      "${dns_main_doh}",
+      "${dns_fallback_doh}"
     ],
-    "queryStrategy": "UseIPv4",
+    "queryStrategy": "${QUERY_STRATEGY}",
     "disableCache": false
   },
   "routing": {
@@ -637,7 +912,7 @@ cat > "$CONFIG_FILE" << 'EOF'
     {
       "protocol": "freedom",
       "settings": {
-        "domainStrategy": "UseIPv4"
+        "domainStrategy": "${FREEDOM_STRATEGY}"
       },
       "tag": "direct"
     },
@@ -660,34 +935,103 @@ cat > "$CONFIG_FILE" << 'EOF'
 }
 EOF
 
-chown xray:xray "$CONFIG_FILE"
+# Privilege boundary (P0-fix): config.json читается xray (644), владелец root:root.
+chown root:root "$CONFIG_FILE"
+chmod 644 "$CONFIG_FILE"
 # Mark config as already optimized (skip migration on first launch)
 touch /usr/local/etc/xray/.config_optimized
-chown xray:xray /usr/local/etc/xray/.config_optimized
-chmod 644 "$CONFIG_FILE"
+chown root:root /usr/local/etc/xray/.config_optimized
+chmod 644 /usr/local/etc/xray/.config_optimized
 echo -e "${GREEN}✓ Конфигурация создана${NC}\n"
+
+_step_mark 6
+fi
+
+if _should_run 7; then
 
 # [7/9] Настройка Firewall
 echo -e "${BLUE}[7/9]${NC} ${YELLOW}Настройка firewall...${NC}"
-if ! ufw status | grep -q "Status: active"; then
+
+# B1-fix: детектируем фактический SSH-порт ДО включения UFW (default policy = deny).
+# Если SSH на нестандартном порту и открыть его после enable — заперём себя на VPS.
+# P2-fix: разбор ss охватывает и обычные bind-формы вида 0.0.0.0:2222 / [::]:2222,
+# и когда порт/правило не удалось определить — НЕ включаем UFW (иначе lockout).
+sfw_ssh_port=""
+if command -v ss >/dev/null 2>&1; then
+  # ss -tlnp построчно: ищем строки с флагом LISTEN и процессом sshd, извлекаем
+  # локальный порт из последнего ':'-сегмента адреса (0.0.0.0:2222, *:2222, [::]:2222).
+  sfw_ssh_port=$(ss -tlnp 2>/dev/null | awk '
+    /LISTEN/ && /sshd/ {
+      for (i=1; i<=NF; i++) {
+        if ($i ~ /^(\[?\*|\[?[0-9a-fA-F:.]+):[0-9]+$/) {
+          split($i, a, ":")
+          print a[length(a)]
+          exit
+        }
+      }
+    }')
+  sfw_ssh_port="${sfw_ssh_port%%[,;]*}"
+fi
+if [[ -z "$sfw_ssh_port" ]] || ! [[ "$sfw_ssh_port" =~ ^[0-9]+$ ]]; then
+  # Fallback: читаем ListenAddress sshd_config.
+  sfw_ssh_port=$(grep -h '^Port\s' /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf 2>/dev/null | awk '{print $2}' | head -1)
+fi
+
+# Определили ли мы SSH-порт? Если нет и нельзя открыть правило — UFW не включаем
+# (default policy = deny, lockout). Лучше оставить UFW выключенным, чем запереть себя.
+sfw_ufw_safe=0
+if [[ -n "$sfw_ssh_port" ]] && [[ "$sfw_ssh_port" =~ ^[0-9]+$ ]]; then
+  if ufw allow "${sfw_ssh_port}/tcp" > /dev/null 2>&1; then
+    sfw_ufw_safe=1
+    echo -e "${CYAN}  SSH-порт ${sfw_ssh_port}/tcp открыт перед включением UFW${NC}"
+  else
+    echo -e "${YELLOW}  ⚠ Не удалось открыть SSH-порт ${sfw_ssh_port} — UFW остаётся выключенным${NC}"
+  fi
+else
+  echo -e "${YELLOW}  ⚠ Не удалось определить SSH-порт — UFW не включается (защита от блокировки)${NC}"
+fi
+
+if command -v ufw >/dev/null 2>&1; then
+if [[ "$sfw_ufw_safe" -eq 1 ]] && ! ufw status | grep -q "Status: active"; then
   ufw --force enable > /dev/null 2>&1
+fi
+else
+  sfw_ufw_safe=0
 fi
 
 UFW_ERRORS=0
+# P2-fix: регистрируем в root-owned манифесте только правила, открытые ИМЕННО
+# Xrayebator (иначе uninstall удалил бы чужое правило на 443/8443). Если правило
+# уже существовало ДО нас — не трогаем и не регистрируем.
+if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
 for ufw_port in 22 80 443 8443 2053 2083 2087 8080 2096 8880 9443; do
+  if ufw status 2>/dev/null | grep -qE "^${ufw_port}/tcp.*ALLOW"; then
+    continue  # уже открыто кем-то до нас — чужие правила не присваиваем
+  fi
   if ! ufw allow "${ufw_port}/tcp" > /dev/null 2>&1; then
     echo -e "${YELLOW}  ⚠ Не удалось открыть порт ${ufw_port}/tcp${NC}"
     ((UFW_ERRORS++))
+  else
+    # P2-fix: манифест root:root 644 — только правила, открытые Xrayebator.
+    _ufw_own_entry "${ufw_port}/tcp"
   fi
 done
 
 ufw reload > /dev/null 2>&1
 echo -e "${GREEN}✓ Firewall настроен${NC}"
 echo -e "${CYAN}  Открытые порты: 443, 2053, 2096, 8080, 8443, 8880, 9443${NC}\n"
+else
+echo -e "${YELLOW}  ⚠ UFW не включён — порты не открывались (избегаем блокировки SSH)${NC}"
+fi
+
+_step_mark 7
+fi
+
+if _should_run 8; then
 
 # [8/9] Загрузка данных
 echo -e "${BLUE}[8/9]${NC} ${YELLOW}Загрузка данных приложения...${NC}"
-curl -fsSL "${RAW_BASE_URL}/sni_list.txt" -o "${DATA_DIR}/sni_list.txt"
+curl -fsSL --connect-timeout 10 --max-time 30 "${RAW_BASE_URL}/sni_list.txt" -o "${DATA_DIR}/sni_list.txt"
 if [[ $? -eq 0 ]] && [[ -s "${DATA_DIR}/sni_list.txt" ]]; then
   echo -e "${GREEN}✓ Список SNI загружен${NC}"
 else
@@ -706,12 +1050,17 @@ www.microsoft.com|foreign|3
 EOF
 fi
 
-curl -fsSL "${RAW_BASE_URL}/ascii_art.txt" -o "${DATA_DIR}/ascii_art.txt" 2>/dev/null
+curl -fsSL --connect-timeout 10 --max-time 30 "${RAW_BASE_URL}/ascii_art.txt" -o "${DATA_DIR}/ascii_art.txt" 2>/dev/null
 if [[ -s "${DATA_DIR}/ascii_art.txt" ]]; then
   echo -e "${GREEN}✓ ASCII арт загружен${NC}\n"
 else
   echo -e "${CYAN}✓ ASCII арт недоступен (не критично)${NC}\n"
 fi
+
+_step_mark 8
+fi
+
+if _should_run 9; then
 
 # [9/9] Установка приложения
 echo -e "${BLUE}[9/9]${NC} ${YELLOW}Установка управляющего приложения...${NC}"
@@ -729,14 +1078,22 @@ else
   exit 1
 fi
 
-# Скрипты управления
+# Скрипты управления (атомарная установка, P0-privilege-boundary-fix):
+# mktemp в /tmp + chmod 755 + mv (rename) — файл не бывает «полузаписан».
+# После mv проверяем ownership/mode: root:root 755, иначе скрипт подменяем xray.
 UPDATE_TMP=$(mktemp /tmp/xrayebator_update_install_XXXXXX.sh)
 if curl -fsSL --connect-timeout 10 --max-time 30 "${RAW_BASE_URL}/update.sh" -o "$UPDATE_TMP" 2>/dev/null \
    && [[ -s "$UPDATE_TMP" ]] \
    && head -n 1 "$UPDATE_TMP" | grep -q "^#!/bin/bash" \
    && bash -n "$UPDATE_TMP"; then
   chmod 755 "$UPDATE_TMP"
+  chown root:root "$UPDATE_TMP"
   mv "$UPDATE_TMP" "${SCRIPTS_DIR}/update.sh"
+  # Проверка: владелец root, права 755 (каталог scripts — root:root 755).
+  if ! [[ -O "${SCRIPTS_DIR}/update.sh" && -x "${SCRIPTS_DIR}/update.sh" ]]; then
+    echo -e "${RED}✗ update.sh установлен с неверными правами — прерывание${NC}"
+    exit 1
+  fi
 else
   echo -e "${YELLOW}⚠ update.sh не загружен или невалиден${NC}"
   rm -f "$UPDATE_TMP"
@@ -747,16 +1104,29 @@ if curl -fsSL --connect-timeout 10 --max-time 30 "${RAW_BASE_URL}/uninstall.sh" 
    && head -n 1 "$UNINSTALL_TMP" | grep -q "^#!/bin/bash" \
    && bash -n "$UNINSTALL_TMP"; then
   chmod 755 "$UNINSTALL_TMP"
+  chown root:root "$UNINSTALL_TMP"
   mv "$UNINSTALL_TMP" "${SCRIPTS_DIR}/uninstall.sh"
+  if ! [[ -O "${SCRIPTS_DIR}/uninstall.sh" && -x "${SCRIPTS_DIR}/uninstall.sh" ]]; then
+    echo -e "${RED}✗ uninstall.sh установлен с неверными правами — прерывание${NC}"
+    exit 1
+  fi
 else
   echo -e "${YELLOW}⚠ uninstall.sh не загружен или невалиден${NC}"
   rm -f "$UNINSTALL_TMP"
 fi
-ln -sf "${SCRIPTS_DIR}/update.sh" /usr/local/bin/xrayebator-update 2>/dev/null
-ln -sf "${SCRIPTS_DIR}/uninstall.sh" /usr/local/bin/xrayebator-uninstall 2>/dev/null
+ln_created=0
+if [[ -f "${SCRIPTS_DIR}/update.sh" ]]; then
+  ln -sf "${SCRIPTS_DIR}/update.sh" /usr/local/bin/xrayebator-update 2>/dev/null
+  ln_created=$((ln_created+1))
+fi
+if [[ -f "${SCRIPTS_DIR}/uninstall.sh" ]]; then
+  ln -sf "${SCRIPTS_DIR}/uninstall.sh" /usr/local/bin/xrayebator-uninstall 2>/dev/null
+  ln_created=$((ln_created+1))
+fi
 echo "$GITHUB_BRANCH" > /usr/local/etc/xray/.current_branch
-chown xray:xray /usr/local/etc/xray/.current_branch 2>/dev/null || true
-echo -e "${GREEN}✓ Скрипты установлены${NC}\n"
+chown root:root /usr/local/etc/xray/.current_branch 2>/dev/null || true
+chmod 644 /usr/local/etc/xray/.current_branch 2>/dev/null || true
+echo -e "${GREEN}✓ Скрипты установлены (${ln_created} shortcuts)${NC}\n"
 
 # Запуск Xray
 systemctl enable xray > /dev/null 2>&1
@@ -781,8 +1151,13 @@ if ! xray run -test -config /usr/local/etc/xray/config.json 2>&1 | grep -q "^Con
 fi
 echo -e "${GREEN}✓ config.json прошёл validation${NC}"
 
+# B3-fix: systemd может не успеть поднять сервис сразу после restart — даём время
+# перед is-active, иначе «не запущен» — ложный failure.
 systemctl restart xray > /dev/null 2>&1
-if systemctl is-active --quiet xray; then
+sleep 2
+# B4-fix: «успешно запущен» только при реально работающем Xray И наличии инбаундов.
+# На свежей установке inbounds пуст — Xray стартует, но сервер ещё не готов.
+if systemctl is-active --quiet xray && jq -e '.inbounds | length > 0' "$CONFIG_FILE" >/dev/null 2>&1; then
   echo -e "${GREEN}✓ Xray успешно запущен${NC}\n"
 else
   echo -e "${CYAN}✓ Xray установлен (запустится при создании профиля)${NC}\n"
@@ -813,3 +1188,7 @@ echo -e "${BLUE}GitHub:${NC} https://github.com/${GITHUB_USER}/${GITHUB_REPO}"
 echo -e "${BLUE}Версия:${NC} 3.0"
 echo ""
 echo -e "${MAGENTA}════════════════════════════════════════════════════════════${NC}"
+
+
+_step_mark 9
+fi

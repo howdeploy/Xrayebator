@@ -33,6 +33,9 @@ shellcheck -S error xrayebator install.sh update.sh uninstall.sh
 | `test-update-xray-core-sync.sh` | Синхронность обновления Xray-core |
 | `test-vless-url-generation.sh` | Генерацию ссылок `vless://` |
 | `test-installer-network-fallbacks.sh` | Сетевые fallback'и установщика |
+| `test-bbr-removal-migration.sh` | Безопасное удаление удалённого BBR/TCP tuning на всех путях |
+| `test-legacy-udp443-migration.sh` | Одноразовое удаление legacy правила блокировки UDP/443 |
+| `test-main-menu-numbering.sh` | Нумерацию пунктов главного меню и их соответствие обработчикам |
 
 > Статические тесты не заменяют проверку на disposable VPS: создание и удаление профиля, валидацию
 > конфига, рестарт сервисов, rollback и реальное подключение клиента.

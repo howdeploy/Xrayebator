@@ -77,6 +77,8 @@ UFW 由安装脚本自行管理：安装 `ufw` 包，若 UFW 未启用则执行 
 | `sudo xrayebator` | 打开交互菜单 |
 | `sudo xrayebator update` | 仅更新 **Xray-core 内核**，不动 Xrayebator 本身 |
 | `sudo xrayebator probe-test` | 更换 SNI 前，从 VPS 检查其可达性 |
+| `sudo xrayebator quickstart --email <邮箱>` | 非交互式一键部署（供桌面 GUI 使用）：设置订阅服务器、签发 IP-TLS 证书并创建 multi-route HAPP 配置档。打印 JSON 结果 |
+| `sudo xrayebator happ-setup` | 幂等地重建 HAPP multi-route 配置档：安装/重启订阅服务并打印与 `quickstart` 相同的 JSON |
 | `sudo xrayebator-update` | 按 `.current_branch` 记录的分支更新 **Xrayebator 本身** |
 | `sudo xrayebator-update main` | 强制从 `main` 分支更新 Xrayebator 本身 |
 | `sudo xrayebator-uninstall` | 移除服务与配置 |

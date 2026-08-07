@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import os
+import sys
 
 import pytest
 
-from xrayebator_gui.core.subscription import parse_link
 from xrayebator_gui.core.routing import RoutingProfile
+from xrayebator_gui.core.subscription import parse_link
 from xrayebator_gui.helper.state import RouteStateStore, StateError
 
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX-only owner/permission semantics"
+)
 
 ROUTE = (
     "vless://11111111-1111-1111-1111-111111111111@vpn.example.com:443"

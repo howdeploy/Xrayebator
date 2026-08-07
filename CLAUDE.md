@@ -4,17 +4,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Xrayebator — automated Xray Reality VPN manager for bypassing DPI censorship in Russia. Single Bash script (`xrayebator`, ~2500 lines) that turns a VPS into a managed VPN server with interactive terminal UI. Deployed to Debian 10+/Ubuntu 20.04+ servers.
+Xrayebator — automated Xray Reality VPN manager for bypassing DPI censorship in Russia. Single Bash script (`xrayebator`, ~9300 lines) that turns a VPS into a managed VPN server with interactive terminal UI. The bash core is compatible with Debian 10+/Ubuntu 20.04+ (the installer does not gate on OS version, and the script itself runs anywhere with systemd + the listed dependencies). The **desktop GUI** (`gui/`, PySide6) intentionally supports a narrower set — Debian 12/13 and Ubuntu 22.04/24.04 only.
 
-## Validation Commands
+## Validation
 
+There IS automated test coverage (despite what older notes said):
+- **`validation/`** — 16 bash test scripts that exercise migrations, vless URL generation, transaction safety, dedup, firewall and menu numbering. They run on the host (`bash validation/test-*.sh`); several require `jq`, `uuidgen`, `rg` and a Linux-flavoured environment, so they do NOT pass on a bare Windows Git Bash installation.
+- **`gui/tests/`** — 15 pytest modules covering SSH, deploy, connection, subscription and TUN runtime. Run with the GUI venv: `gui/.venv/Scripts/python -m pytest gui/tests`.
+- **CI** — `.github/workflows/gui-release.yml` runs `ruff` + `pytest gui/tests` on every push affecting `gui/` and builds Windows/macOS bundles.
+
+Syntax checks used before a commit:
 ```bash
-bash -n xrayebator              # Syntax check (MUST pass before commit)
-bash -n install.sh              # Also check lifecycle scripts
+bash -n xrayebator
+bash -n install.sh
 bash -n update.sh
+bash -n uninstall.sh
 ```
-
-There are no automated tests. Validation is manual: create/delete profiles, check `ufw status`, `systemctl status xray`, test connections from client apps (v2rayNG, Shadowrocket).
 
 ## Architecture
 
@@ -96,7 +101,7 @@ safe_jq_write --arg uuid "$uuid" --argjson port "$port" \
   '(.inbounds[] | select(.port == $port) | .settings.clients) += [{"id": $uuid}]' \
   "$CONFIG_FILE"
 ```
-Do NOT use raw `jq ... > temp && mv temp file` — always go through `safe_jq_write`. Note: `safe_jq_write` is only available inside `xrayebator`; `install.sh` and `update.sh` use inline jq with `-s` size validation.
+Do NOT use raw `jq ... > temp && mv temp file` — always go through `safe_jq_write`. Note: `safe_jq_write` is only available inside `xrayebator`; `install.sh` and `update.sh` use inline jq followed by a `[[ -s ... ]]` non-empty check before `mv`.
 
 **jq argument passing**: Use `--argjson` for numeric ports, `--arg` for strings. Never interpolate variables into jq expressions.
 
@@ -119,6 +124,19 @@ Do NOT use raw `jq ... > temp && mv temp file` — always go through `safe_jq_wr
 - `main` — stable, releases every 1-2 months
 - `dev` — quick fixes, weekly
 - `experimental` — latest features, daily (current working branch)
+
+## CLI commands
+
+Apart from the interactive menu (`sudo xrayebator`), the script exposes subcommands used by the GUI and by automation. They are dispatched at the very bottom of `xrayebator` (the `case "${1:-}" in ... esac` block guarded by `XRAYEBATOR_SOURCED`):
+
+- `xrayebator update [branch]` — re-run the update workflow (main/dev/experimental).
+- `xrayebator quickstart --email <email>` — UI CLI used by the desktop app: installs the subscription server, obtains an IP-TLS cert via certbot, creates the **multi-route** HAPP profile (7 routes, includes `xhttp-legacy`), prints JSON `{"ok":true,...,config_url":"https://IP:8443/sub/<token>"}`.
+- `xrayebator happ-setup` — ensured the HAPP multi-route profile exists, restarts the subscription service, prints the same JSON payload.
+- `xrayebator probe-test` — probe-test candidate SNIs from `sni_list.txt` and print reachability scores.
+
+### HAPP profile vs GUI quickstart — a subtle case
+
+`quickstart` **must** emit a multi-route profile with `xhttp-legacy` (schema_version 3, routes[] with 7 entries) — HAPP expects the multi-route shape. Do NOT create a single-route one-off profile; `_happ_ensure_default_multiroute_profile()` is the single source of truth for the HAPP profile and is shared by both `quickstart` and `happ-setup`. When debugging "HAPP shows no data", check that the profile in `/usr/local/etc/xray/profiles/*.json` has a `routes` array with 7 entries and that `xhttp-legacy` is one of them (PQ route is excluded from the subscription).
 
 ## Language
 

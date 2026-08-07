@@ -9,8 +9,9 @@ from __future__ import annotations
 import json
 import re
 import shlex
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Optional, Protocol
+from typing import Protocol
 
 # Корень репозитория: gui/xrayebator_gui/core/deploy.py -> ../../../
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -48,16 +49,16 @@ class SSHLike(Protocol):
         host: str,
         port: int = 22,
         user: str = "root",
-        password: Optional[str] = None,
-        key_path: Optional[str] = None,
-        sudo_password: Optional[str] = None,
+        password: str | None = None,
+        key_path: str | None = None,
+        sudo_password: str | None = None,
     ) -> None: ...
 
     def run_streaming(
         self,
         command: str,
-        on_line: Optional[Callable[[str], None]] = None,
-        timeout: Optional[float] = 600.0,
+        on_line: Callable[[str], None] | None = None,
+        timeout: float | None = 600.0,
         *,
         privileged: bool = True,
     ) -> int: ...
@@ -107,12 +108,12 @@ class Deployer:
         email: str,
         port: int = 22,
         user: str = "root",
-        password: Optional[str] = None,
-        key_path: Optional[str] = None,
-        sudo_password: Optional[str] = None,
+        password: str | None = None,
+        key_path: str | None = None,
+        sudo_password: str | None = None,
         repo_root: Path = REPO_ROOT,
-        on_step: Optional[Callable[[int, str], None]] = None,
-        on_log: Optional[Callable[[str], None]] = None,
+        on_step: Callable[[int, str], None] | None = None,
+        on_log: Callable[[str], None] | None = None,
     ):
         self.ssh = ssh_client
         self.host = host
@@ -169,7 +170,7 @@ class Deployer:
                 f"Не найдены install.sh/xrayebator в корне репозитория: {self.repo_root}"
             )
 
-        remote_dir: Optional[str] = None
+        remote_dir: str | None = None
         try:
             # 1. Подключение
             self._step(0)
@@ -213,8 +214,10 @@ class Deployer:
                     f"Сервер вернул небезопасный временный путь: {staging_dir!r}"
                 )
             remote_dir = staging_dir
-            self.ssh.upload(install_sh, f"{remote_dir}/install.sh")
-            self.ssh.upload(xrayebator_bin, f"{remote_dir}/xrayebator")
+            # upload_text: bash-скрипты требуют LF (Windows-чекаут даёт CRLF —
+            # сырой sftp.put ломал бы shebang и синтаксис на сервере).
+            self.ssh.upload_text(install_sh, f"{remote_dir}/install.sh")
+            self.ssh.upload_text(xrayebator_bin, f"{remote_dir}/xrayebator")
             self._on_log("Файлы загружены в " + remote_dir)
 
             # 4. install.sh (долго)
@@ -331,7 +334,7 @@ def make_deploy_thread(**kwargs):  # pragma: no cover - тонкая обёрт�
                     **self._kw,
                 )
                 result = deployer.run()
-            except Exception as e:  # noqa: BLE001 - любая ошибка -> сигнал
+            except Exception as e:
                 self.failed.emit(str(e))
                 return
             self.finished_ok.emit(result)

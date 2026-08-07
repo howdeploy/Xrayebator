@@ -7,10 +7,9 @@ Host key policy — TOFU: свой known_hosts в каталоге данных 
 from __future__ import annotations
 
 import shlex
-import socket
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Optional
 
 import paramiko
 from platformdirs import user_data_dir
@@ -46,17 +45,17 @@ class _TOFUHostKeyPolicy(paramiko.client.MissingHostKeyPolicy):
     def missing_host_key(self, client, hostname, key):
         # Сюда попадаем только если ключа нет в known_hosts вообще —
         # paramiko сам бросит RejectKey/SSHException при несовпадении.
-        client._host_keys.add(hostname, key.get_name(), key)  # noqa: SLF001
+        client._host_keys.add(hostname, key.get_name(), key)
         client.save_host_keys(str(self._path))
 
 
 class SSHClient:
     """Тонкая обёртка над paramiko.SSHClient."""
 
-    def __init__(self, known_hosts: Optional[Path] = None):
-        self._client: Optional[paramiko.SSHClient] = None
+    def __init__(self, known_hosts: Path | None = None):
+        self._client: paramiko.SSHClient | None = None
         self._known_hosts = known_hosts or default_known_hosts()
-        self._sudo_password: Optional[str] = None
+        self._sudo_password: str | None = None
         self._need_sudo = False
 
     def connect(
@@ -64,9 +63,9 @@ class SSHClient:
         host: str,
         port: int = 22,
         user: str = "root",
-        password: Optional[str] = None,
-        key_path: Optional[str] = None,
-        sudo_password: Optional[str] = None,
+        password: str | None = None,
+        key_path: str | None = None,
+        sudo_password: str | None = None,
         timeout: float = 15.0,
     ) -> None:
         """Подключиться к серверу. TOFU для host key."""
@@ -107,7 +106,7 @@ class SSHClient:
                     f"Если сервер переустанавливался — удалите запись в {self._known_hosts}"
                 ) from e
             raise SSHError(f"SSH-ошибка при подключении к {host}:{port}: {e}") from e
-        except (socket.timeout, TimeoutError, OSError) as e:
+        except (TimeoutError, OSError) as e:
             client.close()
             raise SSHError(f"Не удалось подключиться к {host}:{port}: {e}") from e
 
@@ -119,7 +118,7 @@ class SSHClient:
     def connected(self) -> bool:
         return self._client is not None
 
-    def _wrap_sudo(self, command: str) -> tuple[str, Optional[str]]:
+    def _wrap_sudo(self, command: str) -> tuple[str, str | None]:
         """Обернуть команду в sudo, если пользователь не root.
 
         Возвращает (команда, пароль_для_stdin или None).
@@ -134,8 +133,8 @@ class SSHClient:
     def run_streaming(
         self,
         command: str,
-        on_line: Optional[Callable[[str], None]] = None,
-        timeout: Optional[float] = 600.0,
+        on_line: Callable[[str], None] | None = None,
+        timeout: float | None = 600.0,
         *,
         privileged: bool = True,
     ) -> int:
@@ -186,7 +185,7 @@ class SSHClient:
     def run(
         self,
         command: str,
-        timeout: Optional[float] = 60.0,
+        timeout: float | None = 60.0,
         *,
         privileged: bool = True,
     ) -> tuple[int, str]:
@@ -207,6 +206,24 @@ class SSHClient:
         sftp = self._client.open_sftp()
         try:
             sftp.put(str(local_path), remote_path)
+        finally:
+            sftp.close()
+
+    def upload_text(self, local_path: str | Path, remote_path: str) -> None:
+        """Загрузить текстовый файл через SFTP с нормализацией переводов строк в LF.
+
+        Bash на сервере не переваривает CRLF: `$'\\r': command not found`, сломанный
+        shebang (`#!/bin/bash\\r`), неработающие heredoc. Рабочая копия git на Windows
+        (core.autocrlf=true) содержит CRLF, поэтому здесь явно стрипаём `\\r`.
+        """
+        if self._client is None:
+            raise SSHError("SSHClient не подключён")
+        data = Path(local_path).read_bytes()
+        data = data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        sftp = self._client.open_sftp()
+        try:
+            with sftp.open(remote_path, "wb") as remote_file:
+                remote_file.write(data)
         finally:
             sftp.close()
 

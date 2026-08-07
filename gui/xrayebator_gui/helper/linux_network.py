@@ -7,7 +7,6 @@ import shutil
 import socket
 import subprocess
 import time
-from typing import Optional
 
 NFT_TABLE = "xrayebator_gui"
 INTERFACE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")
@@ -91,7 +90,7 @@ class LinuxNetwork:
         self,
         args: list[str],
         *,
-        input_text: Optional[str] = None,
+        input_text: str | None = None,
         check: bool = True,
     ) -> subprocess.CompletedProcess:
         try:

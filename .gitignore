@@ -1,9 +1,6 @@
-# локальный контекст ИИ
-AI_CONTEXT.md
+﻿
+# Diagnostic helpers
+GUI-demo.py
+gui-debug.log
+Xrayebator-Windows-x64.exe.sha256
 
-# бэкапы xrayebator
-xrayebator.backup_*
-
-# локальные ресерч-ноты (не публичные, личный контекст)
-RESEARCH_REPORT.md
-ресерч задание.txt

@@ -6,7 +6,6 @@ import json
 import platform
 import socket
 from pathlib import Path
-from typing import Optional
 
 from .connection import ConnectionMode
 from .helper_protocol import (
@@ -45,8 +44,8 @@ class HelperClient:
     def request(
         self,
         action: str,
-        route: Optional[VlessLink] = None,
-        routing_profile: Optional[RoutingProfile] = None,
+        route: VlessLink | None = None,
+        routing_profile: RoutingProfile | None = None,
     ) -> dict:
         if platform.system() != "Linux":
             raise HelperError("Privileged TUN helper пока реализован только для Linux")
@@ -90,7 +89,7 @@ def _read_line(sock: socket.socket) -> bytes:
 class HelperTunBackend:
     """Connection backend that delegates all privileged state to the helper."""
 
-    def __init__(self, client: Optional[HelperClient] = None):
+    def __init__(self, client: HelperClient | None = None):
         self.client = client or HelperClient()
 
     def prepare(
@@ -113,7 +112,7 @@ class HelperTunBackend:
             raise HelperError("HelperTunBackend поддерживает только TUN")
         self.client.request("connect", route, routing_profile)
 
-    def verify(self) -> Optional[str]:
+    def verify(self) -> str | None:
         return self.client.request("verify").get("external_ip")
 
     def replace(

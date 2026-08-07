@@ -33,6 +33,9 @@ All three must pass before a commit.
 | `test-update-xray-core-sync.sh` | Xray-core update synchronisation |
 | `test-vless-url-generation.sh` | `vless://` link generation |
 | `test-installer-network-fallbacks.sh` | Installer network fallbacks |
+| `test-bbr-removal-migration.sh` | Safe removal of the removed BBR/TCP tuning on every path |
+| `test-legacy-udp443-migration.sh` | One-time removal of the legacy UDP/443 block rule |
+| `test-main-menu-numbering.sh` | Interactive menu items number consecutively and match handlers |
 
 > Static tests do not replace a disposable VPS run: profile creation and deletion, config validation,
 > service restarts, rollback and a real client connection.

@@ -33,7 +33,7 @@ form the HAPP subscription path.
 /usr/local/bin/
 ├── xray                          # the core
 ├── xrayebator                    # the manager
-├── subhttp                       # subscription backend
+├── subhttp.sh                       # subscription backend
 ├── xrayebator-update
 └── xrayebator-uninstall
 
@@ -41,7 +41,7 @@ form the HAPP subscription path.
 ├── config.json                   # inbounds, outbounds, routing, DNS
 ├── profiles/<name>.json          # profile metadata: routes, sub_token, SNI, fingerprint
 ├── upstreams/cascade.json        # cascade upstream parameters
-├── backups/<timestamp>/          # config backups taken before every change
+├── backups/config_<timestamp>_<op>.json          # config backups taken before every change
 ├── .private_key / .public_key    # Reality keys, generated once at install time
 ├── .vless_decryption             # PQ keys for xhttp-pq
 ├── .vless_encryption
@@ -95,7 +95,7 @@ Per-client behaviour:
 Every change follows the same path:
 
 ```text
-backup_config ────► /usr/local/etc/xray/backups/<timestamp>
+backup_config ────► /usr/local/etc/xray/backups/config_<timestamp>_<op>.json
 safe_jq_write ────► temp file in the destination directory → validation → atomic rename
 safe_restart_xray ► xray run -test -config → systemctl restart
                     on failure — rollback from the backup, Xray keeps the old config

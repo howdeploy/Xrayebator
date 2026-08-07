@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from enum import Enum
-from typing import Callable, Optional, Protocol
+from typing import Protocol
 
 from .routing import RoutingProfile
 from .subscription import VlessLink
@@ -30,11 +31,11 @@ class ConnectionMode(str, Enum):
 @dataclass(frozen=True)
 class ConnectionSnapshot:
     state: ConnectionState = ConnectionState.DISCONNECTED
-    mode: Optional[ConnectionMode] = None
-    route: Optional[VlessLink] = None
-    routing_profile: Optional[RoutingProfile] = None
-    external_ip: Optional[str] = None
-    error: Optional[str] = None
+    mode: ConnectionMode | None = None
+    route: VlessLink | None = None
+    routing_profile: RoutingProfile | None = None
+    external_ip: str | None = None
+    error: str | None = None
 
 
 class ConnectionError(RuntimeError):
@@ -66,7 +67,7 @@ class TunnelBackend(Protocol):
         routing_profile: RoutingProfile,
     ) -> None: ...
 
-    def verify(self) -> Optional[str]: ...
+    def verify(self) -> str | None: ...
 
     def replace(
         self,

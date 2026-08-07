@@ -32,7 +32,7 @@ Xrayebator/
 /usr/local/bin/
 ├── xray                          # 内核
 ├── xrayebator                    # 管理器
-├── subhttp                       # 订阅后端
+├── subhttp.sh                       # 订阅后端
 ├── xrayebator-update
 └── xrayebator-uninstall
 
@@ -40,7 +40,7 @@ Xrayebator/
 ├── config.json                   # 入站、出站、路由、DNS
 ├── profiles/<name>.json          # 配置档元数据：routes、sub_token、SNI、指纹
 ├── upstreams/cascade.json        # 级联上游参数
-├── backups/<timestamp>/          # 每次改动前的配置备份
+├── backups/config_<timestamp>_<op>.json          # 每次改动前的配置备份
 ├── .private_key / .public_key    # Reality 密钥，安装时生成一次
 ├── .vless_decryption             # xhttp-pq 使用的 PQ 密钥
 ├── .vless_encryption
@@ -93,7 +93,7 @@ https://<域名或IP>/sub/<32位十六进制令牌>
 任何改动都走同一条路径：
 
 ```text
-backup_config ────► /usr/local/etc/xray/backups/<timestamp>
+backup_config ────► /usr/local/etc/xray/backups/config_<timestamp>_<op>.json
 safe_jq_write ────► 在目标目录内写临时文件 → 校验 → 原子重命名
 safe_restart_xray ► xray run -test -config → systemctl restart
                     失败时从备份回滚，Xray 继续使用旧配置

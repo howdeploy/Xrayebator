@@ -6,10 +6,10 @@ import ipaddress
 import json
 import os
 import stat
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from ..core.routing import RoutingProfile
 from ..core.subscription import VlessLink, parse_link
@@ -57,7 +57,11 @@ class RouteStateStore:
             dir=self.path.parent,
         )
         try:
-            os.fchmod(fd, 0o600)
+            # CI-2: os.fchmod POSIX-only; на Windows права задаются через os.chmod.
+            if sys.platform == "win32":
+                os.chmod(tmp_name, 0o600)
+            else:
+                os.fchmod(fd, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
                 fd = -1
                 json.dump(
@@ -78,7 +82,7 @@ class RouteStateStore:
                 os.close(fd)
             Path(tmp_name).unlink(missing_ok=True)
 
-    def load(self) -> Optional[StoredRoute]:
+    def load(self) -> StoredRoute | None:
         if not self.path.exists():
             return None
         info = self.path.lstat()

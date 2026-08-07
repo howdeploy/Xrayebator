@@ -41,6 +41,82 @@ TCP_CC_ACTIVE_FILE="/proc/sys/net/ipv4/tcp_congestion_control"
 TCP_CC_AVAILABLE_FILE="/proc/sys/net/ipv4/tcp_available_congestion_control"
 HOST_TUNING_MIGRATION_MARKER="/usr/local/etc/xray/.host_tcp_tuning_removed_v3"
 SYSCTL_SCAN_PATHS="/etc/sysctl.conf:/etc/sysctl.d:/usr/lib/sysctl.d:/lib/sysctl.d"
+LOCK_FILE="${LOCK_FILE:-/usr/local/etc/xray/.xrayebator.lock}"
+# P2-fix: пути nginx-сайтов переопределяемы для тестов реальной последовательности
+# (quickstart rollback). В проде — системные каталоги; в функциональном тесте —
+# временная ФС. Совпадает с существующим паттерном CONFIG_FILE/PROFILES_DIR override.
+NGINX_SITES_AVAILABLE="${NGINX_SITES_AVAILABLE:-/etc/nginx/sites-available}"
+NGINX_SITES_ENABLED="${NGINX_SITES_ENABLED:-/etc/nginx/sites-enabled}"
+# P2-fix: транзакция quickstart-nginx вынесена на уровень файла (не local внутри
+# quickstart_command), чтобы её можно было реально исполнить в функциональном тесте и
+# она была единым источником истины для rollback. Состояние не персистентно — только
+# для текущего процесса quickstart.
+QS_NGINX_MODIFIED=0
+QS_VHOST_BACKUP="$NGINX_SITES_AVAILABLE/xrayebator-sub.xrayebator.bak"
+# Восстанавливает исходное состояние nginx после ANY мутации quickstart: прежний vhost
+# xrayebator-sub (если был), default-сайт (если удаляли), убирает наш vhost и перегружает
+# nginx. Обёрнуто в backreference: работает и при отсутствии default-сайта.
+_qs_nginx_rollback() {
+  if [[ "$QS_NGINX_MODIFIED" != "true" ]]; then
+    return 0
+  fi
+  rm -f "$NGINX_SITES_ENABLED/xrayebator-sub" "$NGINX_SITES_AVAILABLE/xrayebator-sub"
+  if [[ -e "$QS_VHOST_BACKUP" ]]; then
+    cp -a "$QS_VHOST_BACKUP" "$NGINX_SITES_AVAILABLE/xrayebator-sub"
+    ln -sf "$NGINX_SITES_AVAILABLE/xrayebator-sub" "$NGINX_SITES_ENABLED/xrayebator-sub"
+    rm -f "$QS_VHOST_BACKUP"
+  fi
+  if [[ -e "$NGINX_SITES_ENABLED/default.xrayebator.bak" && ! -e "$NGINX_SITES_ENABLED/default" ]]; then
+    cp -a "$NGINX_SITES_ENABLED/default.xrayebator.bak" "$NGINX_SITES_ENABLED/default"
+  fi
+  rm -f "$NGINX_SITES_ENABLED/default.xrayebator.bak"
+  if command -v nginx >/dev/null 2>&1 && nginx -t >/dev/null 2>&1; then
+    systemctl reload nginx >/dev/null 2>&1 || true
+  fi
+  return 0
+}
+# A11-fix: порты, выбранные в рамках одного процесса (например, 7 маршрутов
+# multi-route профиля), не должны повторяться. Массив живёт только в процессе bash.
+XRAYEBATOR_RESERVED_PORTS=()
+
+# ═══ Файловая блокировка (B5-fix) ═══
+# Сериализует мутации config.json между независимыми процессами (GUI + CLI + cron).
+# В средах без flock (Git Bash/тесты) — безопасный no-op.
+_lock_acquire() {
+  if ! command -v flock >/dev/null 2>&1; then return 0; fi
+  # Явно открываем fd, чтобы flock удержал блокировку весь срок жизни функции.
+  exec {XB_LOCK_FD}>"$LOCK_FILE" 2>/dev/null || return 0
+  flock "$XB_LOCK_FD" 2>/dev/null || return 0
+  return 0
+}
+_lock_release() {
+  if [[ -n "${XB_LOCK_FD:-}" ]]; then
+    flock -u "$XB_LOCK_FD" 2>/dev/null
+    exec {XB_LOCK_FD}>&- 2>/dev/null
+    XB_LOCK_FD=""
+  fi
+  return 0
+}
+
+# ═══ Детекция IPv6-only VPS (shared helper) ═══
+# Миррорит install.sh/update.sh helpers.
+_detect_ipv6_only() {
+  if ip -4 addr show scope global 2>/dev/null | grep -q 'inet '; then
+    return 1
+  fi
+  if ip route get 1.1.1.1 2>/dev/null | grep -q .; then
+    return 1
+  fi
+  return 0
+}
+
+_ipv6_query_strategy() {
+  if _detect_ipv6_only; then
+    echo "UseIP"
+  else
+    echo "UseIPv4"
+  fi
+}
 
 # Хардкод-список SNI из первого shipped sni_list.txt. Используется миграциями:
 # всё, чего нет в этом наборе, считается user-custom и не трогается.
@@ -108,12 +184,41 @@ fi
 
 # Получение внешнего IP
 get_server_ip() {
-  local ip=$(curl -s4 --connect-timeout 5 --max-time 10 ifconfig.me 2>/dev/null || \
-             curl -s4 --connect-timeout 5 --max-time 10 icanhazip.com 2>/dev/null)
+  local ip=""
+  # На IPv6-only VPS нет маршрута до IPv4-сервисов определения — тогда запрашиваем IPv6.
+  if _detect_ipv6_only; then
+    ip=$(curl -s6 --connect-timeout 5 --max-time 10 ifconfig.me 2>/dev/null || \
+         curl -s6 --connect-timeout 5 --max-time 10 icanhazip.com 2>/dev/null)
+  else
+    ip=$(curl -s4 --connect-timeout 5 --max-time 10 ifconfig.me 2>/dev/null || \
+         curl -s4 --connect-timeout 5 --max-time 10 icanhazip.com 2>/dev/null)
+  fi
   if [[ -z "$ip" ]]; then
-    ip=$(hostname -I | awk '{print $1}')
+    if _detect_ipv6_only; then
+      # BASH-1-fix: bare print печатал всю строку, exit вне условия → мусор.
+      # Правильный синтаксис: if(match) { print $i; exit }.
+      ip=$(hostname -I | awk '{for(i=1;i<=NF;i++) if ($i ~ /:/) { print $i; exit } }' | head -1)
+    else
+      ip=$(hostname -I | awk '{print $1}')
+    fi
   fi
   echo "$ip"
+}
+
+# Заключает IPv6-адрес в квадратные скобки для использования в URL/hostname
+# (nginx server_name, https://[addr]:port). Для IPv4 возвращает как есть.
+_ip_bracket() {
+  local addr="$1"
+  if [[ "$addr" == *":"* ]]; then
+    # Не брекетить повторно
+    if [[ "$addr" == "["* ]]; then
+      echo "$addr"
+    else
+      echo "[${addr}]"
+    fi
+  else
+    echo "$addr"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════
@@ -185,8 +290,18 @@ find_available_random_port() {
 
   while [[ $attempts -lt 200 ]]; do
     port=$((min_port + ((RANDOM << 15 | RANDOM) % (max_port - min_port + 1))))
-    # Проверяем и конфиг Xray, и реально слушающие порты
-    if ! jq -e --argjson port "$port" '.inbounds[] | select(.port == $port)' \
+    # Проверяем и конфиг Xray, и реально слушающие порты, и уже зарезервированные
+    # в этом процессе. ВНИМАНИЕ: назначение порта происходит в КОПИИ массива
+    # XRAYEBATOR_RESERVED_PORTS (этот вызов часто идёт через командную подстановку,
+    # т.е. в subshell). По-настоящему резервирует порт в родительском shell вызывающий
+    # код через reserve_port() — иначе массив (изменённый в subshell) теряется.
+    local reserved=0
+    local rp
+    for rp in "${XRAYEBATOR_RESERVED_PORTS[@]:-}"; do
+      if [[ "$rp" == "$port" ]]; then reserved=1; break; fi
+    done
+    if [[ "$reserved" -eq 0 ]] && \
+       ! jq -e --argjson port "$port" '.inbounds[] | select(.port == $port)' \
       "$CONFIG_FILE" >/dev/null 2>&1 && \
       ! ss -tuln 2>/dev/null | grep -q ":${port} "; then
       echo "$port"
@@ -197,6 +312,22 @@ find_available_random_port() {
 
   echo -e "${RED}✗ Не удалось подобрать свободный случайный порт 30000-60000${NC}" >&2
   return 1
+}
+
+# P2-fix: резервирует порт в РОДИТЕЛЬСКОМ shell вызывающего. Причина: find_available_*,
+# вызванный через `port=$(...)`, работает в subshell, и изменение глобального массива
+# XRAYEBATOR_RESERVED_PORTS в нём ТЕРЯЕТСЯ. Вызывающий код после получения порта обязан
+# вызвать reserve_port "$port" в своём shell, иначе соседние маршруты могут повторно
+# получить тот же порт. Args: $1=port (целое, иначе игнор).
+reserve_port() {
+  local port=${1:-}
+  [[ "$port" =~ ^[0-9]+$ ]] || return 0
+  local existing=0
+  local _rp
+  for _rp in "${XRAYEBATOR_RESERVED_PORTS[@]:-}"; do
+    [[ "$_rp" == "$port" ]] && existing=1
+  done
+  [[ "$existing" -eq 0 ]] && XRAYEBATOR_RESERVED_PORTS+=("$port") || true
 }
 
 generate_transport_token() {
@@ -401,6 +532,9 @@ _generate_vless_url_pure() {
   local server_ip clean_public_key
   server_ip=$(_connection_server_address)
   [[ -n "$server_ip" ]] || return 1
+  # A5-fix: IPv6-адрес в vless:// обязан быть в [скобках] (vless://uuid@[addr]:port).
+  # Иначе клиенты (v2rayNG, HAPP, Shadowrocket) не распарсят URL.
+  server_ip=$(_ip_bracket "$server_ip")
 
   # Transport metadata (grpc service name / xhttp path) и url-encoded path
   local transport_metadata grpc_service_name xhttp_path encoded_xhttp_path
@@ -592,12 +726,64 @@ _subscription_is_local_only() {
   [[ "$domain" == "127.0.0.1" || "$domain" == "localhost" || "$port" == "8080" ]]
 }
 
+# Пишет маркеры .subscription_* atomically и выставляет владельца xray.
+# Args: $1=port, $2=domain, $3=server_addr, $4=mode (ip_tls|domain_tls|local_only)
+_subscription_write_markers() {
+  local port=$1 domain=$2 addr=$3 mode=$4
+  printf '%s' "$port" > /usr/local/etc/xray/.subscription_port
+  printf '%s' "$domain" > /usr/local/etc/xray/.subscription_domain
+  printf '%s' "$addr" > /usr/local/etc/xray/.subscription_server_addr
+  printf '%s' "$mode" > /usr/local/etc/xray/.subscription_mode
+  chown root:root \
+    /usr/local/etc/xray/.subscription_port \
+    /usr/local/etc/xray/.subscription_domain \
+    /usr/local/etc/xray/.subscription_server_addr \
+    /usr/local/etc/xray/.subscription_mode 2>/dev/null || true
+}
+
+# Публичный TLS endpoint подписки реально подтверждён (P1-happ-fix)?
+# Проверяем, что наш nginx vhost xrayebator-sub слушает 8443 ssl И сертификат для
+# сервера выпущен и действует. Используется happ_setup_command вместо фабрикации
+# маркеров: если endpoint не подтверждён — happ-setup вернёт ошибку, а не мёртвый URL.
+# Args: $1=server_addr (IPv4/hostname)
+_subscription_public_tls_endpoint_verified() {
+  local server_addr="${1:-}"
+  [[ -z "$server_addr" ]] && return 1
+  # 1) Наш nginx vhost с TLS на 8443 существует.
+  local vhost="/etc/nginx/sites-available/xrayebator-sub"
+  if [[ ! -f "$vhost" ]] || ! grep -q "listen 8443 ssl" "$vhost" 2>/dev/null; then
+    return 1
+  fi
+  # 2) Сертификат для адреса выпущен и файлы на месте.
+  local cert_dir="/etc/letsencrypt/live/${server_addr}"
+  if [[ ! -f "$cert_dir/fullchain.pem" || ! -f "$cert_dir/privkey.pem" ]]; then
+    return 1
+  fi
+  # 3) nginx реально слушает 8443 (не просто конфиг).
+  if command -v ss >/dev/null 2>&1; then
+    if ! ss -ltn 2>/dev/null | grep -q ':8443'; then
+      return 1
+    fi
+  fi
+  # 4) Сертификат не истёк (openssl доступен).
+  if command -v openssl >/dev/null 2>&1; then
+    local end
+    end=$(openssl x509 -enddate -noout -in "$cert_dir/fullchain.pem" 2>/dev/null | sed 's/notAfter=//')
+    local now_epoch end_epoch
+    now_epoch=$(date -u +%s)
+    end_epoch=$(date -u -d "$end" +%s 2>/dev/null || echo 0)
+    if [[ -z "$end_epoch" || "$end_epoch" -eq 0 || "$end_epoch" -le "$now_epoch" ]]; then
+      return 1
+    fi
+  fi
+  return 0
+}
+
 _connection_server_address() {
   if [[ -n "${XRAYEBATOR_SERVER_ADDR_OVERRIDE:-}" ]]; then
     echo "$XRAYEBATOR_SERVER_ADDR_OVERRIDE"
     return 0
   fi
-
   local selfsteal_domain mode domain saved_addr
   selfsteal_domain=$(_selfsteal_domain_value 2>/dev/null || true)
   if [[ -n "$selfsteal_domain" && "$selfsteal_domain" != "127.0.0.1" && "$selfsteal_domain" != "localhost" ]]; then
@@ -667,7 +853,11 @@ _inbound_public_key_for_port() {
 
 _certbot_supports_ip_address() {
   local certbot_bin="${1:-certbot}"
-  "$certbot_bin" --help all 2>/dev/null | grep -q -- '--ip-address'
+  # Для IP-сертификатов нужен certbot 5.4+, который поддерживает И --ip-address,
+  # И --preferred-profile (shortlived). Проверяем оба флага, иначе старый apt-certbot
+  # упадёт с "unrecognized arguments" уже после установки nginx.
+  "$certbot_bin" --help all 2>/dev/null | grep -q -- '--ip-address' \
+    && "$certbot_bin" --help all 2>/dev/null | grep -q -- '--preferred-profile'
 }
 
 _ensure_certbot_ip_tls() {
@@ -724,6 +914,76 @@ _ensure_certbot_ip_tls() {
   return 1
 }
 
+# Устанавливает systemd timer, который каждые 12 часов пытается продлить shortlived
+# IP-сертификаты (~6 дней жизни) и перезагружает nginx при успехе.
+# Args: $1=certbot_bin, $2=cert_name, $3=webroot
+_install_ip_cert_renew_timer() {
+  local certbot_bin=$1 cert_name=$2 webroot=$3
+  local unit="/etc/systemd/system/xrayebator-ip-renew.service"
+  local timer="/etc/systemd/system/xrayebator-ip-renew.timer"
+
+  cat > "$unit" << RENEWSVCEOF
+[Unit]
+Description=Xrayebator: renew shortlived IP TLS certificate
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=${certbot_bin} renew --cert-name ${cert_name} --preferred-profile shortlived --webroot -w ${webroot}
+ExecStartPost=/bin/systemctl reload nginx
+RENEWSVCEOF
+
+  cat > "$timer" << RENEWTIMEREOF
+[Unit]
+Description=Xrayebator: hourly shortlived IP TLS renewal attempt
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=12h
+# A10-fix: Persistent=true — отработать пропущенные срабатывания после простоя/выключения VPS.
+# Иначе long-lived серт (~6 дней) тихо умирает, если машина не имела wake-up на своём расписании.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+RENEWTIMEREOF
+
+  chmod 644 "$unit" "$timer"
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  systemctl enable --now "$(basename "$timer")" >/dev/null 2>&1 || true
+}
+
+# Проверяет активность renew timer для ip_tls подписки (для статус-строки TUI).
+_ip_renew_timer_active() {
+  systemctl is-active xrayebator-ip-renew.timer >/dev/null 2>&1
+}
+
+# ═══════════════════════════════════════════════════════════
+# Certbot ownership manifest (P0-privilege-boundary fix)
+# ═══════════════════════════════════════════════════════════
+# Xrayebator регистрирует в root-owned манифесте /usr/local/etc/xray/.certbot_owned
+# каждый сертификат, который ОН создал. uninstall.sh удаляет ТОЛЬКО перечисленные
+# имена — чужие сертификаты на VPS (сайты, почта, другие сервисы) не затрагиваются.
+# Манифест root:root 644 — подделать его может только root, поэтому содержимое
+# доверенное. Вызывать СРАЗУ после успешного certbot certonly.
+# Args: $1=cert_name (без слешей — валидируется в uninstall)
+_certbot_register() {
+  local cert_name="${1:-}"
+  [[ -z "$cert_name" ]] && return 0
+  local manifest="${CERTBOT_MANIFEST:-/usr/local/etc/xray/.certbot_owned}"
+  # Идемпотентность: не дублируем имя при повторных запусках quickstart.
+  if [[ ! -f "$manifest" ]]; then
+    printf '%s\n' "$cert_name" > "$manifest"
+  else
+    if ! grep -qxF "$cert_name" "$manifest" 2>/dev/null; then
+      printf '%s\n' "$cert_name" >> "$manifest"
+    fi
+  fi
+  chmod 644 "$manifest" 2>/dev/null || true
+  chown root:root "$manifest" 2>/dev/null || true
+}
+
 write_profile_transport_metadata() {
   local profile_file=$1
   local grpc_service_name=$2
@@ -771,6 +1031,8 @@ safe_jq_write() {
     return 1
   fi
 
+  _lock_acquire
+
   # Последний аргумент — исходный файл (и он же целевой при in-place)
   local src_file="${args[$((nargs-1))]}"
   local dst_file="$src_file"
@@ -782,16 +1044,19 @@ safe_jq_write() {
   orig_owner=$(stat -c %U:%G "$src_file" 2>/dev/null || echo "root:root")
 
   local tmp=$(mktemp)
+  local result=1
   if jq "${jq_args[@]}" "$src_file" > "$tmp" 2>/dev/null && [[ -s "$tmp" ]]; then
     mv "$tmp" "$dst_file"
     chmod "$orig_mode" "$dst_file" 2>/dev/null
     chown "$orig_owner" "$dst_file" 2>/dev/null
-    return 0
+    result=0
   else
     echo -e "${RED}  ✗ Ошибка jq — файл НЕ изменён: $dst_file${NC}" >&2
     rm -f "$tmp"
-    return 1
   fi
+
+  _lock_release
+  return $result
 }
 
 # Создание бэкапа config.json перед мутацией.
@@ -809,19 +1074,23 @@ backup_config() {
   [[ -n "$result_var" ]] && printf -v "$result_var" '%s' ""
 
   safe_operation_name=$(printf '%s' "$operation_name" | tr -c 'a-zA-Z0-9_.-' '_')
+  _lock_acquire
   mkdir -p "$backup_dir"
   chmod 700 "$backup_dir" 2>/dev/null
-  chown xray:xray "$backup_dir" 2>/dev/null
+  chown root:root "$backup_dir" 2>/dev/null
   local backup_file="$backup_dir/config_$(date +%Y%m%d_%H%M%S_%N)_${safe_operation_name}.json"
+  local result=1
   if ! cp "$CONFIG_FILE" "$backup_file"; then
     echo -e "${RED}  ✗ Не удалось создать бэкап config.json: $backup_file${NC}"
-    return 1
+  else
+    chmod 600 "$backup_file" 2>/dev/null
+    chown root:root "$backup_file" 2>/dev/null
+    [[ -n "$result_var" ]] && printf -v "$result_var" '%s' "$backup_file"
+    echo -e "${CYAN}  -> Бэкап конфига: $(basename "$backup_file")${NC}"
+    result=0
   fi
-  chmod 600 "$backup_file" 2>/dev/null
-  chown xray:xray "$backup_file" 2>/dev/null
-  [[ -n "$result_var" ]] && printf -v "$result_var" '%s' "$backup_file"
-  echo -e "${CYAN}  -> Бэкап конфига: $(basename "$backup_file")${NC}"
-  return 0
+  _lock_release
+  return $result
 }
 
 _restore_config_backup() {
@@ -835,8 +1104,11 @@ _restore_config_backup() {
     echo -e "${RED}  ✗ Не удалось восстановить config.json из $(basename "$backup_file")${NC}"
     return 1
   fi
-  chmod 600 "$CONFIG_FILE" 2>/dev/null
-  chown xray:xray "$CONFIG_FILE" 2>/dev/null
+  # P2-rollback-fix: live config обязан быть читаем сервисом (User=xray). root:root 0600
+  # после rollback делал конфиг недоступным — xray не стартовал. Backup остаётся 600
+  # root:root (backup_config), live — root:xray 0640 (группа читает, пишет только root).
+  chown root:xray "$CONFIG_FILE" 2>/dev/null || true
+  chmod 640 "$CONFIG_FILE" 2>/dev/null || true
   echo -e "${GREEN}  ✓ Конфиг восстановлен из: $(basename "$backup_file")${NC}"
   return 0
 }
@@ -913,11 +1185,47 @@ ensure_xray_runtime_user() {
   return 0
 }
 
-# Восстановление прав файлов для пользователя xray
+# Восстановление прав (privilege boundary, P0-fix).
+# Конфигурационные каталоги, state markers и root-исполняемые скрипты принадлежат
+# root:root. Сервис xray получает ТОЛЬКО чтение (644/755): config.json, профили,
+# keys (public/encryption — нужны subhttp для генерации URL), announce/happ_defaults.
+# Запись в /usr/local/etc/xray разрешена только root (управление через sudo).
+# Приватные ключи (.private_key, .vless_decryption) — 600 root:root.
+# НЕ выполнять chown -R xray:xray: владелец каталога может подменить root-скрипты
+# (update.sh/uninstall.sh) и .install_step_* markers → privilege escalation.
 fix_xray_permissions() {
   ensure_xray_runtime_user >/dev/null 2>&1 || true
-  chown -R xray:xray /usr/local/etc/xray/ 2>/dev/null || true
-  chmod 600 /usr/local/etc/xray/.private_key 2>/dev/null || true
+  local base="/usr/local/etc/xray"
+  # 1. Корень и каталоги — root:root 755 (xray читает, но не пишет).
+  chown root:root "$base" 2>/dev/null || true
+  chmod 755 "$base" 2>/dev/null || true
+  find "$base" -maxdepth 1 -type d -exec chown root:root {} + 2>/dev/null || true
+  find "$base" -maxdepth 1 -type d -exec chmod 755 {} + 2>/dev/null || true
+  find "$base"/profiles "$base"/backups "$base"/data "$base"/scripts "$base"/upstreams -maxdepth 1 -type d -exec chmod 755 {} + 2>/dev/null || true
+  # 2. Приватные ключи — 600 root:root.
+  chown root:root "$base/.private_key" "$base/.vless_decryption" 2>/dev/null || true
+  chmod 600 "$base/.private_key" "$base/.vless_decryption" 2>/dev/null || true
+  # 3. Публичные ключи — 644 root:root (читаются xray/subhttp для VLESS URL).
+  chown root:root "$base/.public_key" "$base/.vless_encryption" 2>/dev/null || true
+  chmod 644 "$base/.public_key" "$base/.vless_encryption" 2>/dev/null || true
+  # 4. Конфигурация и файлы, которые xray должен ЧИТАТЬ: 644 root:root.
+  chown root:root "$base/config.json" 2>/dev/null || true
+  chmod 644 "$base/config.json" 2>/dev/null || true
+  chown root:root "$base"/profiles/*.json 2>/dev/null || true
+  chmod 644 "$base"/profiles/*.json 2>/dev/null || true
+  chown root:root "$base"/.subscription_port "$base"/.subscription_domain "$base"/.subscription_server_addr "$base"/.subscription_mode "$base"/.happ_defaults.env "$base"/.subscription_installed "$base"/.happ_routing.json "$base"/announce.txt "$base"/.current_branch "$base"/.config_optimized "$base"/.certbot_owned 2>/dev/null || true
+  chmod 644 "$base"/.subscription_port "$base"/.subscription_domain "$base"/.subscription_server_addr "$base"/.subscription_mode "$base"/.happ_defaults.env "$base"/.subscription_installed "$base"/.happ_routing.json "$base"/announce.txt "$base"/.current_branch "$base"/.config_optimized "$base"/.certbot_owned 2>/dev/null || true
+  # 5. Прочие state markers — root:root 644 (включая .install_step_*_ok и миграционные).
+  find "$base" -maxdepth 1 -type f -name '.*' ! -name '.private_key' ! -name '.vless_decryption' ! -name '.public_key' ! -name '.vless_encryption' \
+    -exec chown root:root {} + 2>/dev/null || true
+  find "$base" -maxdepth 1 -type f -name '.*' ! -name '.private_key' ! -name '.vless_decryption' ! -name '.public_key' ! -name '.vless_encryption' \
+    -exec chmod 644 {} + 2>/dev/null || true
+  # 6. Root-исполняемые скрипты: root:root 755 (не подменяемы xray).
+  chown root:root "$base"/scripts/*.sh /usr/local/bin/xrayebator /usr/local/bin/subhttp.sh /usr/local/bin/xrayebator-update /usr/local/bin/xrayebator-uninstall 2>/dev/null || true
+  chmod 755 "$base"/scripts/*.sh /usr/local/bin/xrayebator /usr/local/bin/subhttp.sh /usr/local/bin/xrayebator-update /usr/local/bin/xrayebator-uninstall 2>/dev/null || true
+  # 7. Лог-каталог xray — xray:xray (сервис пишет журнал туда).
+  # /var/log/xray — единственное место, где xray пишет; остальное root:root (P0-fix).
+  chown xray:xray /var/log/xray 2>/dev/null || true
 }
 
 ensure_xray_service_unit() {
@@ -988,7 +1296,7 @@ safe_restart_xray() {
   local test_output
   test_output=$("$XRAY_BIN" run -test -format json -config "$CONFIG_FILE" 2>&1)
 
-  if ! grep -qx "Configuration OK." <<< "$test_output"; then
+  if ! grep -q "Configuration OK" <<< "$test_output"; then
     echo -e "${RED}  ✗ Конфиг не прошёл валидацию -- Xray НЕ перезапущен${NC}"
     echo -e "${YELLOW}  Ошибка: ${test_output}${NC}"
 
@@ -1062,6 +1370,8 @@ open_firewall_port() {
   echo -e "${CYAN}  → Открываю порт ${port}/${protocol}...${NC}"
   if ufw allow "${port}/${protocol}" >/dev/null 2>&1; then
     echo -e "${GREEN}  ✓ Порт ${port}/${protocol} открыт${NC}"
+    # P2-fix: фиксируем в root-owned манифесте, что правило открыл именно Xrayebator.
+    _ufw_register_port "$port" "$protocol"
     ufw reload >/dev/null 2>&1
     return 0
   else
@@ -1075,7 +1385,6 @@ open_firewall_port() {
 close_firewall_port() {
   local port=$1
   local protocol=${2:-tcp}
-
   # Check if port is still used by any inbound
   local port_in_use=$(jq -r --argjson port "$port" \
     '.inbounds[] | select(.port == $port) | .tag' \
@@ -1100,6 +1409,26 @@ close_firewall_port() {
   fi
 
   return 0
+}
+
+# Реестр UFW-правил, добавленных Xrayebator (root-owned, /usr/local/etc/xray/.ufw_owned).
+# uninstall.sh удаляет ТОЛЬКО порты из этого манифеста (плюс динамические порты из
+# реального config.json) — чужие правила 443/8443/8080 и т.п. НЕ затрагиваются.
+# Формат строки: "<port>/<proto>". Вызывать сразу после успешного ufw allow.
+# Args: $1=port, $2=protocol (default: tcp)
+_ufw_register_port() {
+  local port=$1
+  local protocol=${2:-tcp}
+  [[ "$port" =~ ^[0-9]+$ ]] || return 0
+  local manifest="${UFW_OWNED_MANIFEST:-/usr/local/etc/xray/.ufw_owned}"
+  local entry="${port}/${protocol}"
+  if [[ ! -f "$manifest" ]]; then
+    printf '%s\n' "$entry" > "$manifest"
+  else
+    grep -qxF "$entry" "$manifest" 2>/dev/null || printf '%s\n' "$entry" >> "$manifest"
+  fi
+  chmod 644 "$manifest" 2>/dev/null || true
+  chown root:root "$manifest" 2>/dev/null || true
 }
 
 # Check whether a profile has route array
@@ -1456,7 +1785,7 @@ migrate_remove_legacy_tcp_tuning_v3() {
     echo -e "${RED}  ✗ Не удалось записать migration marker: $marker${NC}"
     return 1
   fi
-  chown xray:xray "$marker" 2>/dev/null || true
+  chown root:root "$marker" 2>/dev/null || true
   chmod 0640 "$marker" 2>/dev/null || true
   echo -e "${GREEN}  ✓ Legacy BBR/TCP tuning полностью отключён${NC}"
   return 0
@@ -1527,7 +1856,7 @@ run_migration() {
           echo -e "${RED}  ✗ Migration applied, но marker не записан: $marker${NC}"
           return 1
         fi
-        chown xray:xray "$marker" 2>/dev/null || true
+        chown root:root "$marker" 2>/dev/null || true
         _discard_profiles_snapshot "$profiles_snapshot"
         echo -e "${GREEN}  ✓ Migration applied: ${marker_basename}${NC}"
         return 0
@@ -1547,7 +1876,7 @@ run_migration() {
         echo -e "${RED}  ✗ Не удалось записать migration marker: $marker${NC}"
         return 1
       fi
-      chown xray:xray "$marker" 2>/dev/null || true
+      chown root:root "$marker" 2>/dev/null || true
       _discard_profiles_snapshot "$profiles_snapshot"
       echo -e "${CYAN}  ✓ Nothing to migrate: ${marker_basename}${NC}"
       return 0
@@ -1677,7 +2006,7 @@ migrate_client_fingerprint_state_2026() {
     echo -e "${RED}  ✗ Не удалось записать migration marker: $marker${NC}"
     return 1
   fi
-  chown xray:xray "$marker" 2>/dev/null || true
+  chown root:root "$marker" 2>/dev/null || true
   _discard_profiles_snapshot "$profiles_snapshot"
   return 0
 }
@@ -2122,20 +2451,37 @@ migrate_config_optimization() {
   # backup_config удалён: централизован в run_migration (Phase 4 refactor, REQ-D07)
 
   local changed=false
+  local query_strategy
+  query_strategy=$(_ipv6_query_strategy)
 
   local current_dns=$(jq -r '.dns.servers[0] // ""' "$CONFIG_FILE" 2>/dev/null)
+  # BASH-5-fix: fallback DNS должен учитывать IPv6-only — иначе 1.1.1.1 unreachable.
+  # dns.google поддерживает и A, и AAAA; 1.1.1.1 — только A.
+  local doh_fallback
+  doh_fallback=$(if _detect_ipv6_only; then echo "https+local://dns.google/dns-query"; else echo "https+local://1.1.1.1/dns-query"; fi)
   if [[ "$current_dns" == "127.0.0.1" ]]; then
     echo -e "${GREEN}  ✓ DNS -> 127.0.0.1 (AdGuard Home) сохранён${NC}"
-  elif [[ "$current_dns" == "https+local://1.1.1.1/dns-query" ]]; then
-    echo -e "${GREEN}  ✓ DNS уже оптимизирован${NC}"
+  elif [[ "$current_dns" == "https+local://1.1.1.1/dns-query" || "$current_dns" == "https+local://dns.google/dns-query" ]]; then
+    # Нормализуем под IPv6-safe fallback, если нужно
+    if [[ "$current_dns" == "https+local://1.1.1.1/dns-query" ]] && _detect_ipv6_only; then
+      echo -e "${YELLOW}  → DNS: 1.1.1.1 → dns.google (IPv6-only)${NC}"
+      if safe_jq_write --arg qs "$query_strategy" --arg doh "$doh_fallback" '.dns.servers = [$doh, "localhost"] | .dns.queryStrategy = $qs' "$CONFIG_FILE"; then
+        echo -e "${GREEN}  ✓ DNS переведён на dns.google${NC}"
+        changed=true
+      else
+        echo -e "${RED}  ✗ Ошибка миграции DNS${NC}"
+      fi
+    else
+      echo -e "${GREEN}  ✓ DNS уже оптимизирован${NC}"
+    fi
   else
     echo -e "${YELLOW}  → DNS: миграция на DoH Local${NC}"
-    if safe_jq_write '.dns = {
+    if safe_jq_write --arg qs "$query_strategy" --arg doh "$doh_fallback" '.dns = {
       "servers": [
-        "https+local://1.1.1.1/dns-query",
+        $doh,
         "localhost"
       ],
-      "queryStrategy": "UseIPv4",
+      "queryStrategy": $qs,
       "disableCache": false
     }' "$CONFIG_FILE"; then
       echo -e "${GREEN}  ✓ DNS переведён на DoH Local${NC}"
@@ -2146,14 +2492,14 @@ migrate_config_optimization() {
   fi
 
   local freedom_strategy=$(jq -r '.outbounds[] | select(.protocol == "freedom") | .settings.domainStrategy // "none"' "$CONFIG_FILE" 2>/dev/null)
-  if [[ "$freedom_strategy" == "UseIPv4" ]]; then
-    echo -e "${GREEN}  ✓ Freedom уже использует UseIPv4${NC}"
+  if [[ "$freedom_strategy" == "$query_strategy" ]]; then
+    echo -e "${GREEN}  ✓ Freedom уже использует $query_strategy${NC}"
   else
-    echo -e "${YELLOW}  → Freedom: добавляю UseIPv4${NC}"
-    if safe_jq_write '
-      (.outbounds[] | select(.protocol == "freedom")).settings.domainStrategy = "UseIPv4"
+    echo -e "${YELLOW}  → Freedom: добавляю $query_strategy${NC}"
+    if safe_jq_write --arg qs "$query_strategy" '
+      (.outbounds[] | select(.protocol == "freedom")).settings.domainStrategy = $qs
     ' "$CONFIG_FILE"; then
-      echo -e "${GREEN}  ✓ Freedom переведён на UseIPv4${NC}"
+      echo -e "${GREEN}  ✓ Freedom переведён на $query_strategy${NC}"
       changed=true
     else
       echo -e "${RED}  ✗ Ошибка обновления Freedom outbound${NC}"
@@ -2444,7 +2790,7 @@ _migrate_mlkem_keys() {
   printf "%s" "$decryption" > "$VLESS_DECRYPTION_FILE"
   printf "%s" "$encryption" > "$VLESS_ENCRYPTION_FILE"
   chmod 600 "$VLESS_DECRYPTION_FILE" "$VLESS_ENCRYPTION_FILE"
-  chown xray:xray "$VLESS_DECRYPTION_FILE" "$VLESS_ENCRYPTION_FILE" 2>/dev/null || true
+  chown root:root "$VLESS_DECRYPTION_FILE" "$VLESS_ENCRYPTION_FILE" 2>/dev/null || true
 
   echo -e "${GREEN}✓ PQ ключи сгенерированы (mlkem768x25519plus.native)${NC}"
 
@@ -2491,7 +2837,7 @@ _migrate_subscription_tokens_2026() {
       echo -e "${RED}  ✗ safe_jq_write failed для $profile_file${NC}"
       return 2
     fi
-    chown xray:xray "$profile_file" 2>/dev/null || true
+    chown root:root "$profile_file" 2>/dev/null || true
     chmod 644 "$profile_file" 2>/dev/null || true
     echo -e "${GREEN}  ✓ sub_token сгенерирован для $(basename "$profile_file" .json)${NC}"
     changed=1
@@ -2579,7 +2925,7 @@ _migrate_sni_list_2026() {
   fi
 
   mv "$tmp" "$sni_file"
-  chown xray:xray "$sni_file" 2>/dev/null || true
+  chown root:root "$sni_file" 2>/dev/null || true
   chmod 644 "$sni_file" 2>/dev/null || true
 
   echo -e "${GREEN}✓ SNI list 2026 обновлен: РФ-банки/логистика + github, apple/icloud удалены${NC}"
@@ -2601,6 +2947,17 @@ _migrate_bypass_routing_2026() {
   echo ""
   echo -e "${CYAN}Эти домены пойдут через freedom outbound (direct), не через VPN.${NC}"
   echo ""
+
+  # BASH-4-fix: в noninteractive режиме (quickstart/happ-setup exportирует
+  # XRAYEBATOR_NONINTERACTIVE=1) read зависнет молча — детерминированный default.
+  # Default = N (не добавлять bypass): безопасный вариант, пользователь всегда
+  # может включить правила позже через меню (пункт 11). Не пытаемся читать
+  # из закрытого stdin — hang в systemd/GUI-контексте был реальным багом.
+  if [[ "${XRAYEBATOR_NONINTERACTIVE:-}" == "1" ]]; then
+    echo -e "${CYAN}  → noninteractive: bypass-правила пропущены (default). Настройка: меню → пункт 11.${NC}"
+    return 1
+  fi
+
   echo -n -e "${YELLOW}Добавить дефолтные bypass-правила? [y/N]: ${NC}"
 
   local ans
@@ -2898,7 +3255,7 @@ _bypass_reset_all() {
 _cascade_ensure_dir() {
   mkdir -p "$UPSTREAMS_DIR"
   chmod 700 "$UPSTREAMS_DIR" 2>/dev/null
-  chown xray:xray "$UPSTREAMS_DIR" 2>/dev/null || true
+  chown root:root "$UPSTREAMS_DIR" 2>/dev/null || true
 }
 
 _cascade_config_file() {
@@ -3254,7 +3611,7 @@ _cascade_apply_current_upstream() {
   fix_xray_permissions
   if safe_restart_xray "$rollback_config"; then
     touch "$CASCADE_ACTIVE_FILE"
-    chown xray:xray "$CASCADE_ACTIVE_FILE" 2>/dev/null || true
+    chown root:root "$CASCADE_ACTIVE_FILE" 2>/dev/null || true
     echo -e "${GREEN}✓ Активный каскад синхронизирован с upstream${NC}"
     return 0
   fi
@@ -3716,7 +4073,7 @@ _default_sni_for_transport() {
     *)
       local from_list
       from_list=$(grep -v '^#' "$SNI_LIST" 2>/dev/null | grep -v '^[[:space:]]*$' | head -n 1 | cut -d'|' -f1)
-      [[ -z "$from_list" ]] && from_list="www.ozon.ru"
+      [[ -z "$from_list" ]] && from_list="www.google.com"
       echo "$from_list"
       ;;
   esac
@@ -3913,6 +4270,8 @@ NGINX_SELFSTEAL_HTTP
     tail -30 /tmp/certbot-selfsteal.log
     return 1
   fi
+  # P0-certbot-fix: регистрируем cert в root-owned манифесте.
+  _certbot_register "$domain"
 
   local cert_dir="/etc/letsencrypt/live/${domain}"
   if [[ ! -f "$cert_dir/fullchain.pem" || ! -f "$cert_dir/privkey.pem" ]]; then
@@ -3972,7 +4331,7 @@ NGINX_SELFSTEAL_TLS
   echo "$domain" > "$SELFSTEAL_DOMAIN_FILE"
   echo "$template" > "$SELFSTEAL_TEMPLATE_FILE"
   echo "$SELFSTEAL_DEST" > "$SELFSTEAL_DEST_FILE"
-  chown xray:xray "$SELFSTEAL_DOMAIN_FILE" "$SELFSTEAL_TEMPLATE_FILE" "$SELFSTEAL_DEST_FILE" 2>/dev/null || true
+  chown root:root "$SELFSTEAL_DOMAIN_FILE" "$SELFSTEAL_TEMPLATE_FILE" "$SELFSTEAL_DEST_FILE" 2>/dev/null || true
 
   echo -e "${GREEN}✓ Self-steal заглушка готова: $domain → $SELFSTEAL_DEST${NC}"
   echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
@@ -4258,7 +4617,9 @@ update_xray_core() {
   if [[ -f "$CONFIG_FILE" ]]; then
     local test_output
     test_output=$("${TMPDIR}/extract/xray" run -test -config "$CONFIG_FILE" 2>&1)
-    if ! grep -qx "Configuration OK." <<< "$test_output"; then
+  # A13-fix: совпадение по подстроке, а не точной строке — вариант вывода Xray
+  # с пробелом/CR не должен давать ложный откат рабочего конфига.
+  if ! grep -q "Configuration OK" <<< "$test_output"; then
       echo -e "${RED}✗ config.json не валиден против $TARGET_VERSION${NC}"
       echo -e "${YELLOW}Подробности:${NC}"
       echo "$test_output" | head -10
@@ -4378,6 +4739,35 @@ update_command() {
   echo -e "${BLUE}║  Xrayebator: обновление Xray-core                  ║${NC}"
   echo -e "${BLUE}╚════════════════════════════════════════════════════╝${NC}"
   echo ""
+
+  # V9: если передан аргумент ветки (main/dev/experimental) — обновляем САМ скрипт
+  # xrayebator с этой ветки (self-update, как в update.sh). Иначе — только Xray binary.
+  if [[ -n "${1:-}" ]]; then
+    local branch="$1"
+    echo -e "${CYAN}  → Self-update xrayebator с ветки: ${YELLOW}$branch${NC}"
+    local up_script up_tmp
+    up_script=$(command -v xrayebator 2>/dev/null || echo /usr/local/bin/xrayebator)
+    up_tmp=$(mktemp /tmp/xrayebator_update_XXXXXX)
+    if curl -fsSL --connect-timeout 10 --max-time 60 \
+        "https://raw.githubusercontent.com/howdeploy/Xrayebator/${branch}/xrayebator" -o "$up_tmp" \
+        && [[ -s "$up_tmp" ]] && bash -n "$up_tmp"; then
+      chmod 755 "$up_tmp"
+      if mv "$up_tmp" "$up_script"; then
+        chown root:root "$up_script" 2>/dev/null || true
+        echo -e "${GREEN}  ✓ xrayebator обновлён с ветки $branch${NC}"
+        echo -e "${YELLOW}  → Перезапуск...${NC}"
+        exec bash "$up_script" update
+        exit 0
+      fi
+      rm -f "$up_tmp"
+      echo -e "${RED}✗ Не удалось заменить скрипт${NC}"
+      exit 1
+    else
+      rm -f "$up_tmp"
+      echo -e "${RED}✗ Не удалось скачать xrayebator с ветки '$branch' (проверьте имя или сеть)${NC}"
+      exit 2
+    fi
+  fi
 
   update_xray_core
   local rc=$?
@@ -4502,7 +4892,7 @@ show_pq_banner_once() {
   # Mark as shown — touch + chown как в run_migration helper.
   # Если touch упадёт (broken /usr/local/etc/xray/) — баннер появится снова. OK.
   touch "$marker" 2>/dev/null || true
-  chown xray:xray "$marker" 2>/dev/null || true
+  chown root:root "$marker" 2>/dev/null || true
 }
 
 # ═══════════════════════════════════════════════════════════
@@ -4771,7 +5161,12 @@ trap 'rm -f -- "$body_tmp"' EXIT
 if [[ "$universal_sub" == "true" ]]; then
   # v2rayNG сначала пытается Base64-decode subscription body. Даём ему
   # классический v2ray-sub: только proxy URI, без HAPP comments/routing.
-  printf '%s' "$vless_urls" | base64 -w0 > "$body_tmp"
+  # Фильтруем PQ xhttp (encryption=mlkem768...): клиенты без ML-KEM не смогут
+  # подключиться, а legacy xhttp (encryption=none) сохраняем. V11.
+  printf '%s' "$vless_urls" | awk '
+    /^vless:\/\// && /&type=xhttp&/ && $0 !~ /encryption=none/ { next }
+    { print }
+  ' | base64 -w0 > "$body_tmp"
 else
   # HAPP standard subscriptions are text-based server lists. Keep body conservative:
   # only vless:// rows by default; metadata stays in HTTP headers.
@@ -4853,7 +5248,7 @@ HAPP_ANNOUNCE_FILE="/usr/local/etc/xray/announce.txt"
 HAPP_ROUTING_JSON_FILE="/usr/local/etc/xray/.happ_routing.json"
 HAPP_DEFAULTS_EOF
     chmod 644 /usr/local/etc/xray/.happ_defaults.env
-    chown xray:xray /usr/local/etc/xray/.happ_defaults.env 2>/dev/null || true
+    chown root:root /usr/local/etc/xray/.happ_defaults.env 2>/dev/null || true
     echo -e "${GREEN}  ✓ /usr/local/etc/xray/.happ_defaults.env создан${NC}"
   else
     echo -e "${YELLOW}  ⚠ /usr/local/etc/xray/.happ_defaults.env уже существует — не трогаем${NC}"
@@ -4903,7 +5298,7 @@ SUBUNIT_EOF
 
   # Marker (opt-in активирован) — Plan 7.3 проверит наличие для меню/preflight.
   touch /usr/local/etc/xray/.subscription_installed
-  chown xray:xray /usr/local/etc/xray/.subscription_installed 2>/dev/null || true
+  chown root:root /usr/local/etc/xray/.subscription_installed 2>/dev/null || true
 
   echo ""
   echo -e "${YELLOW}  ⚠ Юнит создан, но НЕ запущен и НЕ enabled.${NC}"
@@ -4963,6 +5358,21 @@ _happ_next_default_profile_name() {
   echo "$name"
 }
 
+# A4-fix: находит sub_token любого существующего HAPP multi-route профиля для self-test.
+# Возвращает пустую строку, если профилей/токенов нет.
+_happ_sub_token_for_self_test() {
+  local profile_file token
+  for profile_file in "$PROFILES_DIR"/happ*.json "$PROFILES_DIR"/*.json; do
+    [[ -f "$profile_file" ]] || continue
+    token=$(jq -r '.sub_token // empty' "$profile_file" 2>/dev/null)
+    if [[ -n "$token" ]] && [[ "$token" =~ ^[a-f0-9]{32}$ ]]; then
+      echo "$token"
+      return 0
+    fi
+  done
+  return 0
+}
+
 _happ_ensure_default_multiroute_profile() {
   HAPP_DEFAULT_PROFILE=""
 
@@ -4990,11 +5400,27 @@ _subscription_ensure_handler_running() {
     return 1
   fi
 
-  if systemctl is-active --quiet xrayebator-sub.service; then
-    return 0
+  if ! systemctl is-active --quiet xrayebator-sub.service; then
+    _subscription_restart_service || return 1
   fi
 
-  _subscription_restart_service
+  # A4-fix: is-active мало — проверяем реальную отдачу подписки через локальный
+  # HTTP self-test. Иначе GUI получит ok:true с мёртвым URL (502/410 на клиенте).
+  # Без токена проверяем только, что порт слушается (health), иначе — полный self-test.
+  local sub_token
+  sub_token=$(_happ_sub_token_for_self_test)
+  if [[ -n "$sub_token" ]]; then
+    _subscription_local_self_test "$sub_token" && return 0
+    # Битый handler: пробуем починить один раз, потом честный failure.
+    _subscription_repair_handler >/dev/null 2>&1
+    _subscription_local_self_test "$sub_token"
+  else
+    # Нет профиля с токеном — хотя бы проверим, что порт слушается.
+    if ss -ltn 2>/dev/null | grep -q ':8080 '; then
+      return 0
+    fi
+    return 1
+  fi
 }
 
 _subscription_restart_service() {
@@ -5022,7 +5448,9 @@ _subscription_local_self_test() {
   local token="$1"
   [[ "$token" =~ ^[a-f0-9]{32}$ ]] || return 1
 
-  _subscription_ensure_handler_running || return 1
+  if ! systemctl is-active --quiet xrayebator-sub.service; then
+    _subscription_restart_service || return 1
+  fi
 
   SUBSCRIPTION_SELFTEST_HTTP_STATUS=""
   SUBSCRIPTION_SELFTEST_ERROR=""
@@ -5224,6 +5652,8 @@ NGINX_HTTP_EOF
     return 1
   fi
   systemctl reset-failed certbot.service 2>/dev/null || true
+  # P0-certbot-fix: регистрируем cert в root-owned манифесте.
+  _certbot_register "$server_ip"
 
   local cert_dir="/etc/letsencrypt/live/${server_ip}"
   if [[ ! -f "$cert_dir/fullchain.pem" || ! -f "$cert_dir/privkey.pem" ]]; then
@@ -5291,7 +5721,10 @@ NGINX_TLS_EOF
   echo "$server_ip" > /usr/local/etc/xray/.subscription_domain
   echo "$server_ip" > /usr/local/etc/xray/.subscription_server_addr
   echo "ip_tls" > /usr/local/etc/xray/.subscription_mode
-  chown xray:xray /usr/local/etc/xray/.subscription_port /usr/local/etc/xray/.subscription_domain /usr/local/etc/xray/.subscription_server_addr /usr/local/etc/xray/.subscription_mode 2>/dev/null || true
+  chown root:root /usr/local/etc/xray/.subscription_port /usr/local/etc/xray/.subscription_domain /usr/local/etc/xray/.subscription_server_addr /usr/local/etc/xray/.subscription_mode 2>/dev/null || true
+
+  # Автопродление shortlived IP-сертификатов (~6 дней) — иначе подписка умрёт.
+  _install_ip_cert_renew_timer "$certbot_bin" "$server_ip" "$webroot"
 
   if ! _subscription_restart_service; then
     echo -e "${RED}✗ xrayebator-sub.service не запустился — проверьте journalctl -u xrayebator-sub${NC}"
@@ -5452,6 +5885,8 @@ NGINX_HTTP_EOF
     return 1
   fi
   systemctl reset-failed certbot.service 2>/dev/null || true
+  # P0-certbot-fix: регистрируем cert в root-owned манифесте.
+  _certbot_register "$domain"
 
   local cert_dir="/etc/letsencrypt/live/${domain}"
   if [[ ! -f "$cert_dir/fullchain.pem" || ! -f "$cert_dir/privkey.pem" ]]; then
@@ -5520,7 +5955,7 @@ NGINX_TLS_EOF
   echo "$domain" > /usr/local/etc/xray/.subscription_domain
   echo "$server_ip" > /usr/local/etc/xray/.subscription_server_addr
   echo "domain_tls" > /usr/local/etc/xray/.subscription_mode
-  chown xray:xray /usr/local/etc/xray/.subscription_port /usr/local/etc/xray/.subscription_domain /usr/local/etc/xray/.subscription_server_addr /usr/local/etc/xray/.subscription_mode 2>/dev/null || true
+  chown root:root /usr/local/etc/xray/.subscription_port /usr/local/etc/xray/.subscription_domain /usr/local/etc/xray/.subscription_server_addr /usr/local/etc/xray/.subscription_mode 2>/dev/null || true
 
   # Активация unit.
   if ! _subscription_restart_service; then
@@ -5569,7 +6004,7 @@ install_subscription_local_only() {
   echo "127.0.0.1" > /usr/local/etc/xray/.subscription_domain
   get_server_ip > /usr/local/etc/xray/.subscription_server_addr 2>/dev/null || true
   echo "local_only" > /usr/local/etc/xray/.subscription_mode
-  chown xray:xray /usr/local/etc/xray/.subscription_port /usr/local/etc/xray/.subscription_domain /usr/local/etc/xray/.subscription_server_addr /usr/local/etc/xray/.subscription_mode 2>/dev/null || true
+  chown root:root /usr/local/etc/xray/.subscription_port /usr/local/etc/xray/.subscription_domain /usr/local/etc/xray/.subscription_server_addr /usr/local/etc/xray/.subscription_mode 2>/dev/null || true
 
   if ! _subscription_restart_service; then
     echo -e "${RED}✗ xrayebator-sub.service не запустился${NC}"
@@ -5751,7 +6186,7 @@ manage_subscription_menu() {
           sleep 2
           continue
         fi
-        chown xray:xray "$pfile" 2>/dev/null || true
+        chown root:root "$pfile" 2>/dev/null || true
         token="$new_token"
         echo -e "${GREEN}✓ Новый sub_token. Старая URL более не работает.${NC}"
         echo -e "${CYAN}  Новая URL: ${base_url}/sub/${token}${NC}"
@@ -5874,7 +6309,7 @@ _happ_edit_field() {
   fi
   mv "$tmp" "$env_file"
   chmod 644 "$env_file"
-  chown xray:xray "$env_file" 2>/dev/null || true
+  chown root:root "$env_file" 2>/dev/null || true
   if [[ -f /usr/local/etc/xray/.subscription_installed ]]; then
     if install_subscription_server >/dev/null 2>&1; then
       echo -e "${GREEN}✓ ${key} обновлено; subscription handler регенерирован${NC}"
@@ -5945,7 +6380,7 @@ edit_happ_announce_menu() {
             }
             printf '%s' "$new_text" > "$tmp"
             mv "$tmp" "$ann_file"
-            chown xray:xray "$ann_file" 2>/dev/null || true
+            chown root:root "$ann_file" 2>/dev/null || true
             chmod 644 "$ann_file"
             echo -e "${GREEN}Announcement сохранен в $ann_file${NC}"
           else
@@ -6155,7 +6590,7 @@ main_menu() {
     echo ""
     echo -e "${BLUE}╚════════════════════════════════════════╝${NC}"
     echo -n -e "${YELLOW}Выберите действие: ${NC}"
-    read choice
+    read choice || exit 0
     case $choice in
       1) create_profile_menu ;;
       2) delete_profile_menu ;;
@@ -6326,30 +6761,37 @@ create_profile_all_routes() {
 
   defaults=$(build_transport_defaults "xhttp") || { rm -f "$routes_tmp"; return 1; }
   IFS='|' read -r port _ xhttp_path <<< "$defaults"
+  reserve_port "$port"
   _append_route_json "xhttp-legacy" "xhttp" "$port" "$default_sni" "$DEFAULT_CLIENT_FINGERPRINT" false "" "$xhttp_path" || { rm -f "$routes_tmp"; return 1; }
 
   defaults=$(build_transport_defaults "xhttp") || { rm -f "$routes_tmp"; return 1; }
   IFS='|' read -r port _ xhttp_path <<< "$defaults"
+  reserve_port "$port"
   _append_route_json "xhttp-pq" "xhttp" "$port" "$default_sni" "$DEFAULT_CLIENT_FINGERPRINT" true "" "$xhttp_path" || { rm -f "$routes_tmp"; return 1; }
 
   defaults=$(build_transport_defaults "tcp-mux") || { rm -f "$routes_tmp"; return 1; }
   IFS='|' read -r port _ _ <<< "$defaults"
+  reserve_port "$port"
   _append_route_json "tcp-mux" "tcp-mux" "$port" "$default_sni" "$DEFAULT_CLIENT_FINGERPRINT" false "" "" || { rm -f "$routes_tmp"; return 1; }
 
   defaults=$(build_transport_defaults "grpc") || { rm -f "$routes_tmp"; return 1; }
   IFS='|' read -r port grpc_service_name _ <<< "$defaults"
+  reserve_port "$port"
   _append_route_json "grpc" "grpc" "$port" "$grpc_sni" "$DEFAULT_CLIENT_FINGERPRINT" false "$grpc_service_name" "" || { rm -f "$routes_tmp"; return 1; }
 
   defaults=$(build_transport_defaults "tcp") || { rm -f "$routes_tmp"; return 1; }
   IFS='|' read -r port _ _ <<< "$defaults"
+  reserve_port "$port"
   _append_route_json "tcp-vision" "tcp" "$port" "$default_sni" "$DEFAULT_CLIENT_FINGERPRINT" false "" "" || { rm -f "$routes_tmp"; return 1; }
 
   defaults=$(build_transport_defaults "tcp-utls") || { rm -f "$routes_tmp"; return 1; }
   IFS='|' read -r port _ _ <<< "$defaults"
+  reserve_port "$port"
   _append_route_json "tcp-utls-firefox" "tcp-utls" "$port" "$default_sni" "firefox" false "" "" || { rm -f "$routes_tmp"; return 1; }
 
   defaults=$(build_transport_defaults "tcp-xudp") || { rm -f "$routes_tmp"; return 1; }
   IFS='|' read -r port _ _ <<< "$defaults"
+  reserve_port "$port"
   _append_route_json "tcp-xudp" "tcp-xudp" "$port" "$xudp_sni" "$DEFAULT_CLIENT_FINGERPRINT" false "" "" || { rm -f "$routes_tmp"; return 1; }
 
   local routes_json
@@ -6418,7 +6860,12 @@ create_profile_all_routes() {
     xhttp=$(jq -r --argjson i "$route_index" '.[$i].xhttp_path // ""' <<< "$routes_json")
     echo -e "${CYAN} → Маршрут ${label}: ${transport} :${port}${NC}"
     if ! add_inbound "$uuid" "$transport" "$port" "$sni" "$fingerprint" "$grpc" "$xhttp" "$pq"; then
-      [[ -n "$rollback_config" ]] && cp "$rollback_config" "$CONFIG_FILE"
+      # A12-fix: откат через _restore_config_backup сохраняет владельца/права и проходит
+      # фиксированную логику, а не голый cp в обход fix_xray_permissions.
+      if [[ -n "$rollback_config" ]]; then
+        _restore_config_backup "$rollback_config" >/dev/null 2>&1
+        fix_xray_permissions >/dev/null 2>&1 || true
+      fi
       rm -f "$PROFILES_DIR/$name.json"
       local p
       for p in "${created_ports[@]}"; do
@@ -6514,6 +6961,7 @@ create_profile() {
     IFS='|' read -r port generated_grpc_service_name generated_xhttp_path <<< "$defaults"
     [[ -z "$grpc_service_name" ]] && grpc_service_name="$generated_grpc_service_name"
     [[ -z "$xhttp_path" ]] && xhttp_path="$generated_xhttp_path"
+    reserve_port "$port"
   fi
 
   default_sni=$(_default_sni_for_transport "$transport")
@@ -6762,13 +7210,18 @@ add_inbound() {
       # Override sni to match existing inbound
       sni="$existing_sni"
 
-      # Обновить SNI в только что созданном файле профиля
+      # Обновить SNI в только что созданном файле профиля.
+      # У multi-route профилей SNI живёт и в .routes[i].sni — обновляем и там,
+      # иначе маршрут рассинхронизируется с inbound и выпадет из подписки.
       local pf
       for pf in "$PROFILES_DIR"/*.json; do
         [[ ! -f "$pf" ]] && continue
         local pf_uuid=$(jq -r '.uuid' "$pf" 2>/dev/null)
         if [[ "$pf_uuid" == "$uuid" ]]; then
-          if ! safe_jq_write --arg sni "$existing_sni" '.sni = $sni' "$pf"; then
+          if ! safe_jq_write --arg sni "$existing_sni" --argjson port "$port" \
+            '.sni = $sni | if ((.routes? // []) | length) > 0 then
+               .routes |= map(if .port == $port then .sni = $sni else . end)
+             else . end' "$pf"; then
             echo -e "${RED}  ✗ Не удалось обновить SNI в профиле $(basename "$pf")${NC}"
             return 1
           fi
@@ -7901,6 +8354,7 @@ change_port_menu() {
         read
         return
       fi
+      reserve_port "$new_port"
       ;;
     2) new_port="443" ;;
     3) new_port="8443" ;;
@@ -8885,8 +9339,13 @@ UPGEOF
   # config.json:.inbounds[].streamSettings.realitySettings.shortIds[0] — один источник истины.
   local profiles_ok=true
   for p in "${profiles_on_port[@]}"; do
-    if ! safe_jq_write --arg path "$xhttp_path" \
-      '.transport = "xhttp" | .schema_version = 2 | .pq_enabled = true | .xhttp_path = $path' \
+    if ! safe_jq_write --arg path "$xhttp_path" --argjson pnum "$port" \
+      '.transport = "xhttp" | .schema_version = 2 | .pq_enabled = true | .xhttp_path = $path
+       | if ((.routes? // []) | length) > 0 then
+           .routes |= map(if .port == $pnum then
+             .transport = "xhttp" | .pq_enabled = true | .xhttp_path = $path
+           else . end)
+         else . end' \
       "$PROFILES_DIR/$p.json"; then
       echo -e "${RED}  ✗ Ошибка обновления profile JSON: $p${NC}"
       profiles_ok=false
@@ -8964,14 +9423,24 @@ uninstall_adguard_home() {
   # При ошибке валидации точный backup возвращает полностью рабочее состояние.
   echo -e "${CYAN}Шаг 1/5: Переключение Xray DNS на DoH Local...${NC}"
   local rollback_config=""
+  local query_strategy
+  query_strategy=$(_ipv6_query_strategy)
+  # P1-ipv6-fix: единый family-aware DoH. Раньше жёстко 1.1.1.1 — на IPv6-only
+  # хосте AdGuard rollback оставлял Xray без DNS.
+  local dns_doh_server
+  if _detect_ipv6_only; then
+    dns_doh_server="https+local://dns.google/dns-query"
+  else
+    dns_doh_server="https+local://1.1.1.1/dns-query"
+  fi
   if [[ ! -f "$CONFIG_FILE" ]] ||
      ! backup_config "adguard_dns_restore" rollback_config ||
-     ! safe_jq_write '.dns = {
+     ! safe_jq_write --arg qs "$query_strategy" --arg doh "$dns_doh_server" '.dns = {
        "servers": [
-         "https+local://1.1.1.1/dns-query",
+         $doh,
          "localhost"
        ],
-       "queryStrategy": "UseIPv4",
+       "queryStrategy": $qs,
        "disableCache": false
      }' "$CONFIG_FILE"; then
     [[ -n "$rollback_config" ]] && _restore_config_backup "$rollback_config" || true
@@ -9034,6 +9503,421 @@ uninstall_adguard_home() {
 }
 
 # CLI dispatch (Phase 5, REQ-B02). Subcommand-style.
+quickstart_command() {
+  local email=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --email) email="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+
+  if [[ -z "$email" ]] || ! [[ "$email" =~ ^[^@]+@[^@]+\.[^@]+$ ]]; then
+    echo '{"ok":false,"error":"Некорректный email (нужен для Let'\''s Encrypt)"}'
+    return 1
+  fi
+
+  export TERM=dumb
+  export DEBIAN_FRONTEND=noninteractive
+  export XRAYEBATOR_NONINTERACTIVE=1
+
+  # 1. Миграции (без интерактивных промптов).
+  # Список может быть подмножеством main_menu, но КРИТИЧЕСКИЕ для quickstart
+  # миграции обязаны быть здесь — иначе на существующих VPS quickstart ломается
+  # (например, без mlkem_keys_generated не создастся PQ-маршрут).
+  # Синхронизация проверяется validation/test-quickstart-migration-parity.sh.
+  echo "=== Миграции ===" >&2
+  migrate_remove_legacy_tcp_tuning_v3 >/dev/null 2>&1 || true
+  migrate_client_fingerprint_state_2026 >/dev/null 2>&1 || true
+  run_migration "xhttp_migrated" "XHTTP host/SNI sync" migrate_xhttp_profiles >/dev/null 2>&1 || true
+  run_migration "routing_v132_migrated" "Routing default direct rule" migrate_routing_config >/dev/null 2>&1 || true
+  run_migration "legacy_udp443_block_removed_v3" "Remove legacy UDP/443 block" migrate_legacy_managed_udp443_block_v3 >/dev/null 2>&1 || true
+  run_migration "xhttp_mode_migrated" "XHTTP mode stream auto" migrate_xhttp_mode >/dev/null 2>&1 || true
+  run_migration "xhttp_extra_restored" "XHTTP extra anti-DPI restore" migrate_xhttp_extra_restore >/dev/null 2>&1 || true
+  run_migration "transport_profile_metadata_migrated" "Transport profile metadata" migrate_transport_profile_metadata >/dev/null 2>&1 || true
+  run_migration "config_optimized" "Config optimization (DNS/log)" migrate_config_optimization >/dev/null 2>&1 || true
+  run_migration "xmux_explicit_2026" "Explicit xmux block" migrate_xmux_explicit_2026 >/dev/null 2>&1 || true
+  run_migration "mlkem_keys_generated" "PQ ключи VLESS Encryption" _migrate_mlkem_keys >/dev/null 2>&1 || true
+  run_migration "xhttp_default_2026" "XHTTP+PQ как дефолтный пресет" _migrate_xhttp_default_2026 >/dev/null 2>&1 || true
+  run_migration "subscription_tokens_2026" "Subscription tokens" _migrate_subscription_tokens_2026 >/dev/null 2>&1 || true
+  run_migration "happ_legacy_xhttp_route_2026" "HAPP legacy xhttp route" _migrate_happ_legacy_xhttp_route_2026 >/dev/null 2>&1 || true
+  run_migration "xhttp_route_path_repair_2026" "XHTTP path repair" _migrate_xhttp_route_path_repair_2026 >/dev/null 2>&1 || true
+  run_migration "dead_stealth_routes_pruned_2026" "Prune dead stealth routes" _migrate_dead_stealth_routes_2026 >/dev/null 2>&1 || true
+  run_migration "sni_list_2026" "SNI list 2026" _migrate_sni_list_2026 >/dev/null 2>&1 || true
+  run_migration "subhttp_multiroute_2026" "Subhttp multiroute handler" _migrate_subhttp_multiroute_2026 >/dev/null 2>&1 || true
+  run_migration "subhttp_client_compat_2026" "Subhttp client compat" _migrate_subhttp_client_compat_2026 >/dev/null 2>&1 || true
+  run_migration "bypass_routing_2026" "Bypass routing first-run" _migrate_bypass_routing_2026 >/dev/null 2>&1 || true
+  run_migration "subhttp_happ_legacy_xhttp_2026" "Subhttp HAPP legacy XHTTP route" _migrate_subhttp_happ_legacy_xhttp_2026 >/dev/null 2>&1 || true
+  run_migration "subhttp_happ_xhttp_compat_2026" "Subhttp HAPP XHTTP compat" _migrate_subhttp_happ_xhttp_compat_2026 >/dev/null 2>&1 || true
+  run_migration "subhttp_no_default_happ_routing_2026" "Subhttp no default HAPP routing profile" _migrate_subhttp_no_default_happ_routing_2026 >/dev/null 2>&1 || true
+  run_migration "subhttp_stale_profiles_410_2026" "Subhttp stale profile 410 handler" _migrate_subhttp_stale_profiles_410_2026 >/dev/null 2>&1 || true
+  run_migration "xhttp_xmux_throughput_2026" "XHTTP xmux throughput profile" _migrate_xhttp_xmux_throughput_2026 >/dev/null 2>&1 || true
+  run_migration "xmux_explicit_2026" "Explicit xmux block" migrate_xmux_explicit_2026 >/dev/null 2>&1 || true
+  fix_xray_permissions >/dev/null 2>&1 || true
+
+  # 2. Subscription server (HAPP)
+  echo "=== Subscription server ===" >&2
+  if ! install_subscription_server >/dev/null 2>&1; then
+    echo '{"ok":false,"error":"Не удалось установить subscription server"}'
+    return 1
+  fi
+  echo "  Subscription server установлен" >&2
+
+  # 3. nginx + TLS
+  echo "=== nginx + TLS ===" >&2
+
+  local server_ip
+  server_ip=$(get_server_ip)
+  # Accept either IPv4 (dotted-quad) or IPv6 (hex groups, possibly with ::compression).
+  # Regex distinguishes at least the most common forms:
+  #   IPv4:  1.2.3.4
+  #   IPv6:  2001:db8::1, ::1, fe80::a, etc.
+  local ipv4_re='^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'
+  local ipv6_re='^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$'
+  if [[ -z "$server_ip" ]] || ! [[ "$server_ip" =~ $ipv4_re || "$server_ip" =~ $ipv6_re ]]; then
+    echo '{"ok":false,"error":"Не удалось определить публичный IP VPS (ни IPv4, ни IPv6)"}'
+    return 1
+  fi
+
+  # A5-fix: IP-режим TLS (certbot --ip-address + shortlived) работает ТОЛЬКО для IPv4.
+  # Let's Encrypt не выдаёт IP-сертификаты для IPv6-адресов. На IPv6-only VPS даём
+  # понятную ошибку сразу, а не обрываемся на certbot с «проверьте порт 80».
+  if [[ "$server_ip" =~ $ipv6_re ]]; then
+    echo '{"ok":false,"error":"IP-режим подписки поддерживает только IPv4. Для IPv6-only VPS используйте домен (domain_tls) или HAPP-интерфейс"}'
+    return 1
+  fi
+  local server_ip_bracketed
+  server_ip_bracketed=$(_ip_bracket "$server_ip")
+
+  # Установить nginx если нет
+  if ! command -v nginx &>/dev/null; then
+    echo "  -> Установка nginx..." >&2
+    timeout 120 apt-get install -y nginx >/dev/null 2>&1 || {
+      echo '{"ok":false,"error":"apt-get install nginx failed"}'
+      return 1
+    }
+  fi
+
+  # Certbot: сначала snap (поддерживает --ip-address + --preferred-profile)
+  local certbot_bin=""
+  if command -v /snap/bin/certbot &>/dev/null && _certbot_supports_ip_address /snap/bin/certbot; then
+    certbot_bin="/snap/bin/certbot"
+  elif command -v certbot &>/dev/null && _certbot_supports_ip_address "$(command -v certbot)"; then
+    certbot_bin="$(command -v certbot)"
+  fi
+  if [[ -z "$certbot_bin" ]]; then
+    echo "  -> Установка certbot через snap..." >&2
+    timeout 120 apt-get install -y snapd >/dev/null 2>&1 || true
+    systemctl enable --now snapd.socket >/dev/null 2>&1 || true
+    export PATH="/snap/bin:$PATH"
+    if command -v snap &>/dev/null; then
+      timeout 300 snap install core 2>/dev/null || true
+      timeout 300 snap install --classic certbot 2>/dev/null || true
+      if command -v /snap/bin/certbot &>/dev/null && _certbot_supports_ip_address /snap/bin/certbot; then
+        certbot_bin="/snap/bin/certbot"
+      fi
+    fi
+  fi
+  if [[ -z "$certbot_bin" ]]; then
+    echo '{"ok":false,"error":"Certbot с --ip-address и --preferred-profile не найден"}'
+    return 1
+  fi
+  echo "  Certbot: $certbot_bin" >&2
+
+  # Webroot для ACME
+  local webroot="/var/www/xrayebator-ip-acme"
+  mkdir -p "$webroot/.well-known/acme-challenge"
+  chmod -R 755 "$webroot"
+
+  # P1-nginx-fix: транзакция quickstart-nginx. На любом failure path (nginx -t, certbot,
+  # занятый 8443, reload) исходный default-сайт и ранее существовавший vhost
+  # xrayebator-sub восстанавливаются из бэкапов, наши изменения убираются, nginx
+  # перезагружается. P2-fix: транзакция помечается изменённой СРАЗУ после любой
+  # мутации nginx (запись vhost, symlink, удаление default) — независимо от наличия
+  # default-сайта; до фикса при отсутствии default-сайта rollback не срабатывал и
+  # мёртвый vhost оставался на VPS. Реализация на уровне файла (_qs_nginx_rollback)
+  # — ею пользуется и функциональный тест.
+  QS_NGINX_MODIFIED=false
+  QS_VHOST_BACKUP="$NGINX_SITES_AVAILABLE/xrayebator-sub.xrayebator.bak"
+
+  # P2-fix: сохраняем существующий vhost xrayebator-sub ДО перезаписи (может быть
+  # от прошлого quickstart или сторонней настройки) — rollback его вернёт.
+  if [[ -e "$NGINX_SITES_AVAILABLE/xrayebator-sub" || -L "$NGINX_SITES_AVAILABLE/xrayebator-sub" ]]; then
+    cp -a "$NGINX_SITES_AVAILABLE/xrayebator-sub" "$QS_VHOST_BACKUP" 2>/dev/null || true
+  fi
+  # Nginx HTTP config для certbot
+  cat > "$NGINX_SITES_AVAILABLE/xrayebator-sub" << NGINXHTTP
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${server_ip};
+    location ^~ /.well-known/acme-challenge/ {
+        root ${webroot};
+        default_type text/plain;
+    }
+    location / {
+        return 404;
+    }
+}
+NGINXHTTP
+  ln -sf "$NGINX_SITES_AVAILABLE/xrayebator-sub" "$NGINX_SITES_ENABLED/xrayebator-sub"
+  # A7-fix: не удалять default-сайт безвозвратно — делаем бэкап (может быть симлинк на config).
+  local default_site="$NGINX_SITES_ENABLED/default"
+  if [[ -e "$default_site" || -L "$default_site" ]]; then
+    cp -a "$default_site" "$NGINX_SITES_ENABLED/default.xrayebator.bak" 2>/dev/null || true
+    rm -f "$default_site"
+  fi
+  # P2-fix: с этого момента изменения nginx «живые» — флаг ставим после ЛЮБОЙ мутации
+  # (vhost записан/symlink создан), независимо от наличия default-сайта. Иначе при
+  # отсутствии default-сайта rollback (nginx -t, certbot, reload) не срабатывал.
+  QS_NGINX_MODIFIED=true
+  nginx -t >/dev/null 2>&1 || { echo '{"ok":false,"error":"nginx -t failed"}'; _qs_nginx_rollback; return 1; }
+  systemctl enable --now nginx >/dev/null 2>&1 || true
+  systemctl reload nginx >/dev/null 2>&1 || true
+
+  # Открыть порты
+  if command -v ufw &>/dev/null && ufw status | grep -q "Status: active"; then
+    ufw allow 80/tcp >/dev/null 2>&1 || true
+    ufw allow 443/tcp >/dev/null 2>&1 || true
+    ufw allow 8443/tcp >/dev/null 2>&1 || true
+    # P2-fix: фиксируем открытые quickstart'ом правила в root-owned манифесте.
+    _ufw_register_port 80 tcp
+    _ufw_register_port 443 tcp
+    _ufw_register_port 8443 tcp
+    ufw reload >/dev/null 2>&1 || true
+  fi
+
+  # A8-fix: переиспользуем существующий действующий сертификат вместо повторного
+  # certonly — иначе повторный quickstart упирается в Let's Encrypt rate-limit.
+  # IP-серты shortlived (~6 дн.); renew-таймер продлевает их в фоне.
+  local cert_dir="/etc/letsencrypt/live/$server_ip"
+  local cert_expiry_ok=0
+  if [[ -f "$cert_dir/fullchain.pem" && -f "$cert_dir/privkey.pem" ]]; then
+    if command -v openssl >/dev/null 2>&1; then
+      cert_end=$(openssl x509 -enddate -noout -in "$cert_dir/fullchain.pem" 2>/dev/null | sed 's/notAfter=//')
+      cert_now=$(date -u +%s)
+      cert_epoch=$(date -u -d "$cert_end" +%s 2>/dev/null || echo 0)
+      if [[ -n "$cert_epoch" && "$cert_epoch" -gt "$cert_now" ]]; then
+        cert_expiry_ok=1
+        echo "  -> Сертификат для $server_ip уже действует — переиспользую (без нового certonly)" >&2
+      fi
+    else
+      cert_expiry_ok=1
+    fi
+  fi
+
+  if [[ "$cert_expiry_ok" -eq 0 ]]; then
+    # Получить TLS сертификат
+    echo "  -> Получение TLS сертификата..." >&2
+    if ! "$certbot_bin" certonly \
+        --cert-name "$server_ip" \
+        --preferred-profile shortlived \
+        --webroot --webroot-path "$webroot" \
+        --ip-address "$server_ip" \
+        --non-interactive --agree-tos \
+        -m "$email" \
+        --deploy-hook "systemctl reload nginx" \
+        >/tmp/certbot-ip.log 2>&1; then
+      echo '{"ok":false,"error":"certbot failed. Log: /tmp/certbot-ip.log"}'
+      _qs_nginx_rollback
+      return 1
+    fi
+    echo "  TLS сертификат получен" >&2
+    # P0-certbot-fix: регистрируем cert в root-owned манифесте (uninstall удалит только его).
+    _certbot_register "$server_ip"
+  fi
+
+  # A3-fix: идемпотентность. Проверяем, что порт 8443 не занят ЧУЖИМ процессом.
+  # Если на нём слушает nginx и у нас уже создан xrayebator-sub vhost — это наш же
+  # повторный запуск (или уже настроенная подписка): переиспользуем, не блокируем.
+  local port_8443_owner
+  port_8443_owner=$(ss -ltnp 'sport = :8443' 2>/dev/null | grep -oP 'users:\(\("([^"]+)"' | head -1 | sed 's/users:(("//')
+  if ss -ltnp 'sport = :8443' 2>/dev/null | grep -q LISTEN; then
+    if [[ -n "$port_8443_owner" && "$port_8443_owner" == "nginx" ]] && \
+       grep -q "listen 8443" "$NGINX_SITES_AVAILABLE/xrayebator-sub" 2>/dev/null; then
+      echo "  -> Порт 8443 уже обслуживается нашим nginx (xrayebator-sub) — переиспользуем" >&2
+    else
+      echo '{"ok":false,"error":"Порт 8443 уже занят сторонним процессом — subscription URL будет мёртвым"}'
+      _qs_nginx_rollback
+      return 1
+    fi
+  fi
+
+  # Nginx HTTPS config (проксирует на subscription server, порт 8443 — Xray на 443)
+  cat > "$NGINX_SITES_AVAILABLE/xrayebator-sub" << NGINXHTTPS
+limit_req_zone \$binary_remote_addr zone=xrayebator_sub:10m rate=30r/m;
+
+server {
+    listen 8443 ssl http2;
+    listen [::]:8443 ssl http2;
+    server_name ${server_ip_bracketed};
+    ssl_certificate /etc/letsencrypt/live/${server_ip}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${server_ip}/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    location / {
+        limit_req zone=xrayebator_sub burst=5 nodelay;
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+    location ^~ /.well-known/acme-challenge/ {
+        root ${webroot};
+        default_type text/plain;
+    }
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${server_ip_bracketed};
+    # MUST serve ACME http-01 challenge на 80, чтобы renew shortlived IP-сертификата
+    # (webroot) продолжал работать, а не уходил в редирект на https.
+    location ^~ /.well-known/acme-challenge/ {
+        root ${webroot};
+        default_type text/plain;
+    }
+    location / {
+        return 301 https://\$host\$request_uri;
+    }
+}
+NGINXHTTPS
+  nginx -t >/dev/null 2>&1 || { echo '{"ok":false,"error":"nginx HTTPS config failed"}'; _qs_nginx_rollback; return 1; }
+  if ! systemctl reload nginx >/dev/null 2>&1; then
+    echo '{"ok":false,"error":"nginx не перечитал HTTPS config — подписка недоступна"}'
+    _qs_nginx_rollback
+    return 1
+  fi
+
+  # Пишем маркеры подписки (ip_tls mode) — иначе _subscription_base_url вернёт
+  # локальный http://127.0.0.1:8080 и GUI/happ-setup покажут неверный URL и mode "unknown".
+  _subscription_write_markers "8443" "$server_ip" "$server_ip" "ip_tls"
+
+  # Автопродление shortlived IP-сертификатов (~6 дней).
+  _install_ip_cert_renew_timer "$certbot_bin" "$server_ip" "$webroot"
+
+  # 4. Создание профиля
+  echo "=== Профиль ===" >&2
+
+  # Определяем порт для Xray (Xray на 443, nginx на 8443)
+  # HAPP требует multi-route профиль (schema_version 3, routes[] с 7 маршрутами,
+  # включая xhttp-legacy). _happ_ensure_default_multiroute_profile — единый источник
+  # истины: создаёт профиль при отсутствии или возвращает существующий.
+  # Создание одиночного профиля здесь ломало HAPP ("route not shown / country n/a").
+  echo "  Обеспечиваю multi-route HAPP профиль..." >&2
+  if ! _happ_ensure_default_multiroute_profile >/dev/null 2>&1; then
+    echo '{"ok":false,"error":"Не удалось создать HAPP multi-route профиль"}'
+    _qs_nginx_rollback
+    return 1
+  fi
+  local profile_file="$PROFILES_DIR/${HAPP_DEFAULT_PROFILE}.json"
+
+  # Перезапустить Xray (подхватить новые инбаунды маршрутов).
+  # Без || true: если конфиг не загрузился, отдаём ok:false, а не ложный успех с мёртвым URL.
+  if ! safe_restart_xray >/dev/null 2>&1; then
+    echo '{"ok":false,"error":"Не удалось перезапустить Xray — конфиг не принят (xray run -test failed)"}'
+    _qs_nginx_rollback
+    return 1
+  fi
+
+  # Убедиться что subscription handler отвечает.
+  if ! _subscription_ensure_handler_running >/dev/null 2>&1; then
+    echo '{"ok":false,"error":"Subscription handler не отвечает на 127.0.0.1:8080"}'
+    _qs_nginx_rollback
+    return 1
+  fi
+
+  # 5. Результат
+  local result_uuid result_sub_token route_count
+  result_uuid=$(jq -r '.uuid' "$profile_file")
+  result_sub_token=$(jq -r '.sub_token' "$profile_file")
+  route_count=$(jq -r '(.routes // []) | length' "$profile_file" 2>/dev/null || echo 0)
+
+  # URL строим через canonical helper — без хардкода порта.
+  # Если ранее был ip_tls на :443 или домен на :443, URL корректно опустит порт.
+  local base subscription_url
+  base=$(_subscription_base_url)
+  # Если .subscription_* markers не созданы (возможно при раннем вызове),
+  # fallback на текущий server_ip + 8443 для обратной совместимости.
+  if [[ -z "$base" ]] || [[ "$base" == *"127.0.0.1:8080"* && ! -f "/usr/local/etc/xray/.subscription_domain" && ! -f "/usr/local/etc/xray/.subscription_port" ]]; then
+    base="https://${server_ip_bracketed}:8443"
+  fi
+  subscription_url="${base}/sub/${result_sub_token}"
+
+  echo "{\"ok\":true,\"subscription_url\":\"${subscription_url}\",\"base_url\":\"${base}\",\"profile\":\"${HAPP_DEFAULT_PROFILE}\",\"routes\":${route_count}}"
+  return 0
+}
+
+happ_setup_command() {
+  export TERM=dumb
+  export DEBIAN_FRONTEND=noninteractive
+  export XRAYEBATOR_NONINTERACTIVE=1
+
+  # A6-fix: критически важные миграции, без которых happ-setup падает на чистом VPS.
+  # Без _migrate_mlkem_keys xhttp-маршруты идут с pq_enabled=true, а add_inbound
+  # отклоняет «PQ ключи отсутствуют». Без subscription_tokens_2026 профиль может не
+  # иметь sub_token (для URL подписки). Синхронизировано с quickstart_command.
+  echo '=== Миграции ===' >&2
+  run_migration "mlkem_keys_generated" "PQ ключи VLESS Encryption" _migrate_mlkem_keys >/dev/null 2>&1 || true
+  run_migration "xhttp_default_2026" "XHTTP+PQ как дефолтный пресет" _migrate_xhttp_default_2026 >/dev/null 2>&1 || true
+  run_migration "subscription_tokens_2026" "Subscription tokens" _migrate_subscription_tokens_2026 >/dev/null 2>&1 || true
+  run_migration "happ_legacy_xhttp_route_2026" "HAPP legacy xhttp route" _migrate_happ_legacy_xhttp_route_2026 >/dev/null 2>&1 || true
+  run_migration "subhttp_multiroute_2026" "Subhttp multiroute handler" _migrate_subhttp_multiroute_2026 >/dev/null 2>&1 || true
+  fix_xray_permissions >/dev/null 2>&1 || true
+
+  # 1. Убедиться, что subscription server установлен и запущен
+  echo '=== Subscription server ===' >&2
+  if [[ ! -f /usr/local/etc/xray/.subscription_installed ]]; then
+    if ! install_subscription_server >/dev/null 2>&1; then
+      echo '{"ok":false,"error":"Не удалось установить subscription server"}'
+      return 1
+    fi
+  fi
+  if ! _subscription_restart_service; then
+    echo '{"ok":false,"error":"Не удалось запустить xrayebator-sub.service"}'
+    return 1
+  fi
+
+  # 2. Создать/найти multi-route профиль (7 маршрутов)
+  echo '=== HAPP multi-route профиль ===' >&2
+  if ! _happ_ensure_default_multiroute_profile >/dev/null 2>&1; then
+    echo '{"ok":false,"error":"Не удалось создать HAPP multi-route профиль"}'
+    return 1
+  fi
+  local _profile_name="$HAPP_DEFAULT_PROFILE"
+  local _token
+  _token=$(jq -r '.sub_token' "$PROFILES_DIR/$_profile_name.json")
+
+  # P1-happ-fix: НЕ фабрикуем markers подписки, если они потеряны. Раньше здесь
+  # безусловно писался ip_tls(8443) с текущим server_ip — на свежем VPS без реального
+  # сертификата и TLS vhost команда возвращала ok:true с мёртвым https://IP:8443 URL.
+  # Теперь: markers восстанавливаются ТОЛЬКО если публичный TLS endpoint реально
+  # существует (наш nginx xrayebator-sub слушает 8443 + сертификат выпущен и живой).
+  # Иначе — понятная ошибка вместо ложного успеха.
+  if [[ ! -f /usr/local/etc/xray/.subscription_domain || ! -f /usr/local/etc/xray/.subscription_port ]]; then
+    local _srv_addr
+    _srv_addr=$(get_server_ip)
+    if _subscription_public_tls_endpoint_verified "$_srv_addr"; then
+      _subscription_write_markers "8443" "$_srv_addr" "$_srv_addr" "ip_tls"
+    else
+      echo "{\"ok\":false,\"error\":\"Публичный TLS endpoint подписки не подтверждён. Выполните 'xrayebator quickstart --email <email>' или настройте подписку через меню — happ-setup не выдаёт мёртвые URL.\"}"
+      return 1
+    fi
+  fi
+
+  # 3. База URL подписки
+  local _base
+  _base=$(_subscription_base_url)
+
+  local _route_count
+  _route_count=$(jq -r '(.routes // []) | length' "$PROFILES_DIR/$_profile_name.json")
+
+  echo "{\"ok\":true,\"profile\":\"$_profile_name\",\"routes\":$_route_count,\"subscription_url\":\"${_base}/sub/${_token}\"}"
+  return 0
+}
+
 # Без аргументов → interactive main_menu (legacy behaviour).
 # При source-режиме (Phase 7, REQ-C10) dispatch пропускается — sourcing-скрипт сам решает,
 # что делать с определёнными функциями.
@@ -9043,6 +9927,14 @@ if [[ "$XRAYEBATOR_SOURCED" -eq 0 ]]; then
       shift
       update_command "$@"
       ;;
+    quickstart)
+      shift
+      quickstart_command "$@"
+      ;;
+    happ-setup)
+      shift
+      happ_setup_command "$@"
+      ;;
     probe-test)
       shift
       probe_test_command
@@ -9050,12 +9942,26 @@ if [[ "$XRAYEBATOR_SOURCED" -eq 0 ]]; then
     ""|menu)
       main_menu
       ;;
+    --help|-h|help)
+      echo -e "${CYAN}Xrayebator${NC} — менеджер Xray Reality VPN (обход DPI в РФ)"
+      echo ""
+      echo -e "${YELLOW}Использование:${NC}"
+      echo -e "  ${CYAN}sudo xrayebator${NC}                  — открыть интерактивное меню"
+      echo -e "  ${CYAN}sudo xrayebator update [branch]${NC}  — обновить Xray-core (main/dev/experimental)"
+      echo -e "  ${CYAN}sudo xrayebator quickstart --email EMAIL${NC}  — авторазвёртывание: подписка+IP-TLS+HAPP profile"
+      echo -e "  ${CYAN}sudo xrayebator happ-setup${NC}       — создать/переиспользовать HAPP multi-route профиль"
+      echo -e "  ${CYAN}sudo xrayebator probe-test${NC}       — проверить доступность SNI с VPS"
+      echo ""
+      echo -e "${YELLOW}Файлы:${NC}"
+      echo -e "  config:    /usr/local/etc/xray/config.json"
+      echo -e "  profiles:  /usr/local/etc/xray/profiles/"
+      echo -e "  backups:   /usr/local/etc/xray/backups/"
+      echo -e "  docs:      https://github.com/howdeploy/Xrayebator"
+      exit 0
+      ;;
     *)
       echo -e "${RED}✗ Неизвестная команда: $1${NC}"
-      echo -e "${YELLOW}Использование:${NC}"
-      echo -e "  ${CYAN}sudo xrayebator${NC}         — открыть меню"
-      echo -e "  ${CYAN}sudo xrayebator update${NC}  — обновить Xray-core"
-      echo -e "  ${CYAN}sudo xrayebator probe-test${NC}  — проверить доступность SNI с VPS"
+      echo -e "${YELLOW}Подсказка:${NC} запустите ${CYAN}sudo xrayebator --help${NC}"
       exit 1
       ;;
   esac

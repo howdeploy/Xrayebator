@@ -9,11 +9,12 @@ from __future__ import annotations
 import json
 import os
 import stat
+import sys
 import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import keyring
 from platformdirs import user_data_dir
@@ -25,7 +26,7 @@ KEYRING_SERVICE = "xrayebator-gui"
 class ServerStore:
     """Список серверов в user_data_dir("xrayebator-gui")/servers.json."""
 
-    def __init__(self, data_dir: Optional[Path] = None):
+    def __init__(self, data_dir: Path | None = None):
         self._dir = data_dir or Path(user_data_dir(APP_NAME))
         self._dir.mkdir(parents=True, exist_ok=True)
         self._path = self._dir / "servers.json"
@@ -45,7 +46,12 @@ class ServerStore:
             dir=self._dir,
         )
         try:
-            os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
+            # CI-2: os.fchmod() есть в POSIX, но отсутствует на Windows <3.13.
+            # На Windows используем os.chmod() — права на не-POSIX всё равно не идут.
+            if sys.platform == "win32":
+                os.chmod(tmp_name, stat.S_IRUSR | stat.S_IWUSR)
+            else:
+                os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
                 fd = -1
                 json.dump(servers, stream, ensure_ascii=False, indent=2)
@@ -61,7 +67,7 @@ class ServerStore:
         """Все серверы."""
         return self._load()
 
-    def get(self, server_id: str) -> Optional[dict[str, Any]]:
+    def get(self, server_id: str) -> dict[str, Any] | None:
         for s in self._load():
             if s.get("id") == server_id:
                 return s
@@ -77,8 +83,8 @@ class ServerStore:
         auth_type: str,
         subscription_url: str,
         profile: str = "happ",
-        password: Optional[str] = None,
-        key_path: Optional[str] = None,
+        password: str | None = None,
+        key_path: str | None = None,
     ) -> dict[str, Any]:
         """Добавить сервер. Пароль уходит в keyring, не в JSON.
 
@@ -101,7 +107,13 @@ class ServerStore:
         servers.append(server)
         self._save(servers)
         if password:
-            keyring.set_password(KEYRING_SERVICE, server["id"], password)
+            # keyring может быть недоступен (headless Linux, нет D-Bus secret
+            # service). Сервер уже дописан в JSON — не роняем весь add(), лучше
+            # просто не запомнить пароль (клиент попросит его снова при подключении).
+            try:
+                keyring.set_password(KEYRING_SERVICE, server["id"], password)
+            except keyring.errors.KeyringError:
+                pass
         return server
 
     def remove(self, server_id: str) -> None:
@@ -113,7 +125,7 @@ class ServerStore:
         except keyring.errors.PasswordDeleteError:
             pass
 
-    def get_password(self, server_id: str) -> Optional[str]:
+    def get_password(self, server_id: str) -> str | None:
         """Пароль сервера из keyring (None, если не сохранён)."""
         try:
             return keyring.get_password(KEYRING_SERVICE, server_id)

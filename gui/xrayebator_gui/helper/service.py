@@ -1,16 +1,18 @@
-"""Unix-socket service exposing the narrow privileged TUN API."""
+"""Unix-socket service exposing the narrow privileged TUN API.
+
+grp/pwd импортируются лениво внутри функций — это Unix-only модули,
+которых нет на Windows. Helper реально работает только на Linux/macOS,
+но пакет должен импортироваться и на Windows (тесты, packaging).
+"""
 
 from __future__ import annotations
 
 import argparse
-import grp
 import os
-import pwd
 import signal
 import socket
 import struct
 from pathlib import Path
-from typing import Optional
 
 from ..core.helper_protocol import (
     MAX_MESSAGE_BYTES,
@@ -71,13 +73,13 @@ class HelperServer:
         *,
         socket_path: Path = DEFAULT_SOCKET,
         allowed_gid: int,
-        allowed_uid: Optional[int] = None,
+        allowed_uid: int | None = None,
     ):
         self.application = application
         self.socket_path = Path(socket_path)
         self.allowed_gid = allowed_gid
         self.allowed_uid = allowed_uid
-        self._server: Optional[socket.socket] = None
+        self._server: socket.socket | None = None
         self._stopping = False
 
     def serve_forever(self) -> None:
@@ -87,7 +89,7 @@ class HelperServer:
             while not self._stopping:
                 try:
                     connection, _ = self._server.accept()
-                except socket.timeout:
+                except TimeoutError:
                     continue
                 with connection:
                     self._handle_connection(connection)
@@ -166,12 +168,14 @@ def authorized_peer(
     primary_gid: int,
     allowed_gid: int,
     *,
-    allowed_uid: Optional[int] = None,
+    allowed_uid: int | None = None,
 ) -> bool:
     if uid == 0:
         return True
     if allowed_uid is not None:
         return uid == allowed_uid
+    import pwd  # Unix-only (см. docstring модуля)
+
     try:
         username = pwd.getpwuid(uid).pw_name
         groups = os.getgrouplist(username, primary_gid)
@@ -212,6 +216,8 @@ def main() -> int:
             parser.error("--socket-gid должен быть неотрицательным")
         allowed_gid = args.socket_gid
     else:
+        import grp  # Unix-only (см. docstring модуля)
+
         try:
             allowed_gid = grp.getgrnam(args.group).gr_gid
         except KeyError as exc:

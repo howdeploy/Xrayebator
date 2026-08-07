@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import socket
 import time
+from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Iterable, Optional
 
 from .subscription import VlessLink
 
@@ -15,7 +15,7 @@ def probe_endpoint(
     port: int,
     *,
     timeout: float = 2.0,
-) -> Optional[int]:
+) -> int | None:
     started = time.perf_counter()
     try:
         with socket.create_connection((host, port), timeout=timeout):
@@ -30,10 +30,10 @@ def probe_routes(
     *,
     timeout: float = 2.0,
     max_workers: int = 8,
-) -> dict[str, Optional[int]]:
+) -> dict[str, int | None]:
     route_list = list(routes)
     endpoints = {(route.address, route.port) for route in route_list}
-    endpoint_latency: dict[tuple[str, int], Optional[int]] = {}
+    endpoint_latency: dict[tuple[str, int], int | None] = {}
     with ThreadPoolExecutor(
         max_workers=min(max_workers, max(1, len(endpoints)))
     ) as executor:

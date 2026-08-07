@@ -1,0 +1,58 @@
+# Full bash validation suite for the Xrayebator core scripts.
+# Runs ALL validation/test-*.sh on ubuntu-latest (where jq/uuidgen/rg are available).
+# gui-release.yml references this workflow; it also fires on bash changes that the
+# GUI job would otherwise ignore.
+name: Bash core validation
+
+on:
+  pull_request:
+  push:
+    branches: [main, dev, experimental]
+    paths:
+      - "xrayebator"
+      - "install.sh"
+      - "update.sh"
+      - "uninstall.sh"
+      - "validation/**"
+      - ".github/workflows/ci-linux.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bash-validation:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install validation dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends jq uuid-runtime ripgrep
+
+      - name: Syntax check core scripts (CI gate)
+        run: |
+          bash -n xrayebator
+          bash -n install.sh
+          bash -n update.sh
+          bash -n uninstall.sh
+
+      - name: Run full validation suite
+        run: |
+          set -e
+          fails=0
+          for test in validation/test-*.sh; do
+            echo "=== $test ==="
+            if bash "$test"; then
+              echo "PASS $test"
+            else
+              echo "FAIL $test"
+              fails=$((fails + 1))
+            fi
+          done
+          if [[ "$fails" -gt 0 ]]; then
+            echo "::error::$fails validation test(s) failed"
+            exit 1
+          fi
+          echo "All validation tests passed"

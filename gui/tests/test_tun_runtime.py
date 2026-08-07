@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from xrayebator_gui.core.subscription import parse_link
 from xrayebator_gui.core.routing import RoutingProfile
+from xrayebator_gui.core.subscription import parse_link
 from xrayebator_gui.helper.runtime import TunRuntime, TunRuntimeError
 from xrayebator_gui.helper.state import StoredRoute
-
 
 ROUTE_ONE = (
     "vless://11111111-1111-1111-1111-111111111111@one.example.com:443"

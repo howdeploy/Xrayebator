@@ -19,6 +19,33 @@ NC='\033[0m'
 GITHUB_USER="howdeploy"
 GITHUB_REPO="Xrayebator"
 
+# ═══ Детекция IPv6-only VPS (shared helper) ═══
+# Используется при выборе dns.queryStrategy/freedom.domainStrategy.
+# На IPv6-only VPS Xray не сможет резолвить A-records через UseIPv4 →
+# весь клиентский трафик встанет. Проверяем наличие global-scope IPv4
+# address или маршрута до IPv4-адреса; если ни одного нет → UseIP.
+#
+# Использование: if _detect_ipv6_only; then queryStrategy="UseIP"; fi
+_detect_ipv6_only() {
+  if ip -4 addr show scope global 2>/dev/null | grep -q 'inet '; then
+    return 1
+  fi
+  if ip route get 1.1.1.1 2>/dev/null | grep -q .; then
+    return 1
+  fi
+  return 0
+}
+
+# Возвращает строку для Xray dns.queryStrategy / freedom.domainStrategy.
+# Использование: QUERY_STRATEGY=$(_ipv6_query_strategy)
+_ipv6_query_strategy() {
+  if _detect_ipv6_only; then
+    echo "UseIP"
+  else
+    echo "UseIPv4"
+  fi
+}
+
 # ═══════════════════════════════════════════════════════════
 # ADGUARD HOME CLEANUP (legacy deprecated component — Plan 8.3)
 # ═══════════════════════════════════════════════════════════
@@ -41,25 +68,36 @@ _adguard_force_uninstall_if_present() {
   local cfg="${CONFIG_FILE:-/usr/local/etc/xray/config.json}"
   if [[ -f "$cfg" ]]; then
     echo -e "${CYAN}Шаг 1/5: Восстановление Xray DNS (до остановки AdGuard)...${NC}"
+    # IPv6-only: если нет публичного IPv4, Xray не резолвит A-records через UseIPv4.
+    local query_strategy
+    query_strategy=$(_ipv6_query_strategy)
+    # P1-ipv6-fix: единый family-aware DoH. Раньше жёстко 1.1.1.1 — на IPv6-only
+    # хосте недоступно, и после удаления AdGuard Xray оставался без DNS.
+    local dns_doh_server
+    if _detect_ipv6_only; then
+      dns_doh_server="https+local://dns.google/dns-query"
+    else
+      dns_doh_server="https+local://1.1.1.1/dns-query"
+    fi
     local _tmp
     _tmp=$(mktemp /tmp/xray-cfg.XXXXXX) || {
       echo -e "${RED}  mktemp failed — DNS rollback пропущен${NC}"
       _tmp=""
     }
-    if [[ -n "$_tmp" ]] && jq '.dns = {
+    if [[ -n "$_tmp" ]] && jq --arg qs "$query_strategy" --arg doh "$dns_doh_server" '.dns = {
       "servers": [
-        "https+local://1.1.1.1/dns-query",
+        $doh,
         "localhost"
       ],
-      "queryStrategy": "UseIPv4",
+      "queryStrategy": $qs,
       "disableCache": false
     }' "$cfg" > "$_tmp" 2>/dev/null \
        && [[ -s "$_tmp" ]] \
        && xray run -test -config "$_tmp" 2>&1 | grep -q "^Configuration OK\\.$"; then
       mv "$_tmp" "$cfg"
       chmod 644 "$cfg"
-      chown xray:xray "$cfg" 2>/dev/null || true
-      echo -e "${GREEN}  DNS rollback -> DoH Local (1.1.1.1)${NC}"
+      chown root:root "$cfg" 2>/dev/null || true
+      echo -e "${GREEN}  DNS rollback -> DoH Local ($dns_doh_server)${NC}"
     else
       rm -f "$_tmp"
       echo -e "${YELLOW}  DNS rollback пропущен (validation failed)${NC}"
@@ -78,11 +116,30 @@ _adguard_force_uninstall_if_present() {
   echo -e "${GREEN}  Файлы удалены${NC}"
 
   echo -e "${CYAN}Шаг 4/5: Восстановление systemd-resolved...${NC}"
-  if [[ -L /etc/resolv.conf ]] || [[ -f /etc/resolv.conf ]]; then
-    ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf 2>/dev/null || true
-  fi
+  # AdGuard Home перенастраивал resolv.conf на localhost (127.0.0.1:53).
+  # Восстанавливаем стандартный stub-resolv.conf ТОЛЬКО если:
+  #   (a) systemd-resolved будет запущен (иначе stub — dangling symlink → DNS сломан),
+  #   (b) stub-файл реально существует,
+  #   (c) текущий resolv.conf выглядит как AdGuard-managed (symlink или 127.0.0.1).
+  # Не трогаем управляемые вручную статические resolv.conf.
   systemctl restart systemd-resolved 2>/dev/null || true
-  echo -e "${GREEN}  systemd-resolved перезапущен${NC}"
+  local stub="/run/systemd/resolve/stub-resolv.conf"
+  if systemctl is-active --quiet systemd-resolved 2>/dev/null && [[ -f "$stub" ]]; then
+    local replace=0
+    if [[ -L /etc/resolv.conf ]]; then
+      replace=1
+    elif [[ -f /etc/resolv.conf ]] && grep -qE '^\s*nameserver\s+127\.' /etc/resolv.conf 2>/dev/null; then
+      replace=1
+    fi
+    if [[ "$replace" -eq 1 ]]; then
+      ln -sf "$stub" /etc/resolv.conf 2>/dev/null || true
+      echo -e "${GREEN}  resolv.conf восстановлен на systemd-resolved stub${NC}"
+    else
+      echo -e "${YELLOW}  resolv.conf выглядит пользовательским — не трогаю${NC}"
+    fi
+  else
+    echo -e "${YELLOW}  systemd-resolved неактивен — resolv.conf не меняю${NC}"
+  fi
 
   echo -e "${CYAN}Шаг 5/5: UFW cleanup (порт 53)...${NC}"
   if command -v ufw &>/dev/null; then
@@ -303,7 +360,7 @@ if [[ "$GITHUB_BRANCH" != "main" ]] && [[ ! -f "$UPDATE_SESSION_FILE.warned" ]];
 
   if [[ ! "$confirm_install" =~ ^[yYдД]$ ]]; then
     echo -e "${CYAN}✓ Отменено${NC}"
-    rm -f "$UPDATE_SESSION_FILE"
+    rm -f "$UPDATE_SESSION_FILE" "$UPDATE_SESSION_FILE.warned"
     exit 0
   fi
 
@@ -314,7 +371,9 @@ fi
 
 # Резервная копия текущих настроек
 echo -e "${YELLOW}Создание резервной копии...${NC}"
-BACKUP_DIR="/usr/local/etc/xray/backup_$(date +%Y%m%d_%H%M%S)"
+# Единая директория бэкапов с xrayebator (XRAY_BACKUPS_DIR=/usr/local/etc/xray/backups).
+# Отдельный /usr/local/etc/xray/backup_<ts> рос вечно и не подчинялся ротации backup_config().
+BACKUP_DIR="/usr/local/etc/xray/backups/update_$(date +%Y%m%d_%H%M%S)"
 if ! mkdir -p "$BACKUP_DIR"; then
   echo -e "${RED}✗ Не удалось создать каталог резервной копии${NC}"
   exit 1
@@ -344,8 +403,8 @@ _restore_update_config_backup() {
     echo -e "${RED}✗ Не удалось восстановить session backup config.json${NC}"
     return 1
   fi
-  chown xray:xray /usr/local/etc/xray/config.json 2>/dev/null || true
-  chmod 600 /usr/local/etc/xray/config.json
+  chown root:xray /usr/local/etc/xray/config.json 2>/dev/null || true
+  chmod 640 /usr/local/etc/xray/config.json
   echo -e "${GREEN}✓ config.json восстановлен из $UPDATE_CONFIG_BACKUP${NC}"
 }
 
@@ -365,9 +424,13 @@ if [[ $? -eq 0 ]] && [[ -s "$UPDATE_TMP" ]]; then
   # Проверяем что скрипт валидный
   if head -n 1 "$UPDATE_TMP" | grep -q "^#!/bin/bash" && bash -n "$UPDATE_TMP"; then
     mkdir -p /usr/local/etc/xray/scripts
+    chmod 755 /usr/local/etc/xray/scripts 2>/dev/null || true
+    chown root:root /usr/local/etc/xray/scripts 2>/dev/null || true
 
     # Сравниваем с текущей версией
     if ! cmp -s "$UPDATE_TMP" /usr/local/etc/xray/scripts/update.sh 2>/dev/null; then
+      chmod 755 "$UPDATE_TMP"
+      chown root:root "$UPDATE_TMP"
       mv "$UPDATE_TMP" /usr/local/etc/xray/scripts/update.sh
       echo -e "${GREEN}✓ Скрипт update.sh обновлён${NC}"
       echo -e "${YELLOW}⚠ Перезапуск для применения изменений${NC}"
@@ -401,6 +464,7 @@ curl -fsSL --connect-timeout 10 --max-time 60 "${RAW_BASE_URL}/xrayebator" -o "$
 
 if [[ $? -eq 0 ]] && [[ -s "$XRAY_TMP" ]]; then
   chmod 755 "$XRAY_TMP"
+  chown root:root "$XRAY_TMP"
   if bash -n "$XRAY_TMP"; then
     mv "$XRAY_TMP" /usr/local/bin/xrayebator
     echo -e "${GREEN}✓ xrayebator обновлён${NC}\n"
@@ -419,12 +483,15 @@ fi
 # Обновление uninstall.sh и восстановление symlink'ов команд.
 echo -e "${YELLOW}Обновление служебных скриптов...${NC}"
 mkdir -p /usr/local/etc/xray/scripts
+chmod 755 /usr/local/etc/xray/scripts 2>/dev/null || true
+chown root:root /usr/local/etc/xray/scripts 2>/dev/null || true
 UNINSTALL_TMP=$(mktemp /tmp/xrayebator_uninstall_new_XXXXXX.sh)
 if curl -fsSL --connect-timeout 10 --max-time 30 "${RAW_BASE_URL}/uninstall.sh" -o "$UNINSTALL_TMP" \
    && [[ -s "$UNINSTALL_TMP" ]] \
    && head -n 1 "$UNINSTALL_TMP" | grep -q "^#!/bin/bash" \
    && bash -n "$UNINSTALL_TMP"; then
   chmod 755 "$UNINSTALL_TMP"
+  chown root:root "$UNINSTALL_TMP"
   mv "$UNINSTALL_TMP" /usr/local/etc/xray/scripts/uninstall.sh
   echo -e "${GREEN}✓ uninstall.sh обновлён${NC}"
 else
@@ -434,6 +501,7 @@ fi
 chmod 755 /usr/local/bin/xrayebator 2>/dev/null || true
 chmod 755 /usr/local/etc/xray/scripts/update.sh 2>/dev/null || true
 chmod 755 /usr/local/etc/xray/scripts/uninstall.sh 2>/dev/null || true
+chown root:root /usr/local/bin/xrayebator /usr/local/etc/xray/scripts/update.sh /usr/local/etc/xray/scripts/uninstall.sh 2>/dev/null || true
 ln -sf /usr/local/etc/xray/scripts/update.sh /usr/local/bin/xrayebator-update 2>/dev/null || true
 ln -sf /usr/local/etc/xray/scripts/uninstall.sh /usr/local/bin/xrayebator-uninstall 2>/dev/null || true
 echo -e "${GREEN}✓ Команды xrayebator-update / xrayebator-uninstall проверены${NC}\n"
@@ -464,16 +532,16 @@ fi
 # Обновление списка SNI
 echo -e "${YELLOW}Обновление списка SNI...${NC}"
 mkdir -p /usr/local/etc/xray/data
-curl -fsSL "${RAW_BASE_URL}/sni_list.txt" -o /usr/local/etc/xray/data/sni_list.txt
+curl -fsSL --connect-timeout 10 --max-time 30 "${RAW_BASE_URL}/sni_list.txt" -o /usr/local/etc/xray/data/sni_list.txt
 
-if [[ $? -eq 0 ]]; then
+if [[ $? -eq 0 ]] && [[ -s /usr/local/etc/xray/data/sni_list.txt ]]; then
   echo -e "${GREEN}✓ Список SNI обновлён${NC}\n"
 else
   echo -e "${YELLOW}⚠ Не удалось обновить SNI список${NC}\n"
 fi
 
 # Обновление ASCII арта (опционально)
-curl -fsSL "${RAW_BASE_URL}/ascii_art.txt" -o /usr/local/etc/xray/data/ascii_art.txt 2>/dev/null
+curl -fsSL --connect-timeout 10 --max-time 30 "${RAW_BASE_URL}/ascii_art.txt" -o /usr/local/etc/xray/data/ascii_art.txt 2>/dev/null
 
 # Проверка версии
 echo -e "${YELLOW}Проверка установленной версии...${NC}"
@@ -714,7 +782,7 @@ update_xray_core() {
   if [[ -f "$CONFIG_FILE" ]]; then
     local test_output
     test_output=$("${TMPDIR}/extract/xray" run -test -config "$CONFIG_FILE" 2>&1)
-    if ! grep -qx "Configuration OK." <<< "$test_output"; then
+    if ! grep -q "Configuration OK" <<< "$test_output"; then
       echo -e "${RED}✗ config.json не валиден против $TARGET_VERSION${NC}"
       echo -e "${YELLOW}Подробности:${NC}"
       echo "$test_output" | head -10
@@ -853,29 +921,45 @@ if [[ -f "$CONFIG_FILE" ]]; then
   elif ! grep -q "dns.adguard-dns.com" "$CONFIG_FILE" 2>/dev/null; then
     echo -e "${CYAN}  → Миграция на DoH Local${NC}"
 
-    # Создаём новую конфигурацию DNS
-    NEW_DNS='{
-      "servers": [
-        "https+local://1.1.1.1/dns-query",
-        "localhost"
-      ],
-      "queryStrategy": "UseIPv4",
-      "disableCache": false
-    }'
+    # IPv6-only: если нет публичного IPv4, Xray не резолвит A-records через UseIPv4.
+    query_strategy=$(_ipv6_query_strategy)
 
-    # Обновляем DNS секцию в конфиге
+    # Создаём новую конфигурацию DNS.
+    # IPv6-only: нет маршрута до IPv4-резолверов (1.1.1.1) — используем IPv6-совместимый DoH.
+    if _detect_ipv6_only; then
+      dns_doh_server="https+local://dns.google/dns-query"
+    else
+      dns_doh_server="https+local://1.1.1.1/dns-query"
+    fi
+    NEW_DNS=$(cat <<DNSEOF
+{
+  "servers": [
+    "${dns_doh_server}",
+    "localhost"
+  ],
+  "queryStrategy": "${query_strategy}",
+  "disableCache": false
+}
+DNSEOF
+)
+
+    # Обновляем DNS секцию в конфиге.
+    # Обновляем только servers/queryStrategy/disableCache, сохраняя пользовательские
+    # hosts и прочие кастомные поля DNS (точечные полевые апдейты вместо сброса всего блока).
     TMP_FILE=$(mktemp /tmp/xray-cfg.XXXXXX) || {
       echo -e "${YELLOW}  ⚠ mktemp failed (DNS обновление пропущено)${NC}"
       true
     }
-    if [[ -n "$TMP_FILE" ]] && jq --argjson dns "$NEW_DNS" '.dns = $dns' "$CONFIG_FILE" > "$TMP_FILE" 2>/dev/null \
+    if [[ -n "$TMP_FILE" ]] && jq --argjson dns "$NEW_DNS" \
+       '.dns.servers = $dns.servers | .dns.queryStrategy = $dns.queryStrategy | .dns.disableCache = ($dns.disableCache // false)' \
+       "$CONFIG_FILE" > "$TMP_FILE" 2>/dev/null \
        && [[ -s "$TMP_FILE" ]] \
        && xray run -test -config "$TMP_FILE" 2>&1 | grep -q "^Configuration OK\.$"; then
       mv "$TMP_FILE" "$CONFIG_FILE"
       # Restore mode/owner (mktemp создаёт с mode 600, mv наследует root)
       chmod 644 "$CONFIG_FILE"
-      chown xray:xray "$CONFIG_FILE" 2>/dev/null || true
-      echo -e "${GREEN}  ✓ DNS обновлён на DoH Local (https+local://1.1.1.1)${NC}"
+      chown root:root "$CONFIG_FILE" 2>/dev/null || true
+      echo -e "${GREEN}  ✓ DNS обновлён на DoH Local (${dns_doh_server})${NC}"
     else
       rm -f "$TMP_FILE"
       echo -e "${YELLOW}  ⚠ Не удалось обновить DNS (size-check или xray test failed, конфиг без изменений)${NC}"

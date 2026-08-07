@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Optional
 
 from . import proxy
 from .connection import ConnectionMode
@@ -28,9 +28,9 @@ class LocalProxyBackend:
     ):
         self._ensure_binary = ensure_binary_fn
         self._process_factory = process_factory
-        self._process: Optional[XrayProcess] = None
-        self._pending_config: Optional[dict] = None
-        self._proxy_snapshot: Optional[proxy.ProxySnapshot] = None
+        self._process: XrayProcess | None = None
+        self._pending_config: dict | None = None
+        self._proxy_snapshot: proxy.ProxySnapshot | None = None
 
     def prepare(
         self,
@@ -78,7 +78,7 @@ class LocalProxyBackend:
             )
         self._proxy_snapshot = snapshot
 
-    def verify(self) -> Optional[str]:
+    def verify(self) -> str | None:
         if self._process is None:
             return None
         return self._process.health_check()

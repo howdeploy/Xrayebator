@@ -33,6 +33,9 @@ shellcheck -S error xrayebator install.sh update.sh uninstall.sh
 | `test-update-xray-core-sync.sh` | Xray-core 更新的同步 |
 | `test-vless-url-generation.sh` | `vless://` 链接生成 |
 | `test-installer-network-fallbacks.sh` | 安装脚本的网络回退 |
+| `test-bbr-removal-migration.sh` | 已被移除的 BBR/TCP 调优在所有路径上的安全清理 |
+| `test-legacy-udp443-migration.sh` | 一次性清理旧版 UDP/443 阻断规则 |
+| `test-main-menu-numbering.sh` | 主菜单条目编号连续且与处理函数一致 |
 
 > 静态测试不能替代一次性 VPS 上的实测：创建与删除配置档、校验配置、重启服务、回滚，
 > 以及真实客户端连接。
