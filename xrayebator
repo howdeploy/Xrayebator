@@ -178,8 +178,20 @@ find_profile_file_by_uuid() {
 }
 
 find_available_random_port() {
+  # Нижняя граница 30000 — как была: часть мобильных операторов режет
+  # исходящие TCP на низкие порты, инбаунд там у таких абонентов недостижим.
+  # Потолок уводим ПОД эфемерный диапазон ядра (ip_local_port_range): порт
+  # оттуда может быть занят исходящим сокетом — в `ss -l` его не видно,
+  # проверка проходит, но xray падает на bind() уже после рестарта и профиль
+  # откатывается. Если ядро отдало ephemeral выше 60000 — окно не сужаем.
   local min_port=30000
   local max_port=60000
+  local eph_min
+  eph_min=$(awk '{print $1}' /proc/sys/net/ipv4/ip_local_port_range 2>/dev/null)
+  if [[ "$eph_min" =~ ^[0-9]+$ ]] && (( eph_min > min_port + 1000 )) \
+     && (( eph_min - 1 < max_port )); then
+    max_port=$((eph_min - 1))
+  fi
   local attempts=0
   local port
 
@@ -195,7 +207,7 @@ find_available_random_port() {
     ((attempts++))
   done
 
-  echo -e "${RED}✗ Не удалось подобрать свободный случайный порт 30000-60000${NC}" >&2
+  echo -e "${RED}✗ Не удалось подобрать свободный случайный порт ${min_port}-${max_port}${NC}" >&2
   return 1
 }
 
@@ -1177,7 +1189,8 @@ open_firewall_port() {
   echo -e "${CYAN}  → Открываю порт ${port}/${protocol}...${NC}"
   if ufw allow "${port}/${protocol}" >/dev/null 2>&1; then
     echo -e "${GREEN}  ✓ Порт ${port}/${protocol} открыт${NC}"
-    ufw reload >/dev/null 2>&1
+    # Без ufw reload: `ufw allow` уже применил правило к живому iptables.
+    # reload стоит ~2.3с и сбрасывает conntrack (рвёт активные сессии).
     return 0
   else
     echo -e "${RED}  ✗ Ошибка открытия порта${NC}" >&2
@@ -1210,7 +1223,7 @@ close_firewall_port() {
   if ufw status | grep -qE "^${port}/${protocol}.*ALLOW"; then
     echo -e "${CYAN}  → Закрываю порт ${port}/${protocol}...${NC}"
     ufw delete allow "${port}/${protocol}" >/dev/null 2>&1
-    ufw reload >/dev/null 2>&1
+    # Без ufw reload — см. open_firewall_port.
     echo -e "${GREEN}  ✓ Порт закрыт${NC}"
   fi
 
