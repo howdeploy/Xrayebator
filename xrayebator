@@ -1298,9 +1298,13 @@ update_all_profiles_on_port() {
 
   for pname in "${profiles[@]}"; do
     local pfile="$PROFILES_DIR/$pname.json"
+    # Левая часть |= обязана быть путевым выражением. `(.routes // []) |=` таковым не является:
+    # на профиле без поля routes (легаси, один маршрут в корне) jq падает с
+    # "Invalid path expression with result []", safe_jq_write глушит stderr — и SNI/поле
+    # не обновляется. Поэтому сначала проверяем has("routes") и присваиваем по чистому пути.
     if safe_jq_write --argjson port "$port" --arg f "$field" --arg v "$value" '
       if .port == $port then .[$f] = $v else . end |
-      (.routes // []) |= map(if .port == $port then .[$f] = $v else . end)
+      if has("routes") then .routes |= map(if .port == $port then .[$f] = $v else . end) else . end
     ' "$pfile"; then
       echo -e "${CYAN}  → Обновлен: ${YELLOW}$pname${NC}"
     else
@@ -1343,9 +1347,11 @@ update_all_profiles_port_reference() {
   local pname
   for pname in "${profiles[@]}"; do
     local pfile="$PROFILES_DIR/$pname.json"
+    # Тот же путевой баг, что и в update_all_profiles_on_port: без has("routes")
+    # легаси-профиль без поля routes роняет jq и остаётся со старым портом.
     if safe_jq_write --argjson old_port "$old_port" --argjson new_port "$new_port" '
       if .port == $old_port then .port = $new_port else . end |
-      (.routes // []) |= map(if .port == $old_port then .port = $new_port else . end)
+      if has("routes") then .routes |= map(if .port == $old_port then .port = $new_port else . end) else . end
     ' "$pfile"; then
       echo -e "${CYAN}  → Обновлен порт: ${YELLOW}$pname${NC}"
     else
@@ -2632,12 +2638,16 @@ _migrate_sni_list_2026() {
     known_defaults["$domain"]=1
   done
 
+  # Строки обязаны совпадать с shipped sni_list.txt байт-в-байт: иначе grep -Fxq
+  # ниже считает список устаревшим и гоняет переписывание файла с рестартом Xray
+  # на пустом месте. Приоритеты — по замеру 03.09.2026: логистика 2,
+  # крупный РФ e-commerce и банки 4 (их SNI режется ТСПУ).
   local -a to_add_p1=(
-    "online.uralsib.ru|ru_whitelist|1"
-    "online.vtb.ru|ru_whitelist|1"
-    "www.cdek.ru|ru_whitelist|1"
-    "www.pochta.ru|ru_whitelist|1"
-    "www.avito.ru|ru_whitelist|1"
+    "online.uralsib.ru|ru_whitelist|4"
+    "online.vtb.ru|ru_whitelist|4"
+    "www.cdek.ru|ru_whitelist|2"
+    "www.pochta.ru|ru_whitelist|2"
+    "www.avito.ru|ru_whitelist|4"
   )
   local -a to_add_p3=(
     "github.com|foreign|3"
@@ -3857,7 +3867,9 @@ _default_sni_for_transport() {
     *)
       local from_list
       from_list=$(grep -v '^#' "$SNI_LIST" 2>/dev/null | grep -v '^[[:space:]]*$' | head -n 1 | cut -d'|' -f1)
-      [[ -z "$from_list" ]] && from_list="www.ozon.ru"
+      # Замер 03.09.2026 (MegaFon): www.ozon.ru как SNI режется ТСПУ — в качестве
+      # аварийного дефолта берём домен, прошедший тот же замер.
+      [[ -z "$from_list" ]] && from_list="api-maps.yandex.ru"
       echo "$from_list"
       ;;
   esac
@@ -7748,14 +7760,23 @@ change_sni_menu() {
   fi
 
   declare -A sni_desc
-  sni_desc["www.ozon.ru"]="E-commerce, макс. устойчивость для мобильных"
+  # Прошли замер 03.09.2026 (MegaFon, Москва) — верх списка
+  sni_desc["api-maps.yandex.ru"]="Яндекс Карты API — прошёл замер 03.09.2026"
+  sni_desc["yandex.ru"]="Яндекс, портал — прошёл замер 03.09.2026"
+  sni_desc["www.samsung.com"]="Максимальная доля трафика на MegaFon (236 соединений)"
+  sni_desc["dl.google.com"]="Google CDN обновлений — прошёл замер 03.09.2026"
+  sni_desc["swcdn.apple.com"]="Apple CDN обновлений — прошёл замер 03.09.2026"
+  sni_desc["gateway.icloud.com"]="iCloud gateway — прошёл замер 03.09.2026"
+  sni_desc["www.lovelive-anime.jp"]="Нишевый JP-домен, ТСПУ его не знает"
+  sni_desc["www.microsoft.com"]="Проходит, но доля трафика мизерная (11 против 236)"
+  sni_desc["www.ozon.ru"]="Замер 03.09.2026: TLS не проходит, не использовать"
   sni_desc["api.ozon.ru"]="Ozon API, хорошо в паре с основным"
   sni_desc["st.ozon.ru"]="Ozon CDN статика"
   sni_desc["ir.ozon.ru"]="Ozon CDN изображения"
-  sni_desc["www.wildberries.ru"]="E-commerce, стабильно для Мегафон/Ростелеком"
+  sni_desc["www.wildberries.ru"]="Замер 03.09.2026: TLS не проходит, не использовать"
   sni_desc["splitter.wb.ru"]="Wildberries CDN"
   sni_desc["www.sberbank.ru"]="Банк, оптимально для региональных сетей"
-  sni_desc["www.tinkoff.ru"]="Банк, стабильный вариант"
+  sni_desc["www.tinkoff.ru"]="Замер 03.09.2026: TLS не проходит, не использовать"
   sni_desc["www.alfabank.ru"]="Банк, запасной вариант"
   sni_desc["www.nspk.ru"]="Нац. платёжная система, сложно блокировать"
   sni_desc["sbp.nspk.ru"]="СБП, идеально для МТС"
@@ -7765,11 +7786,10 @@ change_sni_menu() {
   sni_desc["www.gosuslugi.ru"]="Госуслуги, для сложных регионов"
   sni_desc["www.mos.ru"]="Портал Москвы"
   sni_desc["speller.yandex.net"]="Яндекс CDN, универсальный вариант"
-  sni_desc["api-maps.yandex.ru"]="Яндекс Карты API"
   sni_desc["mc.yandex.ru"]="Яндекс Метрика"
   sni_desc["suggest.yandex.ru"]="Яндекс подсказки"
   sni_desc["www.github.com"]="Только если российские не работают!"
-  sni_desc["www.cloudflare.com"]="Для корпоративных каналов"
+  sni_desc["www.cloudflare.com"]="Прошёл замер 03.09.2026, хорош для gRPC"
   sni_desc["aws.amazon.com"]="AWS CDN, запасной вариант для gRPC"
 
   echo -e "${YELLOW}ТОП-20 доменов для маскировки:${NC}\n"
