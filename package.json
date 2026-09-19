@@ -1,0 +1,51 @@
+{
+  "name": "xrayebator",
+  "version": "0.1.0",
+  "description": "Xrayebator Desktop — админ-панель развёртки VPN-сервера на VPS",
+  "main": "out/main/index.js",
+  "author": "Xrayebator",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "package": "electron-vite build && electron-builder --win",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "dependencies": {
+    "@electron-toolkit/preload": "^3.0.2",
+    "@electron-toolkit/utils": "^4.0.0",
+    "@heroui/react": "^3.2.4",
+    "@tailwindcss/vite": "^4.0.0",
+    "country-flag-icons": "^1.6.20",
+    "electron-store": "^8.2.0",
+    "electron-updater": "^6.8.9",
+    "i18next": "^26.3.6",
+    "keytar": "^7.9.0",
+    "lucide-react": "^1.31.0",
+    "qrcode": "^1.5.4",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-i18next": "^17.0.11",
+    "ssh2": "^1.16.0",
+    "tailwindcss": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/qrcode": "^1.5.5",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/ssh2": "^1.15.0",
+    "@vitejs/plugin-react": "^5.2.0",
+    "electron": "^43.0.0",
+    "electron-builder": "^26.15.0",
+    "electron-vite": "^5.0.0",
+    "typescript": "^5.7.0",
+    "vite": "^7.0.0",
+    "vitest": "^4.0.0"
+  }
+}

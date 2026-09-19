@@ -25,8 +25,11 @@
 
 <p>
 <strong>One bash script turns a clean VPS into a personal VLESS Reality server.</strong><br>
-Xrayebator installs Xray-core, brings up Reality inbounds on random ports, builds a profile of seven
-routes and hands them to the client as a single HTTPS subscription link. Current line — 3.0.
+Xrayebator installs Xray-core, brings up Reality inbounds on random ports, and provisions a standard
+schema-v3 HAPP profile of seven routes for a new setup. Existing seven-route profiles can be reused only
+when they have enough live routes, so inspect the profile JSON when debugging labels or schema. The client
+receives the routes as a single HTTPS subscription link. Current server line — 3.0; the optional Electron
+desktop app is versioned separately.
 </p>
 
 </div>
@@ -36,13 +39,18 @@ curl -fsSLo ./xrayebator-install.sh \
   https://raw.githubusercontent.com/howdeploy/Xrayebator/main/install.sh
 less ./xrayebator-install.sh          # review the script before running it
 sudo bash ./xrayebator-install.sh
+
+# Step-control flags (interrupt-safe install):
+#   --check   Show which of the 10 steps are already done
+#   --resume  Continue from the first unfinished step
+#   --fresh   Reset all markers and start from zero
 ```
 
 <div align="center">
 
 <p>
 Debian 12/13 · Ubuntu 22.04/24.04 · 512 MB RAM or more · <code>root</code> or <code>sudo</code><br>
-Then run <code>sudo xrayebator</code>, pick item <code>9</code>, and the subscription is ready.
+Then run <code>sudo xrayebator</code>, pick item <code>6</code>, and the subscription is ready.
 Details: <a href="#quick-start">Quick start</a>
 </p>
 
@@ -74,9 +82,10 @@ Xrayebator solves both problems:
 
 - a profile is not one route but a set of `routes` sharing a single `sub_token`;
 - the client receives the whole set as one short subscription link instead of seven `vless://` links;
-- every config change goes through a backup, an `xray run -test` validation and an automatic
-  rollback, so a failed edit never leaves the server without VPN;
-- changing SNI, port or fingerprint does not require recreating the profile.
+- runtime config mutations go through a backup, explicit `xray run -test` validation and an automatic
+  rollback, so a failed edit does not intentionally leave the server without VPN;
+- changing SNI, port or fingerprint does not require recreating the profile. SNI and port are shared
+  inbound settings; fingerprint is client-side per profile/route.
 
 The project is developed and tested by one person. The consequences are listed plainly in
 [Known limitations](#known-limitations) — read that section before installing on a VPS you care
@@ -159,6 +168,9 @@ The HAPP flow creates or reuses a profile of seven routes:
 | `xhttp-legacy` | xhttp | HAPP-compatible XHTTP fallback, `decryption=none`, no PQ |
 | `xhttp-pq` | xhttp | XHTTP with post-quantum encryption `mlkem768x25519plus` |
 | `tcp-mux` | tcp | TCP Reality without Vision flow, a separate compatible fallback |
+
+The managed HAPP profile uses schema version 3 and seven routes. The normal HAPP list publishes six of
+those routes; the PQ route remains available through the raw/profile path.
 | `grpc` | grpc | gRPC Reality; sensitive to HTTP/2 and SNI |
 | `tcp-vision` | tcp | TCP Reality with `xtls-rprx-vision` |
 | `tcp-utls-firefox` | tcp | TCP Vision with a Firefox fingerprint |
@@ -187,15 +199,17 @@ works depends on the client, its bundled Xray-core version and the specific netw
 
 ### Requirements
 
-- A VPS with Debian 12/13 or Ubuntu 22.04/24.04 LTS and `root` or `sudo` access
+Hard prerequisites are a Bash shell, root (or sudo), an apt-based Debian/Ubuntu-like system and a running systemd environment. The tested matrix is Debian 12/13 and Ubuntu 22.04/24.04.
+
 - 512 MB RAM minimum, 1 GB or more recommended
 - 1 CPU core, 2 or more recommended
 - 1 GB of free disk space
 
 The installer pulls `ca-certificates curl wget jq qrencode uuid-runtime ufw unzip openssl socat`.
 
-> The installer does not check the OS version — the matrix above is declared, not enforced. Field
-> testing happens mostly on Debian. Take a snapshot before installing on a VPS that matters.
+> The installer checks the apt/systemd prerequisites but does not enforce the release-version matrix. It
+> detects the active SSH port before enabling UFW; if the port cannot be determined or opened safely,
+> inactive UFW stays disabled. Take a snapshot before installing on a VPS that matters.
 
 ### Installation
 
@@ -256,6 +270,57 @@ Use `1) Создать новый профиль` for manual control over SNI, t
 
 ---
 
+## Desktop GUI
+
+Alongside the terminal menu there is an optional desktop application (Electron + React, `src/`) that
+manages a VPS over SSH. It does not replace the bash engine — every operation is still performed
+server-side by `xrayebator`, and the GUI only drives the same commands over SSH.
+
+```text
+desktop app (Electron · React)
+    │  SSH + the documented CLI
+    ▼
+xrayebator (bash)   ──►  /usr/local/etc/xray/
+```
+
+Interface language (Русский / English / 简体中文) is switched in the header of the main screen and is
+remembered in `localStorage`. The terminal menu remains Russian.
+
+What the GUI can do:
+
+| Page | Operations |
+|---|---|
+| Dashboard | Server cards with reachability status, open, settings, delete; language switch |
+| Add server | Deploy a new VPS: upload `install.sh` + `xrayebator`, run the install, place the binary, run `quickstart --email`, save the server and the `subscription_url` |
+| Server keys | Refresh the subscription, copy the URL, show `vless://` links and QR codes |
+| Server settings | SSH access by password or private key, direct root or sudo; list/create/delete profiles, change fingerprint, SNI and port, plus update or uninstall Xrayebator on the server |
+
+Root + password is the one-click default; key authentication and sudo are optional. SSH passwords,
+sudo passwords, key passphrases and private-key contents stay only in renderer memory for the active
+form/session and are sent to the main process per operation. The app persists the server card,
+connection preferences, `subscription_url`, fetched `vless://` links and the pinned SSH host-key
+fingerprint. The subscription URL and VLESS links are bearer/client credentials: protect local app data
+and revoke the subscription through the terminal workflow after a leak.
+
+The GUI exposes only a subset of the terminal menu. Bypass, `probe-test`, subscription revoke,
+`happ-setup`, cascade, self-steal and service logs/status remain terminal-only. See
+[Electron Desktop GUI](docs/desktop-gui.md) for the complete boundary, security model and packaging details.
+
+Build and run in the development mode:
+
+```bash
+npm install
+npm run dev          # Electron + Vite dev server
+npm run build        # compile the renderer and the main process
+```
+
+Electron checks: `npm test` runs the 9 unit files in `tests/`; `npm run typecheck` checks the
+TypeScript surface. `npm run build` produces the app bundle. On native Windows, the POSIX-only
+`tests/unit/shell-command.test.ts` may fail because `/bin/sh` is absent; Linux CI is the source of truth.
+See [Testing](docs/testing.md#desktop-gui) and [Electron Desktop GUI](docs/desktop-gui.md).
+
+---
+
 ## Documentation
 
 | Document | Contents |
@@ -272,50 +337,59 @@ Russian and Chinese versions live in [`docs/ru/`](docs/ru/) and [`docs/zh-CN/`](
 
 ## Known limitations
 
-- The installer enables UFW via `ufw --force enable` and opens a fixed list of eleven ports. SSH on a
-  non-standard port is not in that list.
+- The installer requires Bash, root/sudo, an apt-based Debian/Ubuntu-like system and systemd. The
+  tested matrix is Debian 12/13 and Ubuntu 22.04/24.04; release versions are not hard-gated.
+- The installer detects the active SSH port before enabling UFW. If the port cannot be determined or
+  opened safely, inactive UFW stays disabled. Once the safety check succeeds, it adds the fixed
+  project TCP service list and records only its own rules in `.ufw_owned`.
 - `xrayebator-update` automatically removes a detected `/opt/AdGuardHome` as deprecated: it first
   moves Xray DNS back to DoH, then stops the service and deletes the files. Do not update without a
   snapshot if AdGuard Home is in use on that VPS.
-- `/usr/local/etc/xray/` is owned by `xray:xray` in full and `config.json` has mode `0644`: the
-  service account can write to its own config and profiles.
-- The installer does not check the OS version. The support matrix is declared, not enforced.
+- Most Xray state, profiles, markers, keys and manager scripts are root-owned; the `xray` service
+  account reads what it needs and writes runtime logs under `/var/log/xray`. Generated metadata such
+  as `.server_country` and rollback paths can have narrower owner/mode differences, so inspect the
+  exact file when auditing permissions.
 - The Xray core is verified by SHA-256 unconditionally, while Loyalsoldier geo databases are
   downloaded without a checksum check.
-- `xrayebator-uninstall` does not remove everything. It stops and disables `xray`, deletes
-  `/usr/local/etc/xray`, `/usr/local/bin/xrayebator` and the `xray.service` and `xray@.service`
-  units. It does NOT remove the `/usr/local/bin/xray` binary, `subhttp`, `xrayebator-update`,
-  `xrayebator-uninstall`, the `xrayebator-sub.service` unit, nginx configs, geo databases, UFW rules
-  or the `xray` system user. Clean up the remains manually.
+- `xrayebator-uninstall` stops and disables `xray`, removes `/usr/local/bin/xray` and the geo
+  databases in `/usr/local/share/xray`, deletes `/usr/local/etc/xray`, `/var/log/xray`, the
+  `xrayebator`, `xrayebator-update`, `xrayebator-uninstall` and `subhttp.sh` binaries, the
+  `xray.service`, `xray@.service`, `xray.service.d` and `xrayebator-sub.service` units, the nginx
+  vhosts matching the product's names, its own certbot certificates and UFW rules, and the `xray`
+  system user. Cleanup is path/name based for nginx vhosts, not a general ownership manifest. It leaves
+  global Certbot state, the nginx package, foreign certbot certificates and UFW rules untouched. Domain-mode ACME webroot `/var/www/xrayebator-domain-acme` may remain for manual cleanup.
 - The `tcp-mux` route is kept for compatibility; it is not a mux preset.
 - H2, WebSocket, SplitHTTP and Clash/mihomo subscriptions are not supported.
 - The interface imposes no hard limit on users, but real capacity is bound by CPU, RAM, VPS
   bandwidth, route count and provider limits.
+- Installation and project-update lifecycle paths use their own validation/restart/rollback sequences;
+  they are not identical to the runtime `safe_restart_xray` transaction. Verify Xray, DNS and the
+  subscription after a lifecycle update.
 
 ---
 
 ## Updating and removal
 
 ```bash
-sudo xrayebator update            # Xray-core only
-sudo xrayebator-update            # Xrayebator itself, branch from .current_branch
-sudo xrayebator-update main       # Xrayebator itself, forced from main
-sudo xrayebator-uninstall         # remove the service and configuration
+sudo xrayebator update                  # Xray-core only
+sudo xrayebator update dev              # manager self-update from a branch, then core update
+sudo xrayebator-update [branch]         # full lifecycle updater; no arg opens branch selection
+sudo xrayebator-uninstall               # remove the service and configuration
 ```
 
 The names look alike, the meaning does not:
 
-| | `sudo xrayebator update` | `sudo xrayebator-update main` |
+| | `sudo xrayebator update <branch>` | `sudo xrayebator-update [branch]` |
 |---|---|---|
-| What it updates | The Xray-core binary | The Xrayebator scripts |
-| Source | GitHub Releases of the XTLS project | The `main` branch of this repository |
-| Argument | Takes none | Takes a branch name: `main`, `dev`, `experimental` or any other |
-| Affects | Core version, transports, protocols | Menu, migrations, subscription generation |
-| Side effect | Xray restart after config validation | Migrations run on the next menu launch |
+| What it starts | Installed manager self-update | Full project lifecycle updater |
+| Source | Canonical raw manager file for the requested branch | Selected branch's `update.sh` workflow |
+| Main result | Manager self-update followed by Xray-core update | Manager scripts, data, subscription integration and service refresh |
+| Branch selection | Explicit branch is required | No argument shows `.current_branch`, then prompts; explicit argument selects it |
 
-The chosen branch is stored in `/usr/local/etc/xray/.current_branch` and shown in the menu header.
-After updating Xrayebator itself, the first `sudo xrayebator` run executes migrations: wait for them
-to finish before refreshing the subscription in the client.
+The current branch is displayed in the updater and stored in `/usr/local/etc/xray/.current_branch`,
+but no-argument `xrayebator-update` still prompts for a selection. The Electron GUI invokes
+`xrayebator update <branch>`, not the full project updater. After any lifecycle update, wait for
+migrations and verify Xray, DNS and the subscription before refreshing the client.
 
 What stays on the system after `xrayebator-uninstall` is listed in
 [Known limitations](#known-limitations).

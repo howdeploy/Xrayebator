@@ -113,6 +113,18 @@ after_duplicate=$(sha256sum "$CONFIG_FILE" | awk '{print $1}')
 [[ "$duplicate_rc" -ne 0 && "$before_duplicate" == "$after_duplicate" ]] ||
   fail "duplicate target move was not rejected atomically"
 
+echo "Проверка firewall guard при повреждённом config.json"
+UFW_CALLS_FILE="$WORKDIR/ufw-calls"
+ufw() {
+  printf 'called\n' >> "$UFW_CALLS_FILE"
+  return 0
+}
+printf '{broken-json\n' > "$CONFIG_FILE"
+close_firewall_port 42003 || fail "close_firewall_port failed on invalid config"
+[[ ! -e "$UFW_CALLS_FILE" ]] ||
+  fail "close_firewall_port touched UFW after jq/config failure"
+unset -f ufw
+
 echo "Проверка XHTTP legacy/PQ совместимости"
 VLESS_DECRYPTION_FILE="$WORKDIR/vless_decryption"
 printf 'mlkem768x25519plus.test-key-material\n' > "$VLESS_DECRYPTION_FILE"
@@ -173,11 +185,66 @@ after_modes=$(sha256sum "$CONFIG_FILE" | awk '{print $1}')
 [[ "$before_modes" == "$after_modes" ]] ||
   fail "incompatible XHTTP add mutated config.json"
 
+OPENED_PORT_FILE="$WORKDIR/opened-port"
+open_firewall_port() {
+  printf '%s\n' "$1" > "$OPENED_PORT_FILE"
+  return 0
+}
 add_inbound "legacy-new" "xhttp" 44001 "legacy.example" "firefox" "" "/requested" "false" >/dev/null ||
   fail "compatible legacy XHTTP client was rejected"
 jq -e 'any(.inbounds[] | select(.port == 44001) | .settings.clients[]; .id == "legacy-new")' \
   "$CONFIG_FILE" >/dev/null ||
   fail "compatible XHTTP client was not added"
+[[ "$(<"$OPENED_PORT_FILE")" == "44001" ]] ||
+  fail "existing inbound path did not verify/open its firewall port"
+
+echo "Проверка переноса одного UUID из shared inbound на свободный порт"
+find "$PROFILES_DIR" -maxdepth 1 -type f -delete
+jq -n '{
+  name:"selected",
+  uuid:"move-me",
+  transport:"tcp",
+  port:45001,
+  sni:"shared.example",
+  fingerprint:"firefox",
+  pq_enabled:false
+}' > "$PROFILES_DIR/selected.json"
+jq -n '{
+  inbounds: [{
+    port:45001,
+    protocol:"vless",
+    settings:{
+      clients:[
+        {id:"move-me",flow:"xtls-rprx-vision"},
+        {id:"stay",flow:"xtls-rprx-vision"}
+      ],
+      decryption:"none"
+    },
+    streamSettings:{
+      network:"tcp",
+      security:"reality",
+      realitySettings:{serverNames:["shared.example"]}
+    },
+    tag:"inbound-45001"
+  }]
+}' > "$CONFIG_FILE"
+PRIVATE_KEY="test-private-key"
+show_ascii() { :; }
+fix_xray_permissions() { :; }
+safe_restart_xray() { return 0; }
+open_firewall_port() { return 0; }
+close_firewall_port() { return 0; }
+printf '1\n10\n45002\ny\n\n' | change_port_menu >/dev/null ||
+  fail "change_port_menu failed to split a shared inbound"
+jq -e '
+  any(.inbounds[] | select(.port == 45001) | .settings.clients[]; .id == "stay") and
+  ([.inbounds[] | select(.port == 45001) | .settings.clients[] | select(.id == "move-me")] | length) == 0 and
+  any(.inbounds[] | select(.port == 45002) | .settings.clients[]; .id == "move-me") and
+  ([.inbounds[] | select(.port == 45002) | .settings.clients[] | select(.id == "stay")] | length) == 0
+' "$CONFIG_FILE" >/dev/null ||
+  fail "shared inbound move relocated a foreign client or lost the selected UUID"
+[[ "$(jq -r '.port' "$PROFILES_DIR/selected.json")" == "45002" ]] ||
+  fail "selected profile JSON did not move to the new port"
 
 echo "Проверка rollback profile JSON"
 printf '{"name":"sample","port":43001}\n' > "$PROFILES_DIR/sample.json"

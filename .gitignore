@@ -1,9 +1,20 @@
-# локальный контекст ИИ
-AI_CONTEXT.md
+﻿
+# Node / Electron
+node_modules/
+out/
+dist/
+*.log
 
-# бэкапы xrayebator
-xrayebator.backup_*
+# Diagnostic helpers / dev-only files
+GUI-demo.py
+gui-debug.log
+Xrayebator-Windows-x64.exe.sha256
+GUI-*.bat
+implementation_plan*.md
+ANALYSIS.md
+DESIGN-REVIEW.md
+DESIGN-REVIEW-*.md
 
-# локальные ресерч-ноты (не публичные, личный контекст)
-RESEARCH_REPORT.md
-ресерч задание.txt
+# OS
+.DS_Store
+Thumbs.db

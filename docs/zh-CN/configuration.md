@@ -2,11 +2,30 @@
 
 [← 返回 README](../../README.zh-CN.md) · [English](../configuration.md) · [Русский](../ru/configuration.md)
 
-章节：[环境变量](#安装脚本的环境变量) · [防火墙与主机网络设置](#防火墙与主机网络设置) ·
-[主菜单](#主菜单) · [命令](#命令) · [分流路由](#分流路由) · [级联](#级联与上游节点) ·
+章节：[前置条件](#前置条件与已测试系统) · [环境变量](#安装脚本的环境变量) · [防火墙与主机网络设置](#防火墙与主机网络设置) ·
+[主菜单](#主菜单) · [命令](#命令) · [桌面图形界面](#桌面图形界面) · [分流路由](#分流路由) ·
+[级联](#级联与上游节点) ·
 [Self-steal](#自有域名与-self-steal-挡板) · [域名与 DNS](#域名与-dns)
 
 ---
+
+## 前置条件与已测试系统
+
+安装脚本有以下硬性前置条件：
+
+- root 权限，或能够通过 `sudo` 获取 root 的用户；
+- Bash（使用 Bash 运行 `install.sh` 和管理器，不要使用 `sh`）；
+- 基于 apt 的 Debian/Ubuntu 类系统，具有 `apt`/`apt-get`；
+- 正常运行的 systemd 环境（`systemctl` 和 `/run/systemd/system`）。
+
+支持的系统家族比下面的版本更宽，但当前验证矩阵覆盖：
+
+| 发行版 | 已测试版本 |
+|---|---|
+| Debian | 12、13 |
+| Ubuntu | 22.04、24.04 |
+
+实际部署的基础条件是 KVM 类 VPS、正常 DNS、出站 HTTPS 和可连接的 SSH。没有 systemd 的容器会被安装脚本拒绝，不会被部分配置。
 
 ## 安装脚本的环境变量
 
@@ -43,11 +62,15 @@ Xrayebator 不会更改主机的 TCP 拥塞控制算法，也不会写入或应�
 被删除的项目自有文件会备份到 `/usr/local/etc/xray/backups/`。即使实时切换失败，也不会恢复这些
 持久化设置，从而避免服务器重启后再次启用该算法。
 
-UFW 由安装脚本自行管理：安装 `ufw` 包，若 UFW 未启用则执行 `ufw --force enable`，
-随后开放端口 `22, 80, 443, 8443, 2053, 2083, 2087, 8080, 2096, 8880, 9443/tcp` 并重新加载规则。
+安装程序会自行管理 UFW，并在启用前处理 SSH 锁定风险：
 
-> 端口列表是固定的，其中可能没有你的 SSH 端口。如果 SSH 不在 `22`，或者你有自己的防火墙策略，
-> 请对比安装前后的 numbered rules。卸载 Xrayebator 时，安装脚本开放的规则不会被移除。
+1. 从监听 socket 检测活动 SSH 端口，并在可用时检查 `sshd -T` 与 SSH 配置；
+2. 确认该端口已经放行，或在启用 UFW 前先放行；
+3. 只把 Xrayebator 创建的规则记录在 root-owned 的 `/usr/local/etc/xray/.ufw_owned` 清单中；
+4. 如果无法确定或安全放行 SSH 端口，保持非活动 UFW 关闭，而不应用可能锁死 VPS 的 deny 策略。
+
+如果 UFW 已经启用或通过 SSH 安全检查后被启用，安装程序会加入以下项目服务 TCP 端口：
+`22, 80, 443, 8443, 2053, 2083, 2087, 8080, 2096, 8880, 9443/tcp`。这不表示 SSH 必须使用 22 端口；请对比安装前后的 numbered rules。Xrayebator 自己创建的规则会在卸载时移除，安装前已存在的规则不受影响。
 
 ## 主菜单
 
@@ -67,29 +90,67 @@ UFW 由安装脚本自行管理：安装 `ufw` 包，若 UFW 未启用则执行 
 
 操作项从 `1` 到 `10` 连续编号；`0` 用于退出程序。
 
-修改 SNI 或端口会重启对应的服务端入站。指纹是客户端参数：只影响所选线路，且不需要重启 Xray。
-任何修改之后，请在客户端强制刷新订阅，或通过 `3) Подключиться по профилю` 重新获取原始线路。
+端口和 SNI 是共享入站的设置，修改它们可能影响同一端口上的其他配置档。指纹是配置档/线路级别的客户端参数，修改它不会重启 Xray，也不会影响其他线路。任何修改之后，请在客户端强制刷新订阅，或通过 `3) Подключиться по профилю` 重新获取原始线路。
 
 ## 命令
 
 | 命令 | 作用 |
 |---|---|
 | `sudo xrayebator` | 打开交互菜单 |
-| `sudo xrayebator update` | 仅更新 **Xray-core 内核**，不动 Xrayebator 本身 |
+| `sudo xrayebator update` | 仅更新 **Xray-core 内核** |
+| `sudo xrayebator update <branch>` | 从规范 raw 仓库分支 self-update 管理器，继续使用新脚本，然后更新 Xray-core |
 | `sudo xrayebator probe-test` | 更换 SNI 前，从 VPS 检查其可达性 |
-| `sudo xrayebator-update` | 按 `.current_branch` 记录的分支更新 **Xrayebator 本身** |
-| `sudo xrayebator-update main` | 强制从 `main` 分支更新 Xrayebator 本身 |
+| `sudo xrayebator quickstart --email <邮箱>` | 桌面 GUI 使用的一次性部署路径：执行广泛设置/迁移，在 `8443` 配置 IP-TLS endpoint，创建带 `schema_version: 3` 和 7 条线路的标准 HAPP 配置档；输出带 `subscription_url` 的 JSON。非交互迁移是 best-effort，请检查最终配置档与服务 |
+| `sudo xrayebator happ-setup` | 已有安装的精简 HAPP 路径：确保订阅服务和可用的多线路配置档；缺少订阅域或端口标记时，会先验证 `8443` 的产品 IP-TLS endpoint，否则失败 |
+| `sudo xrayebator profiles` | 以 JSON 数组输出服务器全部配置档（供桌面 GUI「服务器设置」页使用） |
+| `sudo xrayebator profile-create --name 名称 [--transport tcp\|tcp-utls\|tcp-xudp\|tcp-mux\|grpc\|xhttp] [--port P] [--count N]` | 非交互式创建单个或多个配置档，打印 `{"ok":true,"names":[...],"errors":[...]}` |
+| `sudo xrayebator profile-delete --name 名称` | 非交互式删除配置档，打印 `{"ok":true,"name":"..."}` |
+| `sudo xrayebator fp-change --name 名称 [--route R] --fp 指纹` | 修改配置档的指纹，打印 JSON 结果 |
+| `sudo xrayebator sni-change --name 名称 [--route R] --sni SNI` | 修改配置档的 SNI，并同步更新同一端口上的所有配置档，打印 JSON 结果 |
+| `sudo xrayebator sni-list` | 按类别列出 `sni_list.txt` 中的候选 SNI，打印 JSON 结果（供桌面 GUI 的 SNI 对话框使用） |
+| `sudo xrayebator port-change --name 名称 [--route R] --port 端口\|random` | 修改配置档的端口；更新入站、防火墙与订阅。客户端需要重新连接，打印 JSON 结果 |
+| `sudo xrayebator bypass list` | 按分组列出当前分流规则（JSON） |
+| `sudo xrayebator bypass add --domain D` | 向分流规则添加一个域名（JSON） |
+| `sudo xrayebator bypass remove --domain D` | 从分流规则移除一个域名（JSON） |
+| `sudo xrayebator bypass reset` | 清空所有自定义分流规则（JSON） |
+| `sudo xrayebator bypass bundle [--group a,b,c]` | 应用默认分流分组；不带 `--group` 时重新应用全部分组（JSON） |
+| `sudo xrayebator-update [branch]` | 运行完整的 `update.sh` 生命周期更新；无参数时显示 `.current_branch` 并打开交互式分支选择，有参数时使用该分支 |
 | `sudo xrayebator-uninstall` | 移除服务与配置 |
 
-`xrayebator update` 与 `xrayebator-update main` 只是名字相像：
+这些 update 命令的职责有意不同：
 
-| | `sudo xrayebator update` | `sudo xrayebator-update main` |
+| | `sudo xrayebator update <branch>` | `sudo xrayebator-update [branch]` |
 |---|---|---|
-| 更新对象 | Xray-core 二进制 | Xrayebator 脚本本身 |
-| 来源 | XTLS 项目的 GitHub Releases | 本仓库的 `main` 分支 |
-| 参数 | 不接受 | 接受分支名：`main`、`dev`、`experimental` 或其他 |
-| 影响 | 内核版本、传输方式、协议 | 菜单、迁移、订阅生成 |
-| 副作用 | 配置校验后重启 Xray | 下次打开菜单时执行迁移 |
+| 起点 | 已安装的管理器脚本 | 完整生命周期更新程序 |
+| 来源 | 请求分支的 canonical raw 文件 | 所选分支的 `update.sh` workflow |
+| 主要结果 | 管理器 self-update，然后更新 Xray-core | 管理器脚本、数据、订阅集成和服务刷新，具体以 workflow 实现为准 |
+| 分支选择 | 必须显式提供分支 | 无参数时显示 `.current_branch` 后交互选择；有参数时使用该分支 |
+
+桌面 GUI 的 Server Settings 调用 `xrayebator update <branch>`，不会调用完整的 `xrayebator-update` workflow。
+
+## 桌面图形界面
+
+活跃的 Electron 桌面应用（`src/`）是通过 SSH 调用 CLI 的前端，不是终端菜单的完整替代品。它从不直接修改
+`config.json`；运行时的 Bash 变更使用 `backup_config`、`safe_jq_write` 与 `safe_restart_xray`，而安装与项目更新
+有各自的校验和回滚路径。
+
+| 页面 | 用途 |
+|---|---|
+| Dashboard | 服务器卡片、连通性检查、打开/设置/删除、语言切换 |
+| 添加服务器 | 通过 SSH 完整部署，带步骤进度：`os check → upload → install → binary → quickstart` |
+| 服务器密钥 | 刷新订阅、复制链接、显示 `vless://` 链接与二维码 |
+| 服务器设置 | 使用 SSH 密码或私钥，并选择直接 root 或 sudo：列出/创建/删除配置、`fp-change`、`sni-change`、`port-change`，以及更新/卸载服务器 |
+
+界面语言（Русский / English / 简体中文）在 Dashboard 页眉切换，并保存在 `localStorage` 的
+`xrayebator-language` 键中。构建与运行：
+
+```bash
+npm install
+npm run dev          # Electron + Vite 开发模式
+npm run build        # 编译 renderer 与 main process
+npm test             # Vitest 单元测试
+npm run typecheck    # TypeScript 检查
+```
 
 ## 分流路由
 
@@ -127,7 +188,7 @@ UFW 由安装脚本自行管理：安装 `ufw` 包，若 UFW 未启用则执行 
 如果级联已经启用，更换上游会重建出站与路由并重启 Xray，无需先关闭再开启。
 
 关闭级联会移除 `cascade-upstream` 出站，并把兜底规则改回 `direct`。
-所有改动都经过 `backup_config`、`safe_jq_write` 与 `safe_restart_xray`。
+运行时的配置改动经过 `backup_config`、`safe_jq_write` 与 `safe_restart_xray`；安装程序与项目更新有各自的校验、重启和回滚路径。
 
 第 `10` 项配置的是另一侧：把当前 VPS 变成境外节点，供另一台服务器的级联连入。
 

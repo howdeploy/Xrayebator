@@ -1,0 +1,6 @@
+@import 'tailwindcss';
+
+/* HeroUI v3 styles — обязательны после Tailwind */
+@import '@heroui/styles';
+
+@source '../../../node_modules/@heroui';

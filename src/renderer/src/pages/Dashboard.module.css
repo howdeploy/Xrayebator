@@ -1,0 +1,214 @@
+.root {
+  height: 100%;
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  overflow-y: auto;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.headerActions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.langSelect {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text-1);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 9px 10px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+  text-transform: uppercase;
+  transform: none !important;
+}
+
+.langSelect:hover {
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+  background: var(--bg-3);
+}
+
+.langSelect[data-pressed='true'],
+.langSelect[data-focus-visible='true'],
+.langSelect:active {
+  transform: none !important;
+  scale: none !important;
+}
+
+.langSelectValue {
+  min-width: 20px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.langSelectChevron {
+  color: var(--text-2);
+  flex-shrink: 0;
+}
+
+.langItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.langPopup[data-slot='dropdown-popover'] {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: var(--shadow-lg);
+  min-width: 120px;
+}
+
+.langPopup[data-slot='dropdown-popover'] [data-slot='menu-item'] {
+  border-radius: 10px;
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
+.langPopup[data-slot='dropdown-popover'] [data-slot='menu-item']:hover,
+.langPopup[data-slot='dropdown-popover'] [data-slot='menu-item'][data-hovered='true'] {
+  background: var(--bg-3);
+}
+
+.langItemLabel {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.langItemCheck {
+  color: var(--accent);
+}
+
+.title {
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1;
+  margin: 0;
+  display: flex;
+  align-items: center;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.card {
+  width: 100%;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 18px;
+}
+
+.cardHeader {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.cardInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-left: 2px;
+}
+
+.cardTitle {
+  font-size: 16px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.flag {
+  font-size: 20px;
+  line-height: 1;
+  border-radius: 3px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.cardMeta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.statusDot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.statusDotOnline {
+  background: var(--success);
+  box-shadow: 0 0 8px var(--success);
+}
+
+.statusDotOffline {
+  background: var(--text-2);
+  box-shadow: none;
+}
+
+.cardActions {
+  display: flex;
+  gap: 8px;
+}
+
+.emptyCard {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 64px 24px;
+  min-height: 220px;
+  border: 2px dashed color-mix(in srgb, var(--text-2) 40%, transparent);
+  color: var(--text-2);
+  width: 100%;
+}.emptyPlus {
+  font-size: 36px;
+  color: var(--accent);
+}
+
+.emptyText {
+  font-size: 15px;
+}
+
+.confirmDialog {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  padding: 24px;
+  max-width: 420px;
+  width: 100%;
+  outline: none;
+}

@@ -1,0 +1,168 @@
+# Десктопный Electron-GUI
+
+[← Назад к README](../../README.ru.md) · [English](../desktop-gui.md) · [简体中文](../zh-CN/desktop-gui.md)
+
+Эта страница описывает актуальное десктопное приложение. Здесь находится справочник по GUI на Electron + React + TypeScript в `src/`; архивное приложение PySide6 в `gui-legacy/` описано отдельно и не является его реализацией.
+
+## Назначение и границы
+
+Десктопный GUI — приложение Electron с React-renderer и TypeScript-кодом main, preload, shared и renderer в `src/`. Это панель оператора, а не вторая реализация сервера:
+
+- авторитетным серверным приложением остаётся Bash `xrayebator`;
+- GUI управляет VPS по SSH и вызывает серверные установщик, CLI и скрипты обслуживания;
+- состояние сервера, конфигурация Xray, профили, routing и жизненный цикл сервисов остаются на VPS;
+- локально GUI хранит карточки серверов и метаданные подключения, чтобы оператор мог вернуться к серверу позже.
+
+Renderer получает привилегированные операции только через узкий API preload `contextBridge`. GUI управляет описанными ниже потоками профилей и развёртывания, но не является терминалом и не зеркалит интерактивное Bash-меню целиком.
+
+## UI-потоки
+
+### Dashboard
+
+Dashboard показывает сохранённые карточки серверов, точку доступности, регион/ОС и количество маршрутов, а также действия для ключей, настроек и удаления локальной карточки сервера. Проверка доступности — ограниченная TCP-проверка в Electron main process; это не серверная команда `probe-test`. Переключатель языка выбирает `RU`, `EN` или `中文`.
+
+### Add server
+
+Add server принимает host и SSH-порт VPS, параметры SSH-доступа и email для `quickstart`. Прогресс развёртывания показывается такими шагами:
+
+1. подключение по SSH и проверка повышенных прав;
+2. чтение `/etc/os-release`;
+3. создание временного каталога `/tmp/xrayebator-<token>` и загрузка `install.sh` и `xrayebator`;
+4. запуск `bash install.sh` с выбранными правами;
+5. установка загруженного бинарника менеджера в `/usr/local/bin/xrayebator`;
+6. запуск `xrayebator quickstart --email <email>`;
+7. разбор JSON с `subscription_url`, загрузка подписки и локальное сохранение метаданных сервера и ключей.
+
+GUI показывает лог и состояние шагов, но для выполняющегося развёртывания IPC-канала отмены нет.
+
+### Server keys
+
+Server keys обновляет подписку по сохранённому `subscription_url` и показывает полученные VLESS-маршруты. Каждый VLESS-ключ можно скопировать или показать как QR-код; URL подписки также копируется, есть действие «скопировать всё». Эта страница не создаёт отдельную подписку на сервере и не меняет токен подписки.
+
+### Server settings
+
+Server settings сначала аутентифицируется по SSH, после чего позволяет:
+
+- получить список существующих профилей;
+- создать один или несколько профилей и удалить профили;
+- выбрать транспорты `xhttp`, `tcp`, `tcp-utls`, `tcp-xudp`, `tcp-mux` или `grpc`;
+- изменить fingerprint профиля, выбрать SNI из `sni-list` или ввести SNI вручную;
+- изменить порт маршрута профиля или выбрать случайный порт;
+- обновить установку на сервере;
+- удалить установку после подтверждения;
+- сбросить закреплённый SSH host key после явного подтверждения.
+
+SNI и порт — параметры уровня inbound: их изменение может затронуть все профили, использующие тот же inbound. Fingerprint устроен иначе: это клиентское значение конкретного профиля/маршрута, оно не меняет остальные маршруты. Серверная команда сообщает результат и необходимость переподключения.
+
+## SSH и безопасность
+
+GUI поддерживает SSH-аутентификацию по паролю или приватному ключу, а команды с повышенными правами можно выполнять напрямую из-под `root` или через `sudo`. Приватный ключ выбирается через нативный диалог Electron; main process отклоняет произвольный путь, который не был одобрен этим диалогом.
+
+SSH-пароли, sudo-пароли, passphrase ключей и байты приватного ключа не сохраняются. Они существуют только в активной форме/операции и передаются main process по необходимости. `electron-store` сохраняет карточку сервера и настройки подключения, URL подписки и полученные VLESS-ссылки (bearer/client credentials), имя пользователя, способ аутентификации, режим привилегий, выбранный путь к ключу и SHA-256 host-key pin после первого успешного подключения (TOFU). Защищайте локальные данные приложения; если URL подписки или VLESS-ссылки утекли, отзовите подписку через терминальный workflow. При последующем несовпадении fingerprint подключение прекращается до выполнения команд; после осознанной переустановки сервера pin можно явно сбросить в Server settings.
+
+`keytar` есть в `package.json` среди зависимостей, но активный Electron-GUI пока не использует его для хранения SSH-паролей или passphrase в системном keychain.
+
+Граница Electron включает следующие меры защиты:
+
+- для BrowserWindow включены `contextIsolation: true`, `sandbox: true` и `nodeIntegration: false`;
+- Content Security Policy renderer оставляет источники скриптов локальными, разрешает только объявленные локальные/inline-источники стилей и ограничивает data URL для изображений и шрифтов объявленными источниками;
+- перед построением удалённых команд используется POSIX-безопасное quoting аргументов shell;
+- пароль sudo передаётся через stdin SSH, а не вставляется в командную строку;
+- внешняя навигация и `shell.openExternal` разрешены только для HTTPS-хостов GitHub, остальные URL блокируются.
+
+## Доступные и недоступные команды
+
+Профильный API GUI сопоставлен со следующими Bash CLI-командами:
+
+```text
+xrayebator profiles
+xrayebator profile-create --name NAME [--transport T] [--port P] [--count N]
+xrayebator profile-delete --name NAME
+xrayebator fp-change --name NAME [--route R] --fp FINGERPRINT
+xrayebator sni-change --name NAME [--route R] --sni SNI
+xrayebator sni-list
+xrayebator port-change --name NAME [--route R] --port PORT|random
+```
+
+При развёртывании дополнительно вызывается:
+
+```text
+xrayebator quickstart --email EMAIL
+```
+
+GUI использует поле `subscription_url` из результата, затем получает по этому URL VLESS-ключи. Server settings также вызывает операцию обновления (`xrayebator update <branch>`) и для удаления может загрузить и запустить `uninstall.sh`. Это контролируемые операции, а не интерактивная shell-сессия.
+
+Активный Electron-GUI **не предоставляет** следующие возможности сервера:
+
+```text
+bypass
+probe-test
+revoke
+happ-setup
+cascade
+self-steal
+интерактивное terminal menu
+логи/статус сервисов
+```
+
+В частности, точка доступности на Dashboard не означает наличие доступа к `probe-test`, а страница ключей не предоставляет `revoke`.
+
+## Протокол развёртывания
+
+Авторитетом при развёртывании является удалённая Bash-установка, а не React. Electron main process создаёт SSH-клиент, проверяет target и режим привилегий и выполняет такой протокол:
+
+```text
+SSH connect + проверка host key
+        │
+        ├─ elevated `id -u`
+        ├─ обычное чтение `/etc/os-release`
+        ├─ SFTP upload: install.sh, xrayebator
+        ├─ elevated `bash install.sh`
+        ├─ elevated install → /usr/local/bin/xrayebator
+        ├─ elevated `xrayebator quickstart --email EMAIL`
+        └─ parse `subscription_url` → fetch subscription → сохранить карточку сервера, настройки подключения, URL подписки и полученные VLESS-ссылки
+```
+
+Удалённые команды строятся с безопасным quoting аргументов shell. При доступе через sudo секрет передаётся через stdin отдельно от команды. После каждой операции GUI закрывает SSH-клиент и очищает буфер приватного ключа в памяти при его закрытии.
+
+Операции профилей используют тот же SSH-путь и только перечисленные выше адаптеры команд. Bash-приложение отвечает за бэкапы, валидацию, firewall, перезапуск Xray, синхронизацию профилей и rollback.
+
+## Сборка и CI
+
+Для локальной разработки и проверок используются scripts из `package.json`:
+
+```bash
+npm run dev
+npm run build
+npm run typecheck
+npm test
+```
+
+Скрипт упаковки — удобная команда только для Windows, потому что он явно нацелен на Windows:
+
+```bash
+npm run package
+# equivalent: electron-vite build && electron-builder --win
+```
+
+Electron-workflow `.github/workflows/release.yml` запускает `npm run typecheck` и `npm test`, затем собирает пакеты для Windows, macOS и Linux. Это путь релизов `v*` (либо ручной workflow dispatch); это **не** означает, что Electron-тесты запускаются на каждый push, связанный с GUI.
+
+Отдельный `.github/workflows/gui-release.yml` — workflow legacy-GUI. Он запускает Python `ruff` и `pytest gui-legacy/tests`, собирает нативные PySide6-бандлы и обслуживает legacy-путь релизов `gui-v*`. Это не workflow релиза Electron.
+
+`.github/workflows/ci-linux.yml` проверяет Bash-core: синтаксис и полный набор `validation/test-*.sh`. Это не Electron test workflow.
+
+Electron packaging использует GitHub provider, настроенный для `howdeploy/Xrayebator`. Auto-updater инициализируется только в packaged build; когда он активен, он автоматически скачивает обновление и устанавливает его при выходе из приложения. Dev-запуск этот путь не проверяет.
+
+## Legacy GUI: `gui-legacy`
+
+`gui-legacy/` — архивный десктопный GUI на PySide6. Это отдельная реализация с отдельными Python-тестами, packaging-кодом и нативными бандлами. Его историческое поведение включает system proxy, TUN runtime и keyring-интеграцию; эти свойства относятся только к legacy и не должны приписываться активному Electron-GUI.
+
+Актуальная десктопная реализация находится в `src/`. Поэтому артефакт `gui-v*` или успешный job `gui-legacy/tests` не означает, что Electron-приложение было собрано или протестировано этим workflow.
+
+## Ограничения
+
+- Для deployment нет IPC-канала отмены. После запуска UI может показывать события и ошибки, но не может послать запрос отмены удалённому протоколу развёртывания.
+- Нет React/Electron runtime integration tests. Для Electron есть unit-тесты, TypeScript-проверки, build-проверки и ручная проверка на живом сервере, но нет теста, который одновременно запускает полный packaged renderer и main process.
+- Один Vitest-тест использует POSIX `/bin/sh` (`tests/unit/shell-command.test.ts`). В Windows это известное ограничение; источником истины для shell-специфичного теста является Linux.
+- Auto-updater работает только в packaged build, использует GitHub provider, настроенный для `howdeploy`, и работает в режиме auto-download/install-on-quit; `npm run dev` не симулирует обновление релиза.
+- GUI намеренно предоставляет только описанную выше поверхность команд. Для bypass, probe-test, отзыва подписки, HAPP setup, cascade, self-steal, terminal menu и логов/статуса сервисов используйте Bash-интерфейс `xrayebator` или серверные команды.

@@ -25,8 +25,10 @@
 
 <p>
 <strong>一个 bash 脚本，把干净的 VPS 变成私人 VLESS Reality 服务器。</strong><br>
-Xrayebator 安装 Xray-core，在随机端口上建立 Reality 入站，创建包含七条线路的配置档，
-并通过一条 HTTPS 订阅链接交付给客户端。当前版本线为 3.0。
+Xrayebator 安装 Xray-core，在随机端口上建立 Reality 入站，并为新安装创建包含七条线路的标准
+schema-v3 HAPP 配置档。已有七线路配置档在满足存活线路数量时可能被复用，因此排查 label 或 schema
+时请检查配置档 JSON。客户端通过一条 HTTPS 订阅链接获取线路。当前服务器版本线为 3.0；可选
+Electron 桌面应用单独版本化。
 </p>
 
 </div>
@@ -36,13 +38,18 @@ curl -fsSLo ./xrayebator-install.sh \
   https://raw.githubusercontent.com/howdeploy/Xrayebator/main/install.sh
 less ./xrayebator-install.sh          # 运行前请先审阅脚本
 sudo bash ./xrayebator-install.sh
+
+# 步进控制（中断安全安装）：
+#   --check   查看 10 个安装步骤中哪些已完成
+#   --resume  从未完成的第一个步骤继续
+#   --fresh   清除标记并从头开始
 ```
 
 <div align="center">
 
 <p>
 Debian 12/13 · Ubuntu 22.04/24.04 · 内存 512 MB 起 · 需要 <code>root</code> 或 <code>sudo</code><br>
-随后执行 <code>sudo xrayebator</code>，选择第 <code>9</code> 项，订阅即可就绪。
+随后执行 <code>sudo xrayebator</code>，选择第 <code>6</code> 项，订阅即可就绪。
 详情：<a href="#快速开始">快速开始</a>
 </p>
 
@@ -72,8 +79,8 @@ Xrayebator 同时解决这两个问题：
 
 - 一个配置档不是一条线路，而是共享同一个 `sub_token` 的一组 `routes`；
 - 客户端拿到的是一条短订阅链接，而不是七条 `vless://` 链接；
-- 任何配置改动都经过备份、`xray run -test` 校验和自动回滚，失败的改动不会让服务器失去 VPN；
-- 更换 SNI、端口或指纹都不需要重建配置档。
+- 运行时配置改动都经过备份、显式的 `xray run -test` 校验和自动回滚，失败的改动不会有意让服务器失去 VPN；
+- 更换 SNI、端口或指纹都不需要重建配置档。SNI 和端口属于共享入站设置，指纹则是按配置档/线路保存的客户端参数。
 
 本项目由一个人开发和测试。由此带来的限制都直接写在
 [已知限制](#已知限制) 一节，请在正式 VPS 上安装前先阅读。
@@ -154,6 +161,8 @@ HAPP 流程会创建或复用包含七条线路的配置档：
 | `xhttp-legacy` | xhttp | HAPP 兼容的 XHTTP 回落，`decryption=none`，无 PQ |
 | `xhttp-pq` | xhttp | 带后量子加密 `mlkem768x25519plus` 的 XHTTP |
 | `tcp-mux` | tcp | 不带 Vision flow 的 TCP Reality，独立的兼容回落 |
+
+托管的 HAPP 配置档使用 schema version 3，包含七条线路。普通 HAPP 列表发布其中六条；PQ 线路仍可通过原始/配置档路径使用。
 | `grpc` | grpc | gRPC Reality，对 HTTP/2 和 SNI 敏感 |
 | `tcp-vision` | tcp | 带 `xtls-rprx-vision` 的 TCP Reality |
 | `tcp-utls-firefox` | tcp | 使用 Firefox 指纹的 TCP Vision |
@@ -181,15 +190,15 @@ XHTTP 候选下发。配置档 JSON 中仍然保留全部七条。
 
 ### 环境要求
 
-- 具备 `root` 或 `sudo` 权限的 VPS，系统为 Debian 12/13 或 Ubuntu 22.04/24.04 LTS
+硬性要求是 Bash、root（或 sudo）、基于 apt 的 Debian/Ubuntu 类系统以及正常运行的 systemd。当前验证矩阵为 Debian 12/13 和 Ubuntu 22.04/24.04。
+
 - 内存至少 512 MB，建议 1 GB 以上
 - 1 核 CPU，建议 2 核以上
 - 至少 1 GB 可用磁盘空间
 
 安装脚本会安装 `ca-certificates curl wget jq qrencode uuid-runtime ufw unzip openssl socat`。
 
-> 安装脚本并不检查系统版本，上述矩阵只是声明的支持范围，并非强制校验。项目主要在 Debian 上做实测。
-> 在重要的 VPS 上安装前请先做快照。
+> 安装脚本检查 apt/systemd 前置条件，但不会强制版本矩阵。启用 UFW 前会检测活动 SSH 端口；如果无法确定或安全放行该端口，非活动 UFW 会保持关闭。在重要的 VPS 上安装前请先做快照。
 
 ### 安装
 
@@ -245,6 +254,55 @@ geo 文件下载成功后清除红色警告。测试时仍应禁用可能覆盖�
 
 ---
 
+## 桌面图形界面
+
+除了终端菜单，还有一个可选桌面应用（Electron + React，位于 `src/`），通过 SSH 管理 VPS。
+它并不替代 bash 引擎——服务器上的所有操作仍由 `xrayebator` 完成，图形界面只是通过 SSH
+调用同一组命令。
+
+```text
+桌面应用 (Electron · React)
+    │  SSH + 已文档化的 CLI
+    ▼
+xrayebator (bash)   ──►  /usr/local/etc/xray/
+```
+
+界面语言（Русский / English / 简体中文）在主屏幕页眉切换，并保存在 `localStorage` 中。
+终端菜单仍为俄语。
+
+GUI 的功能：
+
+| 页面 | 操作 |
+|---|---|
+| Dashboard | 服务器卡片与连通状态：打开、设置、删除；语言切换 |
+| 添加服务器 | 部署新 VPS：上传 `install.sh` 与 `xrayebator`，运行安装，放置二进制，执行 `quickstart --email`，保存服务器与 `subscription_url` |
+| 服务器密钥 | 刷新订阅、复制链接、显示 `vless://` 链接与二维码 |
+| 服务器设置 | 使用 SSH 密码或私钥、直接 root 或 sudo：列出/创建/删除配置档，修改指纹、SNI 和端口，以及更新或卸载服务器上的 Xrayebator |
+
+SSH 密码、sudo 密码、私钥口令和私钥内容只在当前表单/操作期间保存在内存中，不会持久化。
+本地会保存服务器卡片、连接偏好、`subscription_url`、获取到的 `vless://` 链接和固定的 SSH host-key
+fingerprint。订阅 URL 和 VLESS 链接属于 bearer/client credentials：请保护本地应用数据，泄露后
+通过终端 workflow 吊销订阅。
+
+GUI 只暴露终端菜单的一个子集。bypass、`probe-test`、订阅吊销、`happ-setup`、级联、self-steal
+以及服务日志/状态仍需从终端执行。完整的 Electron GUI 边界、安全模型与打包说明见
+[Electron 桌面 GUI](docs/zh-CN/desktop-gui.md)。
+
+开发模式下的构建与运行：
+
+```bash
+npm install
+npm run dev          # Electron + Vite dev server
+npm run build        # 编译 renderer 与 main process
+```
+
+Electron 检查：`npm test` 运行 `tests/` 中的 9 个单元测试文件；`npm run typecheck` 检查 TypeScript，
+`npm run build` 构建应用。在原生 Windows 上，POSIX 专用测试 `tests/unit/shell-command.test.ts`
+可能因缺少 `/bin/sh` 而失败；Linux CI 是事实来源。参见[测试](docs/zh-CN/testing.md#桌面图形界面)
+和 [Electron 桌面 GUI](docs/zh-CN/desktop-gui.md)。
+
+---
+
 ## 文档
 
 | 文档 | 内容 |
@@ -261,46 +319,53 @@ geo 文件下载成功后清除红色警告。测试时仍应禁用可能覆盖�
 
 ## 已知限制
 
-- 安装脚本会通过 `ufw --force enable` 启用 UFW，并开放固定的十一个端口。非标准端口上的 SSH
-  不在该列表中。
+- 安装脚本要求 Bash、root/sudo、基于 apt 的 Debian/Ubuntu 类系统和 systemd。当前验证矩阵为
+  Debian 12/13 与 Ubuntu 22.04/24.04；发行版版本不会被硬性限制。
+- 启用 UFW 前，安装脚本会检测活动 SSH 端口。如果无法确定或安全放行该端口，非活动 UFW 会保持关闭。
+  通过检查后才会加入固定的项目服务 TCP 端口，并把自己创建的规则记录到 `.ufw_owned`。
 - `xrayebator-update` 会把检测到的 `/opt/AdGuardHome` 作为废弃组件自动删除：先把 Xray DNS
   切回 DoH，然后停止服务并删除文件。如果该 VPS 仍在使用 AdGuard Home，请不要在没有快照的情况下更新。
-- `/usr/local/etc/xray/` 整个目录属于 `xray:xray`，且 `config.json` 权限为 `0644`：
-  服务账户可以写入自己的配置与配置档。
-- 安装脚本不检查系统版本。支持矩阵只是声明，并非强制。
+- 大部分 Xray 状态、配置档、标记、密钥和管理器脚本由 root 拥有；`xray` 账户读取所需文件并在
+  `/var/log/xray` 写入运行时日志。`.server_country` 等生成元数据和 rollback 路径可能有不同属主/权限，
+  审计时请检查具体文件。
 - Xray 内核强制校验 SHA-256，而 Loyalsoldier 的 geo 数据库在下载时没有校验和。
-- `xrayebator-uninstall` 并不会清理干净。它停止并禁用 `xray`，删除 `/usr/local/etc/xray`、
-  `/usr/local/bin/xrayebator` 以及 `xray.service` 和 `xray@.service` 单元。它不会删除
-  `/usr/local/bin/xray` 二进制、`subhttp`、`xrayebator-update`、`xrayebator-uninstall`、
-  `xrayebator-sub.service` 单元、nginx 配置、geo 数据库、UFW 规则以及系统用户 `xray`。
-  残留需要手工清理。
+- `xrayebator-uninstall` 会停止并禁用 `xray`，删除 `/usr/local/bin/xray` 二进制和
+  `/usr/local/share/xray` 中的 geo 数据库，清除 `/usr/local/etc/xray` 与 `/var/log/xray`、
+  `xrayebator`、`xrayebator-update`、`xrayebator-uninstall`、`subhttp.sh` 二进制，以及
+  `xray.service`、`xray@.service`、`xray.service.d`、`xrayebator-sub.service` 单元、由它创建的
+  使用其名称的 nginx vhost、它自己的 certbot 证书和 UFW 规则，还有系统用户 `xray`。nginx 清理按路径/名称执行，
+  不是通过独立的 ownership manifest。全局 Certbot 状态、nginx 软件包、他人的 certbot 证书和 UFW 规则不会被动到。
+  域名模式的 ACME webroot
+  `/var/www/xrayebator-domain-acme` 可能保留，需要手工清理。
 - `tcp-mux` 线路仅为兼容保留，它并不是 mux 预设。
 - 不支持 H2、WebSocket、SplitHTTP 以及 Clash/mihomo 订阅。
 - 界面没有硬性的用户数上限，但实际容量受 CPU、内存、VPS 带宽、线路数量和服务商限制约束。
+- 安装程序和项目更新使用独立的校验、重启与回滚路径，不等同于运行时 `safe_restart_xray` 事务；
+  lifecycle 更新后请检查 Xray、DNS 和订阅。
 
 ---
 
 ## 更新与卸载
 
 ```bash
-sudo xrayebator update            # 仅更新 Xray-core
-sudo xrayebator-update            # 更新 Xrayebator 本身，分支取自 .current_branch
-sudo xrayebator-update main       # 更新 Xrayebator 本身，强制使用 main 分支
-sudo xrayebator-uninstall         # 移除服务与配置
+sudo xrayebator update                  # 仅更新 Xray-core
+sudo xrayebator update dev              # 从分支 self-update 管理器，然后更新内核
+sudo xrayebator-update [branch]         # 完整生命周期更新；无参数时打开分支选择
+sudo xrayebator-uninstall               # 移除服务与配置
 ```
 
-两条命令名字相近，含义完全不同：
+这些名称相似的命令职责不同：
 
-| | `sudo xrayebator update` | `sudo xrayebator-update main` |
+| | `sudo xrayebator update <branch>` | `sudo xrayebator-update [branch]` |
 |---|---|---|
-| 更新对象 | Xray-core 二进制 | Xrayebator 脚本本身 |
-| 来源 | XTLS 项目的 GitHub Releases | 本仓库的 `main` 分支 |
-| 参数 | 不接受参数 | 接受分支名：`main`、`dev`、`experimental` 或其他 |
-| 影响 | 内核版本、传输方式、协议 | 菜单、迁移、订阅生成 |
-| 副作用 | 配置校验后重启 Xray | 下次打开菜单时执行迁移 |
+| 起点 | 已安装管理器的 self-update | 完整项目生命周期更新程序 |
+| 来源 | 请求分支的 canonical raw 管理器文件 | 所选分支的 `update.sh` workflow |
+| 主要结果 | 管理器 self-update，然后更新 Xray-core | 管理器脚本、数据、订阅集成和服务刷新 |
+| 分支选择 | 必须显式提供分支 | 无参数时显示 `.current_branch` 后交互选择；有参数时使用该分支 |
 
-所选分支记录在 `/usr/local/etc/xray/.current_branch`，并显示在菜单标题处。
-更新 Xrayebator 本身之后，第一次运行 `sudo xrayebator` 会执行迁移：等它结束后再刷新客户端订阅。
+当前分支会显示在 updater 中，并保存在 `/usr/local/etc/xray/.current_branch`，但无参数运行
+`xrayebator-update` 仍会提示选择。Electron GUI 调用的是 `xrayebator update <branch>`，不是完整
+项目更新程序。完成生命周期更新后，请等待迁移结束并检查 Xray、DNS 与订阅，再刷新客户端。
 
 `xrayebator-uninstall` 之后系统里还会留下什么，见 [已知限制](#已知限制)。
 

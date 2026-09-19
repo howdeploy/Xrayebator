@@ -22,6 +22,9 @@ PROFILES_DIR="$WORKDIR/profiles"
 PUBLIC_KEY_FILE="$WORKDIR/.public_key"
 PRIVATE_KEY_FILE="$WORKDIR/.private_key"
 VLESS_ENCRYPTION_FILE="$WORKDIR/.vless_encryption"
+# Изоляция: geo-маркер не должен влиять на имена маршрутов в этом тесте.
+SERVER_COUNTRY_FILE="$WORKDIR/.server_country"
+printf '' > "$SERVER_COUNTRY_FILE"
 SERVER_IP="203.0.113.10"
 
 mkdir -p "$PROFILES_DIR"

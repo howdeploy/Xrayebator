@@ -1,0 +1,71 @@
+@import './tokens.css';
+@import './animations.css';
+
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    font-family: var(--font);
+    background: var(--bg-0);
+    color: var(--text-0);
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+    user-select: none;
+  }
+
+  button {
+    font-family: inherit;
+    cursor: pointer;
+  }
+
+  input {
+    font-family: inherit;
+  }
+}
+
+/* Слабое скругление кнопок и инпутов — «как боксы» */
+.button {
+  border-radius: 10px;
+}
+
+.input {
+  border-radius: 8px;
+}
+
+/* Приглушённый фон вторичных кнопок — светлая полупрозрачная плашка вместо сплошного блока */
+.button--secondary {
+  --button-bg: color-mix(in srgb, var(--text-1) 10%, transparent);
+  --button-bg-hover: color-mix(in srgb, var(--text-1) 18%, transparent);
+  --button-bg-pressed: color-mix(in srgb, var(--text-1) 18%, transparent);
+  --button-fg: var(--text-1);
+}
+
+/* Приглушённый фон default-чипов (напр. «Debian 12») */
+.chip--default {
+  --chip-bg: color-mix(in srgb, var(--text-1) 10%, transparent);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--bg-2);
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}

@@ -18,8 +18,10 @@ grep -Fq '_restore_update_config_backup()' update.sh ||
   fail "update.sh lacks a centralized exact rollback helper"
 grep -Fq 'chmod 700 "$BACKUP_DIR"' update.sh ||
   fail "session backup directory is not private"
-grep -Fq 'chmod 600 /usr/local/etc/xray/config.json' update.sh ||
-  fail "restored config permissions are too broad"
+grep -Fq 'chmod 640 /usr/local/etc/xray/config.json' update.sh ||
+  fail "restored live config must be group-readable (640, group=xray)"
+grep -Fq 'chown root:xray /usr/local/etc/xray/config.json' update.sh ||
+  fail "restored live config must be group-owned by xray so the service can read it"
 
 if grep -Eq 'LATEST_BACKUP=|backups/config\\.json\\.\\*' update.sh; then
   fail "update.sh still searches an unrelated latest-backup glob"

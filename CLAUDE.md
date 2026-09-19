@@ -4,17 +4,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Xrayebator — automated Xray Reality VPN manager for bypassing DPI censorship in Russia. Single Bash script (`xrayebator`, ~2500 lines) that turns a VPS into a managed VPN server with interactive terminal UI. Deployed to Debian 10+/Ubuntu 20.04+ servers.
+Xrayebator — automated Xray Reality VPN manager for bypassing DPI censorship in Russia. The single Bash application (`xrayebator`, ~11841 lines) turns a VPS into a managed VPN server with an interactive terminal UI. The installer requires Bash, root/sudo, an apt-based Debian/Ubuntu-like system and systemd; the tested matrix is Debian 12/13 and Ubuntu 22.04/24.04. The **active desktop GUI** lives in `src/` (Electron + React + TypeScript) and drives the same Bash CLI over SSH. A legacy PySide6 GUI sits in `gui-legacy/` and is archival, not the active desktop app.
 
-## Validation Commands
+## Validation
 
+There IS automated test coverage (despite what older notes said):
+- **`validation/`** — 24 Bash test scripts, including `test-main-readiness-regressions.sh`, covering migrations, VLESS URL generation, transaction safety, dedup, firewall, menu numbering, the bypass/sni-change/port-change CLIs, quickstart and audit regressions. They run on the host (`bash validation/test-*.sh`); CI installs `jq`, `uuidgen` and `ripgrep` on Ubuntu. A bare Windows Git Bash checkout is not equivalent to the Linux environment.
+- **`gui-legacy/tests/`** — 16 pytest modules covering SSH, deploy, connection, subscription and TUN runtime (legacy PySide6 GUI). Run with the GUI venv: `gui-legacy/.venv/Scripts/python -m pytest gui-legacy/tests`.
+- **GUI (Electron)** — Vitest unit tests in `tests/`: `npm test`, plus `npm run typecheck`.
+- **CI** — `.github/workflows/ci-linux.yml` runs the full `validation/` suite; `.github/workflows/gui-release.yml` runs `ruff` + `pytest gui-legacy/tests` and builds Windows/macOS bundles; `.github/workflows/release.yml` ships the Electron app.
+
+Syntax checks used before a commit:
 ```bash
-bash -n xrayebator              # Syntax check (MUST pass before commit)
-bash -n install.sh              # Also check lifecycle scripts
+bash -n xrayebator
+bash -n install.sh
 bash -n update.sh
+bash -n uninstall.sh
 ```
-
-There are no automated tests. Validation is manual: create/delete profiles, check `ufw status`, `systemctl status xray`, test connections from client apps (v2rayNG, Shadowrocket).
 
 ## Architecture
 
@@ -33,7 +39,7 @@ All logic lives in `xrayebator`. Supporting scripts (`install.sh`, `update.sh`, 
 
 ### Critical concept: Inbound vs Profile
 
-An **inbound** is a port-level config block in `config.json` (tag: `inbound-443`). A **profile** is a user-facing JSON file with UUID/transport/SNI metadata. Multiple profiles can share one inbound (same port). SNI and fingerprint are **inbound-level** — changing them affects ALL profiles on that port. The function `update_all_profiles_on_port()` keeps profile JSONs in sync.
+An **inbound** is a port-level config block in `config.json` (tag: `inbound-443`). A **profile** is a user-facing JSON file with UUID/transport/SNI metadata. Multiple profiles can share one inbound (same port). SNI and port are **inbound-level** — changing either can affect ALL profiles on that port. Fingerprint is **client-side per profile/route** and changing it does not edit the inbound or other routes. The function `update_all_profiles_on_port()` keeps profile JSONs in sync after inbound-level changes.
 
 ### Transport compatibility and flow
 
@@ -59,20 +65,22 @@ XHTTP transport stores SNI in TWO places: `realitySettings.serverNames` AND `xht
 
 ### Safe restart and backup
 
-- `safe_restart_xray()` — validates config with `xray run -test -config` before `systemctl restart`. On failure: auto-rollback from latest backup, Xray keeps running on old config. **Always use this instead of bare `systemctl restart xray`**.
-- `backup_config("migration_name")` — creates timestamped backup in `/usr/local/etc/xray/backups/`. **Call before any config mutation** in migration functions.
-- `fix_xray_permissions()` — restores `xray:xray` ownership on `/usr/local/etc/xray/`. Call after writes that create/modify files.
+- `safe_restart_xray("/exact/backup/path")` — validates config with `xray run -test -format json` before `systemctl restart`; on failure it attempts rollback from the exact operation backup. Always use it for runtime mutations owned by `xrayebator`, and pass the operation's exact backup path.
+- `backup_config("migration_name")` — creates timestamped config backups in `/usr/local/etc/xray/backups/`. **Call before any config mutation** in migration functions.
+- `fix_xray_permissions()` — restores the root-owned manager-state boundary after writes. The service account reads required files; it does not own manager scripts or migration markers. Generated metadata and lifecycle rollback paths may have narrower exceptions.
+- `install.sh` and `update.sh` have separate validation/restart/rollback paths; do not assume every lifecycle restart calls `safe_restart_xray()`.
 
 ### Migration system
 
-Marker files in `/usr/local/etc/xray/` (e.g. `.xhttp_migrated`, `.config_optimized`). Migrations run once on first `main_menu()` launch after upgrade. Pattern for new migrations:
+Marker files in `/usr/local/etc/xray/` (e.g. `.xhttp_migrated`, `.config_optimized`). Migrations run once on first `main_menu()` launch after upgrade — and `quickstart` runs the same critical set (`test-quickstart-migration-parity.sh` keeps them in sync). Pattern for new migrations:
 ```bash
 if [[ ! -f "/usr/local/etc/xray/.my_migration_marker" ]]; then
-  backup_config "my_migration"
+  backup_path=""
+  backup_config "my_migration" backup_path
   # ... safe_jq_write calls ...
   fix_xray_permissions
   touch "/usr/local/etc/xray/.my_migration_marker"
-  safe_restart_xray
+  safe_restart_xray "$backup_path"
 fi
 ```
 
@@ -86,7 +94,7 @@ Xray runs as non-root user `xray` with `CAP_NET_BIND_SERVICE` via systemd drop-i
 
 ## Coding Patterns
 
-**Language**: Bash. Dependencies: `jq`, `curl`, `ufw`, `systemctl`, `openssl`, `uuidgen`, `qrencode`.
+**Language**: Bash. Core runtime dependencies include `jq`, `curl`, `ufw`, `systemctl`, `openssl`, `uuidgen`, `qrencode`, `ip`, `ss`, `getent`, `flock`, `timeout`, `base64`, `awk`, `sed`, `stat`, `find`, `cmp`, `readlink`, `sha256sum`, `unzip`, `install`, `sysctl` and `hostname`; nginx, certbot, socat and snap are required by particular subscription/self-steal modes. Validation CI additionally installs `ripgrep`.
 
 **Variables**: Always quote (`"$var"`), always `local` in functions.
 
@@ -96,7 +104,7 @@ safe_jq_write --arg uuid "$uuid" --argjson port "$port" \
   '(.inbounds[] | select(.port == $port) | .settings.clients) += [{"id": $uuid}]' \
   "$CONFIG_FILE"
 ```
-Do NOT use raw `jq ... > temp && mv temp file` — always go through `safe_jq_write`. Note: `safe_jq_write` is only available inside `xrayebator`; `install.sh` and `update.sh` use inline jq with `-s` size validation.
+Do NOT use raw `jq ... > temp && mv temp file` — always go through `safe_jq_write`. Note: `safe_jq_write` is only available inside `xrayebator`; `install.sh` and `update.sh` use inline jq followed by a `[[ -s ... ]]` non-empty check before `mv`.
 
 **jq argument passing**: Use `--argjson` for numeric ports, `--arg` for strings. Never interpolate variables into jq expressions.
 
@@ -117,9 +125,34 @@ Do NOT use raw `jq ... > temp && mv temp file` — always go through `safe_jq_wr
 ## Branches
 
 - `main` — stable, releases every 1-2 months
-- `dev` — quick fixes, weekly
-- `experimental` — latest features, daily (current working branch)
+- `dev` — quick fixes, weekly or biweekly
+- `experimental` — latest features, several times per week
+- This checkout is currently on `main`; do not assume `experimental` is the working branch.
+
+## CLI commands
+
+Apart from the interactive menu (`sudo xrayebator`), the script exposes subcommands used by the GUI and by automation. They are dispatched at the very bottom of `xrayebator` (the `case "${1:-}" in ... esac` block guarded by `XRAYEBATOR_SOURCED`):
+
+- `xrayebator update` — update only the Xray-core binary; `xrayebator update <branch>` self-updates the manager from the canonical raw branch and then updates Xray-core.
+- `xrayebator-update [branch]` — separate full `update.sh` lifecycle workflow; without a branch it displays `.current_branch` and opens interactive branch selection.
+- `xrayebator quickstart --email <email>` — UI CLI used by the desktop app: runs the broad setup/migration path, provisions the subscription endpoint, creates a standard **schema-v3 multi-route** HAPP profile (7 routes including `xhttp-legacy`), and prints JSON with `subscription_url`. The implementation currently tolerates migration failures in this non-interactive path; verify the resulting profile and services after deployment.
+- `xrayebator happ-setup` — reduced existing-install HAPP path; ensures the subscription service and a usable multi-route profile, verifies a real public TLS endpoint when subscription markers are missing, and prints JSON with `subscription_url`. It does not have the same migration breadth as quickstart.
+- `xrayebator probe-test` — probe-test candidate SNIs from `sni_list.txt` and print reachability scores.
+- `xrayebator profiles` — print all profiles as a flat JSON array (used by the GUI "Server settings" page).
+- `xrayebator profile-create --name NAME [--transport T] [--port P] [--count N]` — create 1..N profiles non-interactively (names `name`, `name-2`, ...). Emits `{"ok":true,"names":[...],"errors":[...]}`; `ok` stays `true` even when some profiles already exist (they land in `errors`).
+- `xrayebator profile-delete --name NAME` — delete a profile, emits `{"ok":true,"name":"..."}`. Inbound/firewall cleanup happens automatically.
+- `xrayebator fp-change --name NAME [--route R] --fp FINGERPRINT` — change the fingerprint for a profile (client-side, no Xray restart), emits JSON.
+- `xrayebator sni-change --name NAME [--route R] --sni SNI` — change the SNI for a profile; updates all profiles on the same port (`update_all_profiles_on_port()`), emits JSON.
+- `xrayebator sni-list` — print the SNI candidates from `sni_list.txt` grouped by category, emits JSON (used by the GUI SNI dialog).
+- `xrayebator port-change --name NAME [--route R] --port PORT|random` — change the port for a profile; updates the inbound, firewall, subscription and all profiles on the port, emits JSON (reconnect is required).
+- `xrayebator bypass list|add --domain D|remove --domain D|reset|bundle [--group a,b,c]` — manage bypass routing groups (JSON).
+
+CLI JSON hygiene: `profile-create`/`profile-delete` **must** print only JSON on stdout. The shared helpers (`backup_config`, `add_inbound`, `open_firewall_port`, `safe_restart_xray`, `close_firewall_port`) print colored status lines that would corrupt the parse, so the CLI paths redirect stdout→stderr around those calls (`exec 3>&1; exec 1>&2 ... exec 1>&3`). Keep it that way when editing.
+
+### HAPP profile vs GUI quickstart — a subtle case
+
+`quickstart` **must** emit a multi-route profile with `xhttp-legacy` (schema_version 3, routes[] with 7 entries) — HAPP expects the multi-route shape. Do NOT create a single-route one-off profile; `_happ_ensure_default_multiroute_profile()` is the single source of truth for the HAPP profile and is shared by both `quickstart` and `happ-setup`. When debugging "HAPP shows no data", check that the profile in `/usr/local/etc/xray/profiles/*.json` has a `routes` array with 7 entries and that `xhttp-legacy` is one of them (PQ route is excluded from the subscription).
 
 ## Language
 
-All user-facing strings, comments, and commit messages are in **Russian**. Code identifiers and function names are in English.
+Bash/server-facing strings, comments, and commit messages are in **Russian**. The active Electron renderer is intentionally multilingual (`ru`, `en`, `zh`); code identifiers and function names are in English.

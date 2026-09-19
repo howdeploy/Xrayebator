@@ -1,0 +1,36 @@
+appId: com.xrayebator.gui
+productName: Xrayebator
+directories:
+  buildResources: resources
+  output: dist
+
+files:
+  - out/**
+  - package.json
+
+extraResources:
+  - from: install.sh
+    to: scripts/install.sh
+  - from: xrayebator
+    to: scripts/xrayebator
+  - from: uninstall.sh
+    to: scripts/uninstall.sh
+
+publish:
+  - provider: github
+    owner: howdeploy
+    repo: Xrayebator
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: resources/icons/icon.ico
+
+nsis:
+  oneClick: true
+  allowToChangeInstallationDirectory: false
+  perMachine: false
+
+npmRebuild: true

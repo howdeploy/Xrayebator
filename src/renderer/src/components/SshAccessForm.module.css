@@ -1,0 +1,190 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.fieldGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+
+.choiceGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.choice {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-1);
+  color: var(--text-2);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.choice:hover:not(:disabled) {
+  color: var(--text-0);
+  border-color: var(--accent);
+}
+
+.choice:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.choice > svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.choice > span {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.choice strong {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: var(--text-0);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.choice strong em {
+  padding: 2px 5px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--accent) 15%, var(--bg-1));
+  color: color-mix(in srgb, var(--accent) 72%, var(--text-0));
+  font-size: 9px;
+  font-style: normal;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.choice small {
+  color: var(--text-2);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.choiceActive {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 9%, var(--bg-1));
+  box-shadow: inset 0 0 0 1px var(--accent);
+  color: var(--accent);
+}
+
+.keyFields {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.keyPicker {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.keyName,
+.keyMissing {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.keyName {
+  color: var(--success);
+}
+
+.keyMissing {
+  color: var(--text-2);
+}
+
+.note {
+  display: block;
+  margin-top: 6px;
+  color: var(--text-2);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.hostKey {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg-1);
+  color: var(--text-2);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.hostKey > svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--success);
+}
+
+.hostKeyText {
+  min-width: 0;
+  flex: 1;
+}
+
+.hostKeyReset {
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--danger);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.hostKeyReset:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.error {
+  padding: 9px 11px;
+  border: 1px solid rgba(248, 81, 73, 0.4);
+  border-radius: var(--radius-sm);
+  background: rgba(248, 81, 73, 0.12);
+  color: var(--danger);
+  font-size: 12px;
+}
+
+@media (max-width: 760px) {
+  .choiceGrid {
+    grid-template-columns: 1fr;
+  }
+}
