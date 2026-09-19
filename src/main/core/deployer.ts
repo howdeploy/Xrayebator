@@ -54,6 +54,24 @@ function extractError(raw: string): string | null {
   }
 }
 
+/**
+ * Причина отказа install.sh. Скрипт печатает статус и все «✗ …» в STDOUT, а в stderr
+ * попадает шум: прогресс-бар curl и «TERM environment variable not set.» от clear().
+ * Показывать при ошибке только stderr — значит гарантированно прятать настоящую причину
+ * (так и было: вместо «config.json не прошёл валидацию» пользователь видел бар 100%).
+ */
+function extractInstallFailure(stdout: string, stderr: string): string {
+  const stripAnsi = (s: string): string => s.replace(/\u001b\[[0-9;]*[a-zA-Z]/g, '')
+  const lines = stripAnsi(`${stdout}\n${stderr}`)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+  const failed = [...lines].reverse().find((line) => line.includes('✗'))
+  if (failed) return failed.replace(/^✗\s*/, '')
+  const tail = lines.slice(-3).join(' | ')
+  return tail.length > 240 ? `${tail.slice(0, 237)}...` : tail
+}
+
 export class Deployer {
   constructor(
     private readonly onStep: DeployStepListener,
@@ -103,7 +121,10 @@ export class Deployer {
         { elevated: true }
       )
       if (install.code !== 0) {
-        throw new Error(`install.sh завершился с кодом ${install.code}: ${install.stderr}`)
+        const reason = extractInstallFailure(install.stdout, install.stderr)
+        throw new Error(
+          `install.sh завершился с кодом ${install.code}: ${reason || 'вывод пуст'}`
+        )
       }
       this.onLog(`install.sh: код ${install.code}; ${summarize(install.stdout)}`)
 

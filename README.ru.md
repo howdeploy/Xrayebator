@@ -25,15 +25,18 @@
 
 <p>
 <strong>Один bash-скрипт превращает чистый VPS в личный VLESS Reality сервер.</strong><br>
-Xrayebator ставит Xray-core, поднимает Reality-инбаунды на случайных портах, создаёт профиль
-из семи маршрутов и отдаёт их клиенту одной HTTPS-ссылкой подписки. Актуальная линия — 3.0.
+Xrayebator ставит Xray-core, поднимает Reality-инбаунды на случайных портах и для новой установки
+создаёт стандартный schema-v3 HAPP-профиль из семи маршрутов. Существующий семимаршрутный профиль
+может быть переиспользован при наличии живых маршрутов, поэтому при отладке label/schema проверяйте
+profile JSON. Клиент получает маршруты одной HTTPS-ссылкой подписки. Актуальная серверная линия — 3.0;
+опциональное Electron-десктоп-приложение имеет отдельную версию.
 </p>
 
 </div>
 
 ```bash
 curl -fsSLo ./xrayebator-install.sh \
-  https://raw.githubusercontent.com/Ap3x0s/Xrayebator/main/install.sh
+  https://raw.githubusercontent.com/howdeploy/Xrayebator/main/install.sh
 less ./xrayebator-install.sh          # просмотрите скрипт перед запуском
 sudo bash ./xrayebator-install.sh
 
@@ -79,9 +82,10 @@ Xrayebator решает обе задачи так:
 
 - профиль — это не один маршрут, а набор `routes` с общим `sub_token`;
 - клиент получает весь набор одной короткой ссылкой подписки, а не семью ссылками `vless://`;
-- любое изменение конфига идёт через backup, валидацию `xray run -test` и авто-rollback, поэтому
-  неудачная правка не оставляет сервер без VPN;
-- смена SNI, порта или fingerprint не требует пересоздавать профиль.
+- runtime-изменения конфига идут через backup, явную валидацию `xray run -test` и авто-rollback, поэтому
+  неудачная правка не должна оставлять сервер без VPN;
+- смена SNI, порта или fingerprint не требует пересоздавать профиль. SNI и порт общие для inbound,
+  а fingerprint — клиентский параметр конкретного профиля/маршрута.
 
 Проект развивает и тестирует один человек. Ограничения из этого следуют прямо и описаны в разделе
 [Известные ограничения](#известные-ограничения) — читайте его до установки на важный VPS.
@@ -163,6 +167,9 @@ HAPP-флоу создаёт или переиспользует профиль 
 | `xhttp-legacy` | xhttp | HAPP-совместимый XHTTP-фолбэк, `decryption=none`, без PQ |
 | `xhttp-pq` | xhttp | XHTTP с post-quantum шифрованием `mlkem768x25519plus` |
 | `tcp-mux` | tcp | TCP Reality без Vision-flow, отдельный совместимый фолбэк |
+
+Managed HAPP-профиль использует schema version 3 и семь маршрутов. В обычную HAPP-выдачу попадает
+шесть; PQ-маршрут остаётся доступен через raw/profile path.
 | `grpc` | grpc | gRPC Reality; чувствителен к HTTP/2 и SNI |
 | `tcp-vision` | tcp | TCP Reality с `xtls-rprx-vision` |
 | `tcp-utls-firefox` | tcp | TCP Vision с отпечатком Firefox |
@@ -191,15 +198,18 @@ HAPP-флоу создаёт или переиспользует профиль 
 
 ### Требования
 
-- VPS с Debian 12/13 или Ubuntu 22.04/24.04 LTS и доступом `root` либо `sudo`
+Жёсткие требования: Bash, права root (или sudo), apt-основанная Debian/Ubuntu-подобная система и
+работающий systemd. Матрица проверки — Debian 12/13 и Ubuntu 22.04/24.04.
+
 - RAM от 512 MB, рекомендуется 1 GB и больше
 - 1 ядро CPU, рекомендуется 2 и больше
 - 1 GB свободного места на диске
 
 Установщик тянет пакеты `ca-certificates curl wget jq qrencode uuid-runtime ufw unzip openssl socat`.
 
-> Версию ОС установщик не проверяет — матрица выше заявленная, а не форсируемая. Основная
-> field-проверка идёт на Debian. Перед установкой на важный VPS сделайте снапшот.
+> Установщик проверяет apt/systemd, но не форсирует матрицу версий релизов. До включения UFW он
+> определяет активный SSH-порт; если определить или безопасно открыть его нельзя, неактивный UFW
+> остаётся выключенным. Перед установкой на важный VPS сделайте снапшот.
 
 ### Установка
 
@@ -207,7 +217,7 @@ HAPP-флоу создаёт или переиспользует профиль 
 
 ```bash
 curl -fsSLo ./xrayebator-install.sh \
-  https://raw.githubusercontent.com/Ap3x0s/Xrayebator/main/install.sh
+  https://raw.githubusercontent.com/howdeploy/Xrayebator/main/install.sh
 less ./xrayebator-install.sh
 sudo bash ./xrayebator-install.sh
 ```
@@ -277,13 +287,19 @@ xrayebator (bash)   ──►  /usr/local/etc/xray/
 | Страница | Операции |
 |---|---|
 | Dashboard | Карточки серверов со статусом доступности: открыть, настройки, удалить; переключатель языка |
-| Добавить сервер | Развернуть новый VPS: загрузить `install.sh` + `xrayebator`, запустить установку, положить бинарь, выполнить `quickstart --email`, сохранить сервер и URL подписки |
+| Добавить сервер | Развернуть новый VPS: загрузить `install.sh` + `xrayebator`, запустить установку, положить бинарь, выполнить `quickstart --email`, сохранить сервер и `subscription_url` |
 | Ключи сервера | Обновить подписку, скопировать URL, показать ссылки `vless://` и QR-коды |
-| Настройки сервера | Управление профилями под паролем: список/создание/удаление профилей, смена fingerprint, SNI и порта, плюс обновление или удаление Xrayebator на сервере |
+| Настройки сервера | SSH по паролю или приватному ключу, прямой root или sudo; список/создание/удаление профилей, смена fingerprint, SNI и порта, обновление или удаление Xrayebator |
 
-GUI отправляет SSH-пароль на каждую операцию и держит его только в памяти на время вызова.
-Метаданные сервера (хост, порт, URL подписки, список маршрутов) живут в локальном хранилище
-приложения; креды не сохраняются.
+SSH-пароли, sudo-пароли, passphrase и содержимое приватного ключа живут только в активной форме/операции
+и не сохраняются. Локально сохраняются карточка сервера, настройки подключения, `subscription_url`,
+полученные ссылки `vless://` и закреплённый SSH host-key fingerprint. URL подписки и VLESS-ссылки —
+bearer/client credentials: защищайте локальные данные приложения и после утечки отзывайте подписку
+через терминальный workflow.
+
+GUI предоставляет только подмножество терминального меню. Bypass, `probe-test`, revoke подписки,
+`happ-setup`, каскад, self-steal и логи/статус сервисов остаются терминальными операциями. Полная
+граница возможностей, security model и packaging описаны в [справочнике Electron GUI](docs/ru/desktop-gui.md).
 
 Сборка и запуск в dev-режиме:
 
@@ -293,8 +309,10 @@ npm run dev          # Electron + Vite dev server
 npm run build        # скомпилировать renderer и main process
 ```
 
-Тесты GUI: `npm test` (Vitest) гоняет unit-тесты из `tests/`; `npm run typecheck` проверяет
-TypeScript. См. [Тестирование](docs/ru/testing.md#десктоп-gui).
+Проверки Electron: `npm test` гоняет 9 unit-файлов из `tests/`; `npm run typecheck` проверяет
+TypeScript, а `npm run build` собирает приложение. На нативном Windows POSIX-тест
+`tests/unit/shell-command.test.ts` может падать из-за отсутствия `/bin/sh`; источник истины — Linux CI.
+См. [Тестирование](docs/ru/testing.md#десктоп-gui) и [справочник Electron GUI](docs/ru/desktop-gui.md).
 
 ---
 
@@ -314,51 +332,58 @@ TypeScript. См. [Тестирование](docs/ru/testing.md#десктоп-g
 
 ## Известные ограничения
 
-- Установщик включает UFW через `ufw --force enable` и открывает фиксированный список из
-  одиннадцати портов. SSH на нестандартном порту в этот список не входит.
+- Установщик требует Bash, root/sudo, apt-основанную Debian/Ubuntu-подобную систему и systemd.
+  Матрица проверки — Debian 12/13 и Ubuntu 22.04/24.04; версии релизов жёстко не форсируются.
+- До включения UFW установщик определяет активный SSH-порт. Если определить или безопасно открыть его
+  нельзя, неактивный UFW остаётся выключенным. После проверки добавляется фиксированный список
+  сервисных TCP-портов, а собственные правила записываются в `.ufw_owned`.
 - `xrayebator-update` автоматически удаляет обнаруженный `/opt/AdGuardHome` как deprecated: сначала
   возвращает Xray DNS на DoH, затем останавливает сервис и удаляет файлы. Если AdGuard Home на этом
   VPS нужен — не обновляйтесь без снапшота.
-- Каталог `/usr/local/etc/xray/` целиком принадлежит `xray:xray`, а `config.json` имеет режим `0644`:
-  сервисный аккаунт может писать в собственный конфиг и профили.
-- Версию ОС установщик не проверяет. Матрица поддержки заявленная, а не форсируемая.
+- Основное состояние Xray, профили, маркеры, ключи и manager-скрипты принадлежат root; аккаунт
+  `xray` читает нужные файлы и пишет runtime-логи в `/var/log/xray`. Сгенерированные метаданные вроде
+  `.server_country` и rollback-пути могут иметь отдельные права, поэтому при аудите проверяйте конкретный файл.
 - Ядро Xray проверяется по SHA-256 обязательно, а geo-базы Loyalsoldier скачиваются без сверки
   контрольной суммы.
 - `xrayebator-uninstall` останавливает и отключает `xray`, удаляет бинарь `/usr/local/bin/xray` и
   geo-базы из `/usr/local/share/xray`, вычищает `/usr/local/etc/xray` и `/var/log/xray`, бинари
   `xrayebator`, `xrayebator-update`, `xrayebator-uninstall` и `subhttp.sh`, юниты `xray.service`,
-  `xray@.service`, `xray.service.d` и `xrayebator-sub.service`, созданные им nginx-vhost'ы, свои
-  сертификаты certbot и правила UFW, а также системного пользователя `xray`. Глобальное состояние
-  Certbot, пакет nginx, чужие сертификаты certbot и правила UFW не трогаются.
+  `xray@.service`, `xray.service.d` и `xrayebator-sub.service`, nginx-vhost'ы с его именами, свои
+  сертификаты certbot и правила UFW, а также системного пользователя `xray`. Очистка nginx основана
+  на путях/именах, а не на отдельном ownership manifest. Глобальное состояние Certbot, пакет nginx,
+  чужие сертификаты certbot и правила UFW не трогаются. Domain ACME webroot
+  `/var/www/xrayebator-domain-acme` может остаться и потребовать ручной очистки.
 - Маршрут `tcp-mux` сохраняется для совместимости, но это не mux-пресет.
 - H2, WebSocket, SplitHTTP и подписки Clash/mihomo не поддерживаются.
 - Ёмкость по пользователям ничем не ограничена в интерфейсе, но упирается в CPU, RAM, канал VPS,
   число маршрутов и лимиты провайдера.
+- Установщик и project updater используют свои validation/restart/rollback paths, отличные от runtime
+  транзакции `safe_restart_xray`; после lifecycle update проверяйте Xray, DNS и подписку.
 
 ---
 
 ## Обновление и удаление
 
 ```bash
-sudo xrayebator update            # только ядро Xray-core
-sudo xrayebator-update            # сам Xrayebator, ветка из .current_branch
-sudo xrayebator-update main       # сам Xrayebator, принудительно из main
-sudo xrayebator-uninstall         # снять сервис и конфигурацию
+sudo xrayebator update                  # только ядро Xray-core
+sudo xrayebator update dev              # self-update менеджера из ветки, затем ядро
+sudo xrayebator-update [branch]         # полный lifecycle updater; без аргумента — выбор ветки
+sudo xrayebator-uninstall               # снять сервис и конфигурацию
 ```
 
 Названия похожи, смысл разный:
 
-| | `sudo xrayebator update` | `sudo xrayebator-update main` |
+| | `sudo xrayebator update <branch>` | `sudo xrayebator-update [branch]` |
 |---|---|---|
-| Что обновляет | Бинарь Xray-core | Скрипты самого Xrayebator |
-| Откуда берёт | GitHub Releases проекта XTLS | GitHub-ветка `main` этого репозитория |
-| Аргумент | Не принимает | Принимает имя ветки: `main`, `dev`, `experimental` или любую другую |
-| На что влияет | Версия ядра, транспорты, протоколы | Меню, миграции, генерация подписки |
-| Побочный эффект | Перезапуск Xray после проверки конфига | Прогон миграций при следующем запуске меню |
+| С чего начинается | Self-update установленного менеджера | Полный project lifecycle updater |
+| Откуда берёт | Canonical raw-файл менеджера для branch | `update.sh` workflow выбранной ветки |
+| Основной результат | Self-update менеджера и обновление Xray-core | Скрипты менеджера, данные, интеграция подписки и refresh сервиса |
+| Выбор ветки | Ветка обязательна явно | Без аргумента показывает `.current_branch`, затем спрашивает; с аргументом выбирает его |
 
-Выбранная ветка запоминается в `/usr/local/etc/xray/.current_branch` и показывается в шапке меню.
-После обновления самого Xrayebator первый запуск `sudo xrayebator` прогоняет миграции: дождитесь их
-завершения и только потом обновляйте подписку в клиенте.
+Текущая ветка показывается updater'ом и хранится в `/usr/local/etc/xray/.current_branch`, но запуск
+`xrayebator-update` без аргумента всё равно открывает выбор. Electron GUI вызывает `xrayebator update <branch>`,
+а не полный project updater. После lifecycle update дождитесь миграций и проверьте Xray, DNS и подписку,
+прежде чем обновлять клиент.
 
 Что именно остаётся в системе после `xrayebator-uninstall` — см.
 [Известные ограничения](#известные-ограничения).

@@ -2,56 +2,62 @@
 
 [← 返回 README](../../README.zh-CN.md) · [English](../security.md) · [Русский](../ru/security.md)
 
-章节：[服务账户与权限](#服务账户与权限) · [订阅安全](#订阅安全) · [VPS 的 SSH 访问](#vps-的-ssh-访问)
+章节：[服务账户与权限](#服务账户与权限) · [订阅安全](#订阅安全) · [VPS 的 SSH 访问](#vps-的-ssh-访问) ·
+[桌面 GUI 凭据](#桌面-gui-凭据)
 
 ---
 
 ## 服务账户与权限
 
-Xray 以系统用户 `xray` 运行。Drop-in 文件
-`/etc/systemd/system/xray.service.d/security.conf` 设置 `User=xray`，
-并把能力集收窄为 `CAP_NET_BIND_SERVICE`，这足以绑定低端口。
-只有在系统没有自带单元时，安装脚本才会创建基础单元，该单元声明了更宽的 bounding set，
-但 drop-in 会覆盖这两条指令。
+Xray 以系统用户 `xray` 运行。Drop-in
+`/etc/systemd/system/xray.service.d/security.conf` 设置 `User=xray`，并把能力集收窄为
+`CAP_NET_BIND_SERVICE`，这足以绑定低端口。管理器状态被有意放在服务账户的写入边界之外。
 
-状态文件的实际权限：
+权限模型如下：
 
-| 路径 | 属主 | 权限 |
-|---|---|---|
-| `/usr/local/etc/xray/` | `xray:xray` | 递归 |
-| `config.json` | `xray:xray` | `0644` |
-| `.private_key` | `xray:xray` | `0600` |
-| `.public_key` | `xray:xray` | `0644` |
+| 路径或类别 | 属主与访问权限 |
+|---|---|
+| `/usr/local/etc/xray/` 及其状态目录 | 大部分由 root 拥有且服务不可写；`.server_country` 等生成元数据可能由 `xray` 拥有 |
+| `config.json`、配置档与迁移标记 | 通常为 `root:root`，按 Xray 需要可读；rollback 可能使 live config 变为 `root:xray`、`0640` |
+| Reality 与 VLESS 私钥 | `root:root`，权限 `0600` |
+| 公钥文件与生成的元数据 | 在服务或订阅处理器需要时可读；生成元数据的属主可能不同 |
+| `/usr/local/etc/xray/scripts/` 与 `/usr/local/bin/xrayebator*` | `root:root`，由 root 管理的可执行脚本 |
+| `/var/log/xray/` | 由 Xray 运行时账户写入服务日志 |
 
-也就是说，服务账户可以写入自己的配置与配置档。
+服务账户可以读取所需配置，但不能替换配置档、标记、root 脚本或私钥。备份由 root 拥有，
+并与 live 文件分开保存。某些生成的元数据（例如 `.server_country`）可能由 helper 以 xray
+属主创建；rollback 路径也可能使 live config 变为 `root:xray`。审计时请检查具体文件，
+不要在 Xray 状态目录放置无关机密。
 
-> 不要在 `/usr/local/etc/xray/` 中放置任何随后会被 root 执行或 `source` 的内容，
-> 也不要在该目录保存无关的机密信息。
+由 `xrayebator` 执行的运行时改动使用备份、经过验证的原子写入和 `safe_restart_xray` 事务。
+安装程序和项目更新程序是独立的生命周期程序，有自己的校验与重启/回滚步骤，因此不能声称
+每条生命周期路径都会调用 `safe_restart_xray`。
 
 ## 订阅安全
 
-订阅链接不能视为公开信息。它由不可猜测的令牌保护，但任何拿到链接的人都能下载线路列表。
+订阅 URL 是 bearer credential。它不是公开信息，但持有完整 URL 的任何人都可以下载线路列表和
+受令牌保护的订阅资源。
 
-服务端已经做到的：
+服务端已经处理：
 
 - 32 位十六进制令牌，由 `openssl rand -hex 16` 生成；
-- 不带有效令牌访问 `/sub/` 一律返回相同的 `404`；
-- 没有存活线路的配置档返回 `410`，不下发任何线路；
-- nginx 添加 `Cache-Control: no-store`；
-- 根路径 `/` 以及 `/sub/` 之外的任何路径返回 `404`；
-- `/sub/` location 设有限流；
-- `Revoke` 会轮换 `sub_token`。
+- 没有有效令牌访问 `/sub/` 一律返回相同的 `404`；
+- 没有活跃线路的配置档返回 `410`，不提供线路；
+- nginx 添加 `Cache-Control: no-store`，并为订阅 location 限流；
+- 根路径与 `/sub/` 之外的路径返回 `404`；
+- `Revoke` 轮换 `sub_token`，旧 URL 失效。
 
-需要运维自己注意的：
+运维人员需要注意：
 
-- 不要把订阅链接发到公开聊天中；
-- 一旦泄露立即点击 `Revoke`；
-- 不要把仅本地的链接交给外部客户端；
-- 在没有理清 nginx 配置之前，不要在同一域名下托管他人的面板或代理。
+- 不要把 `subscription_url` 发布到公开聊天或 issue tracker；
+- 泄露后立即点击 `Revoke`；
+- 把每条保存的 `vless://` 链接也视为 credential；
+- 不要把 local-only URL 交给外部客户端；
+- 没有理解 nginx 配置前，不要在同一域名上托管第三方面板或代理。
 
 ## VPS 的 SSH 访问
 
-Xrayebator 可以直接以 `root` 安装，但更稳妥的做法是使用独立用户。
+Xrayebator 可以直接以 `root` 安装，但更好的做法是使用权限范围受限的独立用户。
 
 在服务器上：
 
@@ -68,8 +74,7 @@ ssh-keygen -t ed25519 -C <your_email@example.com>
 ssh-copy-id <username>@<服务器IP>
 ```
 
-然后以 `<username>@<服务器IP>` 登录。确认密钥登录可用之后，再关闭密码登录，
-必要时禁止 root 登录：
+然后以 `<username>@<服务器IP>` 登录。确认密钥登录可用后，关闭密码登录并视需要禁止 root 登录：
 
 ```bash
 sudo nano /etc/ssh/sshd_config
@@ -91,16 +96,21 @@ ClientAliveCountMax 120
 TCPKeepAlive yes
 ```
 
-## 桌面图形界面中的凭据
+## 桌面 GUI 凭据
 
-桌面 GUI 支持 SSH 密码和私钥，并可选择直接 root 或 sudo；Root + 密码是默认方式。密码和私钥
-口令只存在于当前渲染表单/会话内存中，每次操作时传给主进程，绝不持久化。主进程只读取通过
-系统文件对话框选择的私钥。`electron-store` 仅保存服务器元数据和非敏感设置（认证方式、密钥
-路径、权限模式），不会保存密码、口令或私钥内容。
+活跃的 Electron GUI 支持 SSH 密码和私钥，并可选择直接 root 或 sudo。SSH 密码、sudo 密码、
+私钥口令和私钥字节只存在于当前表单/操作中，不会持久化。私钥只有在通过 Electron 原生文件
+对话框选择后才会被读取。
 
-SSH host key 在首次成功认证后按 TOFU 固定 SHA-256 fingerprint。后续 fingerprint 不匹配时，
-连接会在任何命令执行前失败。有意重装 VPS 后，可以在服务器设置中确认并重置固定值；下一次
-成功连接会固定新密钥。
+GUI 会保存返回服务器所需的服务器元数据：主机、SSH 端口、用户名、认证方式、权限模式和所选
+密钥路径。它还会保存偏好、`subscription_url`、获取到的 `vless://` 链接以及 SHA-256 SSH host-key
+pin。订阅 URL 和 VLESS 链接是 bearer credentials，因此请保护本地 Electron 应用数据，泄露后
+吊销订阅。
 
-`keytar` 列在依赖中，但 GUI 目前尚未把 SSH 密码存入系统钥匙串：密码在当前连接表单中手动输入。
-将来可能在系统钥匙串中保存密码，但目前暂无此计划。
+SSH host key 在首次成功认证后按 TOFU 固定。之后指纹不匹配时，会在执行命令前失败。有意重装
+VPS 后，在 Server Settings 中显式重置 pin，并在下一次成功连接时确认新密钥。
+
+`keytar` 位于 `package.json` 依赖中，但活跃 Electron GUI 不使用它在系统钥匙串中保存 SSH 密码
+或私钥口令。机密仍是 session-only。
+
+参见 [Electron 桌面 GUI](desktop-gui.md) 了解完整的 Electron 边界、命令适配器和打包详情。

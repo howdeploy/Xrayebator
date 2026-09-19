@@ -992,8 +992,13 @@ fi
 
 # Проверяем JSON и Xray до атомарной замены live-конфига. Временный файл лежит
 # рядом с target, поэтому mv остаётся атомарным в пределах одной ФС.
+# ВАЖНО: -format json обязателен. Xray определяет формат конфига по расширению
+# файла, а mktemp даёт имя вида config.json.tmp.XXXXXX — последнее расширение это
+# «XXXXXX», а не «json». Без флага ядро отвечает «Failed to get format» и валидация
+# падает на ЛЮБОЙ чистой установке (проверено и на 25.9.5, и на 26.3.27). Тот же
+# приём уже применён в xrayebator → safe_restart_xray (run -test -format json).
 if ! jq -e . "$config_tmp" >/dev/null 2>&1 ||
-   ! xray run -test -config "$config_tmp" 2>&1 | grep -q '^Configuration OK\.$'; then
+   ! xray run -test -format json -config "$config_tmp" 2>&1 | grep -q '^Configuration OK\.$'; then
   rm -f -- "$config_tmp"
   echo -e "${RED}✗ Сгенерированный config.json не прошёл валидацию — live-конфиг не изменён${NC}"
   exit 1

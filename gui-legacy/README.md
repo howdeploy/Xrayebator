@@ -1,7 +1,12 @@
-# Xrayebator GUI
+# Xrayebator GUI (legacy)
+
+> **Архивная версия:** активное десктоп-приложение проекта — Electron + React + TypeScript в `src/`.
+> Этот PySide6-клиент сохранён для legacy-совместимости и имеет отдельные тесты, packaging и CI.
+> Описанные ниже system-proxy, Linux TUN helper и keyring относятся только к legacy-приложению и
+> не являются возможностями активного Electron GUI.
 
 Desktop client for deploying Xrayebator to a VPS and connecting through an
-Xray VLESS Reality subscription.
+Xray VLESS Reality subscription. It is not the active desktop implementation.
 
 The current preview supports the system-proxy connection path on Windows,
 macOS, and Linux, and contains the Linux Xray-native TUN helper. TUN is enabled

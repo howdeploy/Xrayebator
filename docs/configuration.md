@@ -2,13 +2,32 @@
 
 [← Back to README](../README.md) · [Русский](ru/configuration.md) · [简体中文](zh-CN/configuration.md)
 
-Sections: [Environment variables](#installer-environment-variables) ·
+Sections: [Prerequisites](#prerequisites-and-tested-systems) · [Environment variables](#installer-environment-variables) ·
 [Firewall and host networking](#firewall-and-host-networking) · [Main menu](#main-menu) ·
 [Commands](#commands) · [Desktop GUI](#desktop-gui) · [Bypass routing](#bypass-routing) ·
-[Cascade](#cascade-and-upstream-nodes) ·
-[Self-steal](#custom-domain-and-self-steal-stub) · [Domain and DNS](#domain-and-dns)
+[Cascade](#cascade-and-upstream-nodes) · [Self-steal](#custom-domain-and-self-steal-stub) · [Domain and DNS](#domain-and-dns)
 
 ---
+
+## Prerequisites and tested systems
+
+The installer has hard prerequisites:
+
+- root privileges, either a root shell or a user whose `sudo` session can obtain root;
+- Bash (run `install.sh` and the manager with Bash, not `sh`);
+- an apt-based Debian/Ubuntu-like system with `apt`/`apt-get`;
+- a running systemd environment (`systemctl` and `/run/systemd/system`).
+
+The supported family is broader than one release, but the current verification matrix covers:
+
+| Distribution | Tested releases |
+|---|---|
+| Debian | 12, 13 |
+| Ubuntu | 22.04, 24.04 |
+
+A KVM-style VPS with working DNS, outbound HTTPS and a reachable SSH service is the practical
+baseline. Containers without systemd are rejected by the installer rather than being partially
+configured.
 
 ## Installer environment variables
 
@@ -47,95 +66,123 @@ the migration reports them and retries on the next launch until the operator rem
 Removed project-owned files are backed up under `/usr/local/etc/xray/backups/` and are not restored
 when the live switch fails, so a reboot cannot re-enable the removed setting.
 
-The installer manages UFW itself: it installs the `ufw` package, enables it with `ufw --force enable`
-when inactive, then opens ports `22, 80, 443, 8443, 2053, 2083, 2087, 8080, 2096, 8880, 9443/tcp`
-and reloads the rules.
+The installer installs `ufw` when needed and handles the SSH lockout hazard before enabling it:
 
-> The port list is fixed and may not contain your SSH port. If SSH is not on `22`, or you maintain
-> your own firewall policy, compare the numbered rules before and after installation. Rules the
-> installer opens are registered in the root-owned `/usr/local/etc/xray/.ufw_owned` manifest and are
-> removed again when Xrayebator is uninstalled; rules that already existed beforehand stay untouched.
+1. it detects the active SSH port from the listening sockets and, when available, `sshd -T` and the
+   SSH configuration;
+2. it checks whether that port is already allowed, or opens it before enabling UFW;
+3. it records only rules created by Xrayebator in the root-owned
+   `/usr/local/etc/xray/.ufw_owned` manifest;
+4. if the SSH port cannot be determined or cannot be opened safely, an inactive UFW is left
+   disabled instead of applying a deny policy that could lock out the VPS.
+
+If UFW was already active or becomes enabled after the SSH safety check, the installer adds this
+fixed project service TCP list: `22, 80, 443, 8443, 2053, 2083, 2087, 8080, 2096, 8880, 9443`.
+It records only rules it creates in the root-owned `.ufw_owned` manifest. The list is not a promise
+that SSH uses port 22; compare numbered rules before and after installation. Owned rules are removed
+on uninstall, while rules that existed beforehand stay untouched.
 
 ## Main menu
 
+The interactive menu uses these exact meanings:
+
 | Item | Purpose |
 |---|---|
-| `1` | Create a profile manually: a single route or a set |
-| `2` | Delete a profile and its inbounds |
-| `3` | Show connection details for a profile |
-| `4` | Manage a profile: SNI, fingerprint, port, advanced |
-| `5` | Upgrade a single profile to PQ XHTTP |
-| `6` | HAPP subscription: a profile of 7 routes, public TLS, URL, QR, revoke |
-| `7` | Bypass routing: send domains directly, skipping the VPN |
+| `1` | Create a new profile manually, with one route or a multi-route set |
+| `2` | Delete an existing profile and clean up its unused inbounds/firewall ports |
+| `3` | Display connection details and generated links for a selected profile |
+| `4` | Manage a profile: SNI, client fingerprint, port and advanced settings |
+| `5` | Upgrade a single profile to post-quantum XHTTP + Reality |
+| `6` | HAPP subscription: provision public/local publishing, URL/QR, revoke and HAPP settings; the managed profile has 7 routes and the published list has 6 |
+| `7` | Bypass routing: send selected domains directly instead of through the VPN |
 | `8` | Cascade and upstream nodes |
 | `9` | Custom domain and self-steal stub |
-| `10` | Set up an outbound server so this VPS can act as a foreign cascade node |
+| `10` | Set up an outbound server so another VPS can use this server as a foreign cascade node |
 | `0` | Exit |
 
-Actions are numbered consecutively from `1` to `10`; `0` exits the program.
-
-Changing SNI or a port restarts the corresponding server inbound. Fingerprint is a client-side
-parameter: it changes only for the selected route and does not require an Xray restart. After any
-change, force a subscription refresh in the client or fetch the raw route again through
-`3) Подключиться по профилю`.
+Actions are numbered consecutively from `1` to `10`; `0` exits the program. SNI and port are
+shared inbound settings, so changing either can affect other profiles on that port. The fingerprint
+is a client-side profile/route setting; changing it does not restart Xray or alter other routes.
 
 ## Commands
 
 | Command | Effect |
 |---|---|
 | `sudo xrayebator` | Open the interactive menu |
-| `sudo xrayebator update` | Update **only the Xray-core binary**; Xrayebator itself is untouched |
+| `sudo xrayebator update` | Update only the Xray-core binary |
+| `sudo xrayebator update <branch>` | Self-update the manager from the canonical raw repository branch, continue with the new script, then update Xray-core |
 | `sudo xrayebator probe-test` | Check SNI reachability from the VPS before switching |
-| `sudo xrayebator quickstart --email <address>` | Non-interactive one-shot deploy used by the desktop GUI: sets up the subscription server, obtains an IP-TLS certificate and creates the multi-route HAPP profile. Prints a JSON result line |
-| `sudo xrayebator happ-setup` | Idempotent re-entry point for the HAPP multi-route profile: installs/restarts the subscription service and prints the same JSON payload as `quickstart` |
-| `sudo xrayebator profiles` | Print all server profiles as a JSON array (used by the desktop GUI "Server settings" page) |
-| `sudo xrayebator profile-create --name NAME [--transport tcp|tcp-utls|tcp-xudp|tcp-mux|grpc|xhttp] [--port P] [--count N]` | Create one or more profiles non-interactively. Prints a JSON result line `{"ok":true,"names":[...],"errors":[...]}` |
-| `sudo xrayebator profile-delete --name NAME` | Delete a profile non-interactively. Prints `{"ok":true,"name":"..."}` |
-| `sudo xrayebator fp-change --name NAME [--route R] --fp FINGERPRINT` | Change the fingerprint for a profile. Prints a JSON result line |
-| `sudo xrayebator sni-change --name NAME [--route R] --sni SNI` | Change the SNI for a profile. Updates all profiles on the same port. Prints a JSON result line |
-| `sudo xrayebator sni-list` | Print the SNI candidates from `sni_list.txt` grouped by category. Prints a JSON result line (used by the desktop GUI SNI dialog) |
-| `sudo xrayebator port-change --name NAME [--route R] --port PORT\|random` | Change the port for a profile; updates the inbound, firewall and subscription. Client reconnection is required. Prints a JSON result line |
-| `sudo xrayebator bypass list` | Print the current bypass domain rules, grouped (JSON) |
-| `sudo xrayebator bypass add --domain D` | Add a domain to the bypass rules (JSON) |
-| `sudo xrayebator bypass remove --domain D` | Remove a domain from the bypass rules (JSON) |
-| `sudo xrayebator bypass reset` | Clear all custom bypass rules (JSON) |
-| `sudo xrayebator bypass bundle [--group a,b,c]` | Apply the default bypass groups; without `--group`, re-applies all groups (JSON) |
-| `sudo xrayebator-update` | Update **Xrayebator itself** from the branch stored in `.current_branch` |
-| `sudo xrayebator-update main` | Update Xrayebator itself, forced from the `main` branch |
-| `sudo xrayebator-uninstall` | Remove the service and configuration |
+| `sudo xrayebator quickstart --email <address>` | One-shot deploy path used by the desktop GUI: runs the broad setup/migration path, provisions the current IP-TLS endpoint on `8443`, and creates a standard HAPP profile with `schema_version: 3` and 7 routes; emits JSON with `subscription_url` |
+| `sudo xrayebator happ-setup` | Reduced existing-install HAPP path: ensures the subscription service and a usable multi-route profile, but does not replace the endpoint prerequisite; when `.subscription_domain` or `.subscription_port` is missing, it verifies a real public TLS endpoint before writing markers and otherwise fails |
+| `sudo xrayebator profiles` | Print all server profiles as a JSON array for the desktop GUI Server Settings page |
+| `sudo xrayebator profile-create --name NAME [--transport tcp\|tcp-utls\|tcp-xudp\|tcp-mux\|grpc\|xhttp] [--port P] [--count N]` | Create one or more profiles non-interactively; prints `{"ok":true,"names":[...],"errors":[...]}` |
+| `sudo xrayebator profile-delete --name NAME` | Delete a profile non-interactively; prints `{"ok":true,"name":"..."}` |
+| `sudo xrayebator fp-change --name NAME [--route R] --fp FINGERPRINT` | Change the client fingerprint for one profile route; prints JSON |
+| `sudo xrayebator sni-change --name NAME [--route R] --sni SNI` | Change the shared inbound SNI and synchronise profiles on that port; prints JSON |
+| `sudo xrayebator sni-list` | Print SNI candidates grouped by category for the GUI SNI dialog; prints JSON |
+| `sudo xrayebator port-change --name NAME [--route R] --port PORT\|random` | Change the inbound port, firewall and subscription metadata; reconnect the client; prints JSON |
+| `sudo xrayebator bypass list` | Print current bypass domain rules as JSON |
+| `sudo xrayebator bypass add --domain D` | Add a domain to bypass rules |
+| `sudo xrayebator bypass remove --domain D` | Remove a domain from bypass rules |
+| `sudo xrayebator bypass reset` | Clear all custom bypass rules |
+| `sudo xrayebator bypass bundle [--group a,b,c]` | Apply the default bypass groups; without `--group`, apply all groups |
+| `sudo xrayebator-update [branch]` | Run the full `update.sh` project lifecycle update; without a branch, display `.current_branch` and open the interactive branch selector; with a branch, use that explicit branch |
+| `sudo xrayebator-uninstall` | Remove the service and installation |
 
-`xrayebator update` and `xrayebator-update main` only look similar:
+These update commands are intentionally different:
 
-| | `sudo xrayebator update` | `sudo xrayebator-update main` |
+| | `sudo xrayebator update <branch>` | `sudo xrayebator-update [branch]` |
 |---|---|---|
-| What it updates | The Xray-core binary | The Xrayebator scripts |
-| Source | GitHub Releases of the XTLS project | The `main` branch of this repository |
-| Argument | Takes none | Takes a branch name: `main`, `dev`, `experimental` or any other |
-| Affects | Core version, transports, protocols | Menu, migrations, subscription generation |
-| Side effect | Xray restart after config validation | Migrations run on the next menu launch |
+| What it starts with | The installed manager script | The full lifecycle updater script |
+| Source | Canonical raw file for the requested branch | The selected branch's `update.sh` workflow |
+| Main result | Manager self-update followed by Xray-core update | The manager's lifecycle sequence: scripts, data, subscription integration and service refresh as implemented |
+| Branch selection | Explicit branch is required for self-update | No argument shows `.current_branch` and then prompts; an explicit argument selects that branch |
+
+`xrayebator update <branch>` self-updates the manager from the canonical raw branch, then invokes
+the fresh manager for the Xray-core update. The full `update.sh` path has separate validation,
+restart and rollback behavior, so do not infer that every full run changes Xray-core. The desktop
+GUI currently invokes `xrayebator update <branch>` from Server Settings; it does not invoke the full
+`xrayebator-update` workflow.
+
+## HAPP provisioning paths
+
+`quickstart --email <address>` is the broad migration path: it performs the setup needed by a new
+deployment, provisions the IP-TLS subscription endpoint on `8443` and its certificate, and then creates
+or reuses the managed HAPP profile. A newly created standard profile uses `schema_version: 3` with seven
+routes, including `xhttp-legacy` and `xhttp-pq`. Migration calls in this non-interactive path are
+best-effort; verify markers, the profile JSON and service status after deployment.
+
+`happ-setup` is the reduced path for an existing installation. It runs only the critical migrations,
+restores the subscription service and ensures a multi-route profile; it is not a replacement for
+initial endpoint provisioning. If `.subscription_domain` or `.subscription_port` is missing,
+it verifies the public TLS endpoint before writing markers and refuses to fabricate them. Existing
+markers are reused without necessarily being reverified, so stale saved markers still require
+operator verification or a rerun of the appropriate setup path.
+
+The helper may reuse an existing profile meeting the seven-live-route minimum, not necessarily one
+with all standard labels or the current schema. Inspect the actual JSON; migrations do not retrofit missing
+routes into an existing profile. Use the menu or `quickstart` to re-provision/create a managed
+profile when `xhttp-legacy`, `xhttp-pq` or the expected seven-route shape is missing.
 
 ## Desktop GUI
 
-The desktop app (`src/`, Electron + React) talks to a VPS over SSH and drives the documented CLI
-above — it never touches `config.json` directly. All safety guarantees of `backup_config`,
-`safe_jq_write` and `safe_restart_xray` apply unchanged.
+The active Electron app is a CLI front-end over SSH, not a complete replacement for the terminal
+menu. It deploys with `quickstart`, refreshes the saved `subscription_url`, and exposes profile
+list/create/delete plus selected SNI, fingerprint, port, update and uninstall operations. Bypass,
+probe, revoke, HAPP setup, cascade, self-steal, the interactive menu and service diagnostics remain
+server-side operations.
 
-| Page | Purpose |
-|---|---|
-| Dashboard | Server cards, reachability check, open/settings/delete, language switch |
-| Add server | Full deploy over SSH with a step progress: `os check → upload → install → binary → quickstart` |
-| Server keys | Refresh the subscription, copy URL, show `vless://` links and QR codes |
-| Server settings | SSH password/private-key authentication with direct root or sudo; list/create/delete, `fp-change`, `sni-change`, `port-change`, plus server update/uninstall |
+See [Electron Desktop GUI](desktop-gui.md) for the complete command mapping, security boundary,
+packaging and test details.
 
-Interface language (Русский / English / 简体中文) is switched in the Dashboard header and persisted in
-`localStorage` under `xrayebator-language`. Build and run:
+The GUI's local development checks are:
 
 ```bash
 npm install
-npm run dev          # Electron + Vite dev mode
-npm run build        # compile renderer and main process
-npm test             # Vitest unit tests
-npm run typecheck    # TypeScript surface check
+npm run dev
+npm run build
+npm test
+npm run typecheck
 ```
 
 ## Bypass routing
@@ -171,21 +218,20 @@ Menu item `8` stores the parameters in `/usr/local/etc/xray/upstreams/cascade.js
 `cascade-upstream` outbound and switches only the `network=tcp,udp` catch-all rule.
 
 Two upstream types are supported: VLESS Reality over TCP, including Vision and XUDP, and XHTTP. The
-menu accepts a ready `vless://` link and carries transport-specific parameters over automatically;
+menu accepts a ready `vless://` link and carries transport-specific parameters automatically;
 manual entry needs `address`, `port`, `uuid`, `publicKey`, `shortId`, SNI and fingerprint. When the
 cascade is already active, switching the upstream rebuilds the outbound and routing and restarts
 Xray — no separate disable and enable is needed.
 
 Disabling the cascade removes the `cascade-upstream` outbound and returns the catch-all to `direct`.
-All changes go through `backup_config`, `safe_jq_write` and `safe_restart_xray`.
-
 Item `10` configures the other side: it turns the current VPS into the foreign node that a cascade
 from another server connects to.
 
 ## Custom domain and self-steal stub
 
 Self-steal puts nginx with a valid certificate on `127.0.0.1:9444`, and Reality inbounds receive
-`serverNames=[domain]` and `dest=127.0.0.1:9444`. For XHTTP, `xhttpSettings.host` is updated as well.
+`serverNames=[domain]` and `dest=127.0.0.1:9444`. For XHTTP, `xhttpSettings.host` is updated as
+well.
 
 You need a domain with an A or AAAA record pointing at the VPS and an email for Let's Encrypt. The
 menu installs `nginx` and `certbot`, writes the config to
@@ -201,10 +247,13 @@ the stub.
 ## Domain and DNS
 
 For the domain mode create an `A` record pointing at the VPS IPv4. Add `AAAA` only if IPv6 is really
-configured and reachable.
+configured and reachable. The automated IP-TLS flow currently supports a public IPv4 address; use
+domain mode for an IPv6-only VPS.
 
 If the domain sits behind Cloudflare, `DNS only` is more reliable than `Proxied` for testing: certbot
 must reach the VPS over the HTTP challenge on port 80.
 
-If `443` is taken by Xray or another service, the subscription moves to `8443` and the URL carries
-the port: `https://domain:8443/sub/<token>`.
+The generated `subscription_url` follows the selected public listener: port `443` is omitted from
+the HTTPS URL, while `8443` or another public port is included, for example
+`https://domain:8443/sub/<token>`. A DNS record alone does not change the saved subscription domain;
+re-run the domain setup when changing the endpoint.
