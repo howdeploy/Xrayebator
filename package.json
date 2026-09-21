@@ -1,6 +1,6 @@
 {
   "name": "xrayebator",
-  "version": "0.1.0",
+  "version": "0.5.0",
   "description": "Xrayebator Desktop — админ-панель развёртки VPN-сервера на VPS",
   "main": "out/main/index.js",
   "author": "Xrayebator",
