@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Xrayebator v0.5.0 — сервер получил панель управления</title>
+  <style>
+    :root {
+      --bg:#fafaf7; --surface:#fff; --fg:#1a1916; --muted:#6b6964;
+      --border:#e8e5df; --accent:#c96442;
+      --accent-soft:color-mix(in oklch,var(--accent) 14%,transparent);
+      --font-display:'Iowan Old Style','Charter',Georgia,'Times New Roman',serif;
+      --font-body:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
+      --font-mono:ui-monospace,'JetBrains Mono','SF Mono',Menlo,monospace;
+      --container:1120px; --gutter:clamp(20px,5vw,56px); --radius:10px; --radius-lg:16px;
+    }
+    *,*::before,*::after{box-sizing:border-box} html{scroll-behavior:smooth}
+    body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 var(--font-body);text-rendering:optimizeLegibility}
+    a{color:inherit;text-decoration:none} a:hover{color:var(--accent)} p{max-width:72ch} h1,h2,h3{font-family:var(--font-display);line-height:1.08;letter-spacing:-.02em}
+    h1{font-size:clamp(44px,7vw,82px);margin:0 0 20px} h2{font-size:clamp(32px,4vw,50px);margin:0 0 28px} h3{font-size:21px;margin:0 0 6px}
+    .container{max-width:var(--container);margin:auto;padding-inline:var(--gutter)} .topnav{position:sticky;top:0;z-index:2;background:color-mix(in oklch,var(--bg) 92%,transparent);backdrop-filter:blur(12px);border-bottom:1px solid var(--border)}
+    .topnav-inner{display:flex;align-items:center;justify-content:space-between;gap:20px;padding-block:14px}.logo{font:600 20px var(--font-display)}nav{display:flex;gap:24px;color:var(--muted);font-size:14px}.button{display:inline-block;padding:11px 18px;border:1px solid var(--accent);border-radius:var(--radius);background:var(--accent);color:var(--surface);font-weight:600}.button:hover{color:var(--surface);filter:brightness(.92)}
+    .section{padding-block:clamp(56px,9vw,112px);border-bottom:1px solid var(--border)} .hero{padding-block:clamp(88px,13vw,170px)} .eyebrow{margin:0 0 16px;color:var(--accent);font:12px var(--font-mono);letter-spacing:.1em;text-transform:uppercase}.lead{font-size:20px;color:var(--muted);max-width:60ch}.meta{color:var(--muted);font:13px var(--font-mono)}
+    .hero-grid{display:grid;grid-template-columns:1.1fr .9fr;gap:clamp(36px,7vw,90px);align-items:center}.hero-copy{max-width:650px}.visual{border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--surface);padding:24px;box-shadow:0 18px 50px color-mix(in oklch,var(--fg) 7%,transparent)}pre{margin:0;white-space:pre-wrap;font:13px/1.55 var(--font-mono);color:var(--muted)}
+    .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:28px}.item{padding-top:20px;border-top:1px solid var(--fg)}.item p{margin:0;color:var(--muted);font-size:15px}.log{display:grid;grid-template-columns:130px 1fr 110px;gap:24px;padding:22px 0;border-top:1px solid var(--border);align-items:start}.log p{margin:4px 0 0;color:var(--muted);font-size:15px}.pull{text-align:right;color:var(--muted);font:12px var(--font-mono)}.list{padding-left:22px}.list li{margin:10px 0}.code{padding:20px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);font:14px/1.7 var(--font-mono);overflow:auto}.footer{padding-block:44px;color:var(--muted);font-size:14px}.footer .row{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap}
+    @media(max-width:820px){nav{display:none}.hero-grid,.grid{grid-template-columns:1fr}.log{grid-template-columns:1fr;gap:6px}.pull{text-align:left}.visual{order:-1}}
+  </style>
+</head>
+<body>
+  <header class="topnav">
+    <div class="container topnav-inner">
+      <a class="logo" href="https://github.com/howdeploy/Xrayebator">Xrayebator</a>
+      <nav><a href="#added">Добавлено</a><a href="#fixed">Надёжность</a><a href="#upgrade-note">Обновление</a></nav>
+      <a class="button" href="https://github.com/howdeploy/Xrayebator/releases/tag/v0.5.0">Скачать v0.5.0</a>
+    </div>
+  </header>
+  <main>
+    <section class="section hero" data-od-id="hero">
+      <div class="container hero-grid">
+        <div class="hero-copy">
+          <p class="eyebrow">Релиз · 22 сентября 2026</p>
+          <h1>Сервер получил панель управления</h1>
+          <p class="lead">Xrayebator v0.5.0 связывает привычный серверный Bash-инструмент с графическим <strong>Xrayebator Desktop GUI</strong> для Windows, macOS и Linux.</p>
+          <p><a class="button" href="https://github.com/howdeploy/Xrayebator/releases/tag/v0.5.0">Открыть релиз на GitHub</a></p>
+        </div>
+        <div class="visual" aria-label="Схема Xrayebator Desktop GUI и сервера"><pre>┌──────────────────────────┐
+│ Xrayebator Desktop GUI   │
+│ Windows · macOS · Linux  │
+│ Dashboard · QR · settings│
+└─────────────┬────────────┘
+              │ SSH + CLI
+              ▼
+┌──────────────────────────┐
+│ Xrayebator на VPS        │
+│ Bash · Reality · HAPP    │
+│ profiles · backup        │
+└─────────────┬────────────┘
+              │ HTTPS
+              ▼
+       HAPP / v2rayNG / v2rayN</pre></div>
+      </div>
+    </section>
+    <section class="section" id="added" data-od-id="added">
+      <div class="container"><h2>Добавлено</h2><div class="grid">
+        <article class="item"><h3>Графический пульт</h3><p>Dashboard, мастер добавления VPS, ключи, QR-коды и настройки профилей. GUI вызывает серверные команды по SSH, а не подменяет Xrayebator.</p></article>
+        <article class="item"><h3>Семь маршрутов в одном профиле</h3><p>Новый HAPP schema-v3 профиль объединяет TCP Vision, uTLS Firefox, XUDP, TCP mux, gRPC и два XHTTP-варианта под одной ссылкой подписки.</p></article>
+        <article class="item"><h3>Управление без ручного JSON</h3><p>Профили можно создавать и удалять, а fingerprint, SNI и порт менять из Server Settings. Низкоуровневые CLI-команды остаются доступными.</p></article>
+      </div></div>
+    </section>
+    <section class="section" id="fixed" data-od-id="fixed">
+      <div class="container"><h2>Что стало надёжнее</h2>
+        <article class="log"><span class="meta">Сервер</span><div><h3>Backup перед изменением</h3><p>Runtime-операции проходят через сохранение, проверку конфигурации Xray и rollback при ошибке, чтобы не оставлять сервер на заведомо невалидном конфиге.</p></div><span class="pull">safety</span></article>
+        <article class="log"><span class="meta">Установка</span><div><h3>Можно продолжить прерванный процесс</h3><p>Флаги <code>--check</code>, <code>--resume</code> и <code>--fresh</code> помогают понять состояние десяти шагов установки и безопасно продолжить работу.</p></div><span class="pull">lifecycle</span></article>
+        <article class="log"><span class="meta">Совместимость</span><div><h3>IPv6-only VPS тоже в сценарии</h3><p>Установщик и subscription-путь учитывают IPv6-адреса, DNS fallback и формат URL для таких серверов.</p></div><span class="pull">networking</span></article>
+        <article class="log"><span class="meta">Проверки</span><div><h3>24 Bash-теста и Electron unit-тесты</h3><p>Проверяются миграции, HAPP, VLESS-ссылки, firewall, SNI/port-change, SSH-доступ, JSON и subscription parsing.</p></div><span class="pull">CI</span></article>
+      </div>
+    </section>
+    <section class="section" id="breaking-changes" data-od-id="breaking-changes">
+      <div class="container"><h2>Изменения границ</h2><ul class="list"><li>Активное десктоп-приложение теперь находится в <code>src/</code>: это Electron + React + TypeScript.</li><li>PySide6-клиент перенесён в <code>gui-legacy/</code> и сохранён как архивный отдельный проект.</li><li>GUI не отображает весь терминальный menu surface: bypass, probe-test, revoke, happ-setup, cascade, self-steal и service logs остаются в CLI.</li></ul></div>
+    </section>
+    <section class="section" id="known-issues" data-od-id="known-issues">
+      <div class="container"><h2>Известные ограничения</h2><ul class="list"><li>Subscription URL и VLESS-ссылки нужны GUI для работы и должны рассматриваться как bearer credentials.</li><li>Полного end-to-end теста упакованного Electron-приложения пока нет.</li><li>Последующий аудит нашёл задачи hardening для <code>safe_jq_write</code>, lifecycle rollback, JSON escaping и проверок существующих inbound. Этот релиз не заявляет их исправленными.</li><li>Локальная Windows-среда не является источником истины для POSIX-теста с <code>/bin/sh</code>; проверка выполняется на Linux CI.</li></ul></div>
+    </section>
+    <section class="section" id="upgrade-note" data-od-id="upgrade-note">
+      <div class="container"><h2>Как обновиться</h2><ol class="list"><li>Скачайте пакет своей ОС из <a href="https://github.com/howdeploy/Xrayebator/releases/tag/v0.5.0">GitHub Release v0.5.0</a>.</li><li>Установите GUI поверх предыдущей версии и откройте сохранённую карточку VPS.</li><li>Для сервера используйте <code>sudo xrayebator update main</code> или полный <code>sudo xrayebator-update main</code>, затем проверьте Xray, DNS и subscription endpoint.</li><li>После обновления сервера обновите подписку в клиенте и переподключитесь.</li></ol><div class="code">backup → edit → xray run -test → restart
+                    ↘ error → rollback</div></div>
+    </section>
+  </main>
+  <footer class="footer"><div class="container row"><span>© Xrayebator · v0.5.0</span><a href="https://github.com/howdeploy/Xrayebator">Исходный код и документация</a></div></footer>
+</body>
+</html>

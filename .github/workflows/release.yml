@@ -77,6 +77,7 @@ jobs:
     needs: build
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -85,7 +86,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" artifacts/* \
-            --repo "${GITHUB_REPOSITORY}" \
-            --target "${GITHUB_SHA}" \
-            --generate-notes
+          notes_file="docs/releases/${GITHUB_REF_NAME}.md"
+          if [[ -f "$notes_file" ]]; then
+            gh release create "${GITHUB_REF_NAME}" artifacts/* \
+              --repo "${GITHUB_REPOSITORY}" \
+              --target "${GITHUB_SHA}" \
+              --title "Xrayebator ${GITHUB_REF_NAME}" \
+              --notes-file "$notes_file"
+          else
+            gh release create "${GITHUB_REF_NAME}" artifacts/* \
+              --repo "${GITHUB_REPOSITORY}" \
+              --target "${GITHUB_SHA}" \
+              --generate-notes
+          fi
