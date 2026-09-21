@@ -44,7 +44,6 @@ linux:
       arch:
         - x64
   category: Utility
-  desktopName: Xrayebator
   synopsis: Управление Xray Reality на VPS
 
 nsis:
