@@ -4,7 +4,9 @@ import { join } from 'node:path'
 let tray: Tray | null = null
 
 export function createTray(): void {
-  const iconPath = join(process.resourcesPath, 'icons', 'icon.png')
+  const iconPath = app.isPackaged
+    ? join(process.resourcesPath, 'icons', 'icon.png')
+    : join(__dirname, '../../resources/icons/icon.png')
   const icon = nativeImage.createFromPath(iconPath)
   tray = new Tray(icon)
   tray.setToolTip('Xrayebator')
