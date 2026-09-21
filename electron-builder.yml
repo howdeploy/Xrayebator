@@ -15,6 +15,8 @@ extraResources:
     to: scripts/xrayebator
   - from: uninstall.sh
     to: scripts/uninstall.sh
+  - from: resources/icons/icon.png
+    to: icons/icon.png
 
 publish:
   - provider: github
