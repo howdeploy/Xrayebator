@@ -28,6 +28,22 @@ win:
         - x64
   icon: resources/icons/icon.ico
 
+mac:
+  target:
+    - target: dmg
+      arch:
+        - arm64
+  icon: resources/icons/icon.png
+
+linux:
+  target:
+    - target: AppImage
+      arch:
+        - x64
+  category: Utility
+  desktopName: Xrayebator
+  synopsis: Управление Xray Reality на VPS
+
 nsis:
   oneClick: true
   allowToChangeInstallationDirectory: false
