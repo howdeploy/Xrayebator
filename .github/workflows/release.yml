@@ -62,14 +62,34 @@ jobs:
         run: npx electron-builder --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify packaged artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ matrix.platform }}" in
+            win) artifact=(dist/*.exe) ;;
+            mac) artifact=(dist/*.dmg) ;;
+            linux) artifact=(dist/*.AppImage) ;;
+            *) echo "Unknown platform: ${{ matrix.platform }}" >&2; exit 2 ;;
+          esac
+          if [[ "${#artifact[@]}" -ne 1 || ! -s "${artifact[0]}" ]]; then
+            echo "Expected one non-empty package for ${{ matrix.platform }}" >&2
+            printf 'Matches: %s\\n' "${artifact[@]}" >&2
+            exit 1
+          fi
+          printf 'Verified package: %s (%s bytes)\\n' "${artifact[0]}" "$(wc -c < "${artifact[0]}")"
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.platform }}-build
+          name: ${{ matrix.platform }}-package
           path: |
             dist/*.exe
             dist/*.dmg
             dist/*.AppImage
-            dist/latest*.yml
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform }}-metadata
+          path: dist/latest*.yml
           if-no-files-found: warn
 
   release:
