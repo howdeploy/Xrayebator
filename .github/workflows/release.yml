@@ -122,7 +122,9 @@ jobs:
             echo "Release ${GITHUB_REF_NAME} already exists; updating target and uploading artifacts."
             gh release edit "${GITHUB_REF_NAME}" \
               --repo "${GITHUB_REPOSITORY}" \
-              --target "${GITHUB_SHA}"
+              --target "${GITHUB_SHA}" \
+              --title "Xrayebator ${GITHUB_REF_NAME}" \
+              --notes-file "$notes_file"
             while IFS= read -r asset_name; do
               case "$asset_name" in
                 latest-linux.yml|latest-mac.yml|latest.yml|*-win.exe|*-mac-*.dmg|*-mac-*.zip|*-linux.AppImage) ;;
