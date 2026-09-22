@@ -29,6 +29,7 @@ win:
       arch:
         - x64
   icon: resources/icons/icon.ico
+  artifactName: ${productName}-${version}-win.${ext}
 
 mac:
   target:
@@ -39,6 +40,7 @@ mac:
       arch:
         - arm64
   icon: resources/icons/icon.png
+  artifactName: ${productName}-${version}-mac-${arch}.${ext}
 
 linux:
   target:
@@ -47,6 +49,7 @@ linux:
         - x64
   category: Utility
   synopsis: Управление Xray Reality на VPS
+  artifactName: ${productName}-${version}-linux.${ext}
 
 nsis:
   oneClick: true

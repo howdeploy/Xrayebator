@@ -67,9 +67,9 @@ jobs:
         run: |
           set -euo pipefail
           case "${{ matrix.platform }}" in
-            win) artifact=(dist/*.exe) ;;
-            mac) artifact=(dist/*.dmg dist/*.zip) ;;
-            linux) artifact=(dist/*.AppImage) ;;
+            win) artifact=(dist/*-win.exe) ;;
+            mac) artifact=(dist/*-mac-*.dmg dist/*-mac-*.zip) ;;
+            linux) artifact=(dist/*-linux.AppImage) ;;
             *) echo "Unknown platform: ${{ matrix.platform }}" >&2; exit 2 ;;
           esac
           expected=1
@@ -92,10 +92,10 @@ jobs:
         with:
           name: ${{ matrix.platform }}-package
           path: |
-            dist/*.exe
-            dist/*.dmg
-            dist/*.zip
-            dist/*.AppImage
+            dist/*-win.exe
+            dist/*-mac-*.dmg
+            dist/*-mac-*.zip
+            dist/*-linux.AppImage
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
