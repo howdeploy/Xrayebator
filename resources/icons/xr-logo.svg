@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
   <title id="title">Xrayebator XR logo</title>
   <desc id="desc">Blue outlined rounded XR emblem with a transparent outside.</desc>
-  <rect x="48" y="48" width="928" height="928" rx="270" fill="#5BA2F5"/>
-  <rect x="98" y="98" width="828" height="828" rx="220" fill="#0D1117"/>
-  <text x="512" y="512" text-anchor="middle" dominant-baseline="central" font-family="Segoe UI, Arial, sans-serif" font-size="340" font-weight="700" letter-spacing="-24" fill="#F4F7FB">XR</text>
+  <rect x="8" y="8" width="1008" height="1008" rx="292" fill="#5BA2F5"/>
+  <rect x="50" y="50" width="924" height="924" rx="242" fill="#0D1117"/>
+  <text x="512" y="512" text-anchor="middle" dominant-baseline="central" font-family="Segoe UI, Arial, sans-serif" font-size="410" font-weight="700" letter-spacing="-24" fill="#F4F7FB">XR</text>
 </svg>
