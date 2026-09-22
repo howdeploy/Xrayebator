@@ -1,9 +1,10 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
-import { createSshCredentials } from '../../src/main/core/ssh-access'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createSshCredentials, resolvePrivateKey } from '../../src/main/core/ssh-access'
 import { formatHostKeyFingerprint } from '../../src/main/core/ssh-client'
+import type { Server } from '../../src/shared/types'
 
 const temporaryDirectories: string[] = []
 
@@ -12,6 +13,30 @@ afterEach(() => {
     rmSync(directory, { recursive: true, force: true })
   }
 })
+
+const storedServer: Server = {
+  id: 'server-1',
+  name: 'server.example',
+  host: 'server.example',
+  port: 22,
+  username: 'root',
+  os: null,
+  country: null,
+  city: null,
+  flag: null,
+  createdAt: '2026-09-23T00:00:00.000Z',
+  routesCount: null,
+  subscriptionUrl: '',
+  keys: [],
+  privateKeyCredentialId: 'stored_credential_1234',
+  privateKeyPath: null
+}
+
+const emptyKeychain = {
+  save: async () => {},
+  load: async () => null,
+  remove: async () => {}
+}
 
 describe('SSH access', () => {
   it('использует SSH-пароль как sudo-пароль по умолчанию', () => {
@@ -85,7 +110,111 @@ describe('SSH access', () => {
     ).toThrow('должен быть выбран через диалог приложения')
   })
 
-  it('форматирует sha256 host key как OpenSSH fingerprint', () => {
+  it('resolves a selected key from keychain without a path', async () => {
+    const key = Buffer.from('private-key')
+    const keychain = { ...emptyKeychain, load: vi.fn().mockResolvedValue(key) }
+    const resolved = await resolvePrivateKey(
+      {
+        username: 'root',
+        authMethod: 'privateKey',
+        privateKeyCredentialId: 'current_credential_1234',
+        privilegeMode: 'root'
+      },
+      storedServer,
+      new Set(),
+      keychain
+    )
+
+    expect(resolved.privateKey).toEqual(key)
+    expect(keychain.load).toHaveBeenCalledWith('current_credential_1234')
+  })
+
+  it('falls back to the saved key reference but rejects an arbitrary path', async () => {
+    const key = Buffer.from('private-key')
+    const keychain = { ...emptyKeychain, load: vi.fn().mockResolvedValue(key) }
+    const resolved = await resolvePrivateKey(
+      {
+        username: 'root',
+        authMethod: 'privateKey',
+        privilegeMode: 'root'
+      },
+      storedServer,
+      new Set(),
+      keychain
+    )
+    expect(keychain.load).toHaveBeenCalledWith('stored_credential_1234')
+    expect(resolved.privateKey).toEqual(key)
+
+    await expect(
+      resolvePrivateKey(
+        {
+          username: 'root',
+          authMethod: 'privateKey',
+          privateKeyPath: 'C:/private/id_ed25519',
+          privilegeMode: 'root'
+        },
+        storedServer,
+        new Set(),
+        emptyKeychain
+      )
+    ).rejects.toThrow('выбран через диалог')
+  })
+
+  it('requires reselect when the saved credential is missing and never stores passphrase', async () => {
+    const keychain = { ...emptyKeychain, load: vi.fn().mockResolvedValue(null), save: vi.fn() }
+    await expect(
+      resolvePrivateKey(
+        {
+          username: 'root',
+          authMethod: 'privateKey',
+          privateKeyCredentialId: 'missing_credential_1234',
+          passphrase: 'one-time',
+          privilegeMode: 'root'
+        },
+        storedServer,
+        new Set(),
+        keychain
+      )
+    ).rejects.toThrow('не найден в системном хранилище')
+    expect(keychain.save).not.toHaveBeenCalled()
+  })
+
+  it('marks legacy file fallback as non-persisted and keeps approved credential reuse persisted', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'xrayebator-key-fallback-'))
+    temporaryDirectories.push(directory)
+    const path = resolve(directory, 'id_ed25519')
+    writeFileSync(path, '-----BEGIN OPENSSH PRIVATE KEY-----\ntest\n-----END OPENSSH PRIVATE KEY-----\n')
+
+    const fallback = await resolvePrivateKey(
+      {
+        username: 'root',
+        authMethod: 'privateKey',
+        privateKeyCredentialId: 'expired_credential_123',
+        privateKeyPath: path,
+        privilegeMode: 'root'
+      },
+      null,
+      new Set([path]),
+      emptyKeychain
+    )
+    expect(fallback.privateKey?.toString()).toContain('OPENSSH PRIVATE KEY')
+    expect(fallback.access.privateKeyPersisted).toBe(false)
+
+    const reused = await resolvePrivateKey(
+      {
+        username: 'root',
+        authMethod: 'privateKey',
+        privateKeyCredentialId: 'stored_credential_1234',
+        privilegeMode: 'root'
+      },
+      storedServer,
+      new Set(),
+      { ...emptyKeychain, load: vi.fn().mockResolvedValue(Buffer.from('key')) }
+    )
+    expect(reused.access.privateKeyPersisted).toBe(true)
+  })
+
+  it('formats sha256 host key as OpenSSH fingerprint', () => {
     expect(formatHostKeyFingerprint('00'.repeat(32))).toBe(
       `SHA256:${Buffer.alloc(32).toString('base64').replace(/=+$/, '')}`
     )

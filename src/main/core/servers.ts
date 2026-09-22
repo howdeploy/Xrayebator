@@ -19,6 +19,7 @@ export interface ServerConnectionMetadata {
   privateKeyPath?: string | null
   privateKeyCredentialId?: string | null
   privateKeyName?: string | null
+  privateKeyPersisted?: boolean | null
 }
 
 export interface ServerStore {
@@ -52,6 +53,7 @@ function normalizeServer(server: StoredServer, hostKeys: Record<string, string>)
     privateKeyPath: server.privateKeyPath ?? null,
     privateKeyName: server.privateKeyName ?? null,
     privateKeyCredentialId: server.privateKeyCredentialId ?? null,
+    privateKeyPersisted: server.privateKeyPersisted ?? null,
     setupStatus: server.setupStatus ?? (server.subscriptionUrl ? 'ready' : 'unknown'),
     diagnostics: server.diagnostics ?? null,
     hostKeyFingerprint:
@@ -119,6 +121,7 @@ export function createServerStore(): ServerStore {
             ? connection.privateKeyPath
             : existing?.privateKeyPath ?? null,
         privateKeyName: connection.privateKeyName ?? existing?.privateKeyName ?? null,
+        privateKeyPersisted: connection.privateKeyPersisted ?? existing?.privateKeyPersisted ?? null,
         privateKeyCredentialId:
           connection.privateKeyCredentialId ?? existing?.privateKeyCredentialId ?? null,
         subscriptionUrl: input.subscriptionUrl || existing?.subscriptionUrl || '',
@@ -158,7 +161,8 @@ export function createServerStore(): ServerStore {
         privateKeyPath: input.privateKeyPath ?? servers[idx].privateKeyPath ?? null,
         privateKeyCredentialId:
           input.privateKeyCredentialId ?? servers[idx].privateKeyCredentialId ?? null,
-        privateKeyName: input.privateKeyName ?? servers[idx].privateKeyName ?? null
+        privateKeyName: input.privateKeyName ?? servers[idx].privateKeyName ?? null,
+        privateKeyPersisted: input.privateKeyPersisted ?? servers[idx].privateKeyPersisted ?? null
       }
       const next = [...servers]
       next[idx] = updated

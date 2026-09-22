@@ -94,6 +94,7 @@ export function AddServer({ onDone, onBack }: AddServerProps): React.JSX.Element
     window.api.deploy.start({
       host: form.host.trim(),
       port: Number(form.port) || 22,
+      emailMode: 'provided',
       email: form.email.trim(),
       access
     })

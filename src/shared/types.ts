@@ -17,12 +17,7 @@ export type SubscriptionState = 'public' | 'localOnly' | 'missing' | 'unreachabl
 export interface PrivateKeyReference {
   credentialId: string
   name: string
-}
-
-/** Legacy file-picker response retained until keychain IPC is wired end-to-end. */
-export interface PrivateKeySelection {
-  path: string
-  name: string
+  persisted?: boolean
 }
 
 export interface ServerDiagnostics {
@@ -71,6 +66,8 @@ export interface SshAccessInput {
   password?: string
   privateKeyPath?: string
   privateKeyCredentialId?: string
+  privateKeyName?: string
+  privateKeyPersisted?: boolean
   passphrase?: string
   privilegeMode: SshPrivilegeMode
   sudoPassword?: string
@@ -95,6 +92,7 @@ export interface Server {
   privateKeyPath?: string | null
   privateKeyName?: string | null
   privateKeyCredentialId?: string | null
+  privateKeyPersisted?: boolean | null
   setupStatus?: ServerSetupStatus
   diagnostics?: ServerDiagnostics | null
   hostKeyFingerprint?: string | null
@@ -231,8 +229,7 @@ export type DeployStatus = 'pending' | 'running' | 'done' | 'error'
 export interface DeployStartPayload {
   host: string
   port: number
-  /** Optional only while the existing renderer migrates to explicit email selection. */
-  emailMode?: EmailMode
+  emailMode: EmailMode
   email?: string
   access: SshAccessInput
 }
@@ -251,10 +248,11 @@ export type DeployEvent =
 
 export interface ElectronAPI {
   ssh: {
-    selectPrivateKey: () => Promise<PrivateKeySelection | null>
+    selectPrivateKey: () => Promise<PrivateKeyReference | null>
   }
   servers: {
     list: () => Promise<Server[]>
+    import: (payload: ImportServerPayload) => Promise<ImportResult>
     remove: (id: string) => Promise<void>
     get: (id: string) => Promise<Server | null>
     check: (id: string) => Promise<boolean>

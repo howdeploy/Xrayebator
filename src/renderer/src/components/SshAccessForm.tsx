@@ -16,7 +16,7 @@ interface SshAccessFormProps {
 export function isSshAccessReady(access: SshAccessInput): boolean {
   if (!access.username.trim()) return false
   if (access.authMethod === 'password') return Boolean(access.password)
-  return Boolean(access.privateKeyPath)
+  return Boolean(access.privateKeyCredentialId || access.privateKeyPath)
 }
 
 export function SshAccessForm({
@@ -28,7 +28,7 @@ export function SshAccessForm({
 }: SshAccessFormProps): React.JSX.Element {
   const { t } = useTranslation()
   const [keyError, setKeyError] = useState<string | null>(null)
-  const keyName = value.privateKeyPath?.split(/[\\/]/).pop()
+  const keyName = value.privateKeyName ?? value.privateKeyPath?.split(/[\\/]/).pop()
 
   const update = (patch: Partial<SshAccessInput>): void => {
     onChange({ ...value, ...patch })
@@ -38,7 +38,7 @@ export function SshAccessForm({
     setKeyError(null)
     try {
       const selection = await window.api.ssh.selectPrivateKey()
-      if (selection) update({ privateKeyPath: selection.path })
+      if (selection) update({ privateKeyCredentialId: selection.credentialId, privateKeyName: selection.name })
     } catch (error) {
       setKeyError(error instanceof Error ? error.message : String(error))
     }

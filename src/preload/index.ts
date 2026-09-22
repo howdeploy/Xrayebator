@@ -3,7 +3,9 @@ import type {
   DeployEvent,
   DeployStartPayload,
   ElectronAPI,
-  PrivateKeySelection,
+  PrivateKeyReference,
+  ImportResult,
+  ImportServerPayload,
   ProfileCreateInput,
   ProfileCreateResult,
   ProfileDeleteResult,
@@ -23,12 +25,14 @@ import type {
 
 const api: ElectronAPI = {
   ssh: {
-    selectPrivateKey: (): Promise<PrivateKeySelection | null> =>
+    selectPrivateKey: (): Promise<PrivateKeyReference | null> =>
       ipcRenderer.invoke('ssh:selectPrivateKey')
   },
 
   servers: {
     list: (): Promise<Server[]> => ipcRenderer.invoke('servers:list'),
+    import: (payload: ImportServerPayload): Promise<ImportResult> =>
+      ipcRenderer.invoke('servers:import', payload),
     remove: (id: string): Promise<void> => ipcRenderer.invoke('servers:remove', id),
     get: (id: string): Promise<Server | null> => ipcRenderer.invoke('servers:get', id),
     check: (id: string): Promise<boolean> => ipcRenderer.invoke('servers:check', id),
