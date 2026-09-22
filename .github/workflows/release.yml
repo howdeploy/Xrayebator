@@ -123,6 +123,17 @@ jobs:
             gh release edit "${GITHUB_REF_NAME}" \
               --repo "${GITHUB_REPOSITORY}" \
               --target "${GITHUB_SHA}"
+            while IFS= read -r asset_name; do
+              case "$asset_name" in
+                latest-linux.yml|latest-mac.yml|latest.yml|*-win.exe|*-mac-*.dmg|*-mac-*.zip|*-linux.AppImage) ;;
+                *)
+                  echo "Removing stale release asset: $asset_name"
+                  gh release delete-asset "${GITHUB_REF_NAME}" "$asset_name" \
+                    --repo "${GITHUB_REPOSITORY}" --yes
+                  ;;
+              esac
+            done < <(gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
+              --json assets --jq '.assets[].name')
             gh release upload "${GITHUB_REF_NAME}" artifacts/* \
               --repo "${GITHUB_REPOSITORY}" \
               --clobber
