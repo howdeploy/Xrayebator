@@ -35,3 +35,27 @@ if grep -Eq '^\s*if \[\[ -z "\$email" \]\]' <<< "$quickstart_block"; then
 fi
 
 echo "✓ quickstart поддерживает --without-email без фиктивного адреса"
+
+# ── inspect: read-only диагностика для GUI-импорта ──
+inspect_block=$(tr -d '\r' < xrayebator | awk '/^inspect_command\(\) \{$/{f=1} f&&/^quickstart_command\(\) \{$/{exit} f')
+[[ -n "$inspect_block" ]] || fail "inspect_command block not found"
+
+# Диспетч должен открывать subcommand.
+grep -Eq '^[[:space:]]*inspect\)' <(tr -d '\r' < xrayebator) \
+  || fail "dispatch не регистрирует inspect"
+
+# JSON печатается через jq -n (одним блоком), диагностику — в stderr.
+grep -Fq 'jq -n' <<< "$inspect_block" \
+  || fail "inspect_command должен печатать JSON через jq -n"
+if grep -Eq 'echo "\{[\"a-z]' <<< "$inspect_block"; then
+  fail "inspect_command печатает JSON вручную вместо jq -n"
+fi
+
+# Read-only инвариант: никаких mutation-хелперов/пакетных/сетевых изменений.
+if grep -Eq 'apt-get|safe_jq_write|systemctl (restart|enable|stop|start)|open_firewall_port|close_firewall_port|install_subscription_server|backup_config|quickstart_command|happ_setup|run_migration|touch |rm -|mv |> "/usr|>> "/usr' <<< "$inspect_block"; then
+  echo "Найден mutation-вызов в inspect_command:"
+  grep -En 'apt-get|safe_jq_write|systemctl (restart|enable|stop|start)|open_firewall_port|install_subscription_server|backup_config|quickstart_command|happ_setup|run_migration|touch |rm -|mv ' <<< "$inspect_block" || true
+  fail "inspect_command обязан быть read-only"
+fi
+
+echo "✓ inspect зарегистрирован, печатает JSON и остаётся read-only"
