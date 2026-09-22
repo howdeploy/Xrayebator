@@ -117,7 +117,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          notes_file="docs/releases/${GITHUB_REF_NAME}.md"
+          notes_file="docs/releases/${GITHUB_REF_NAME}.en.md"
           if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             echo "Release ${GITHUB_REF_NAME} already exists; updating target and uploading artifacts."
             gh release edit "${GITHUB_REF_NAME}" \

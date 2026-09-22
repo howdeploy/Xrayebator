@@ -1,38 +1,39 @@
 # Changelog
 
-История пользовательских изменений Xrayebator. Серверный менеджер и Electron-приложение публикуются из канонического репозитория `howdeploy/Xrayebator`.
+User-facing Xrayebator changes. The server manager and Electron application are published from the canonical `howdeploy/Xrayebator` repository.
 
 ## [0.5.0] - 2026-09-22
 
-Первый общий релиз обновлённого серверного менеджера и **Xrayebator Desktop GUI**.
+The first combined release of the updated server manager and **Xrayebator Desktop GUI**.
 
-### Добавлено
+### Added
 
-- Electron + React + TypeScript GUI для управления VPS по SSH.
-- Dashboard, мастер добавления сервера, страница ключей и QR-кодов.
-- Операции создания/удаления профилей и смены fingerprint, SNI и порта.
-- Переключение интерфейса RU / EN / 中文.
-- Стандартный HAPP schema-v3 профиль из семи маршрутов с единой subscription-ссылкой.
-- Улучшены IPv6-сценарии установщика, DNS fallback и форматирование IPv6 URL; автоматический публичный IP-TLS для IPv6-only VPS по-прежнему не заявляется, для него нужен доменный TLS-режим.
-- Установщик поддерживает управление шагами `--check` / `--resume` / `--fresh`.
-- Bash validation-suite из 24 тестов и Electron unit-тесты.
+- Electron + React + TypeScript GUI for managing VPS instances over SSH.
+- Dashboard, server add wizard, keys page, and QR codes.
+- Profile creation/deletion and fingerprint, SNI, and port changes.
+- RU / EN / 中文 interface switching.
+- Standard HAPP schema-v3 profile with seven routes and one subscription URL.
+- Improved installer IPv6 scenarios, DNS fallback, and IPv6 URL formatting; automated public IP-TLS for IPv6-only VPS is still not claimed and requires domain TLS.
+- Installer step control with `--check` / `--resume` / `--fresh`.
+- A 24-script Bash validation suite and Electron unit tests.
 
-### Изменено
+### Changed
 
-- Runtime-конфигурация проходит через backup, проверку Xray и rollback при ошибке.
-- Установщик, обновления, firewall ownership и lifecycle-сценарии получили дополнительные проверки.
-- Архивный PySide6 GUI отделён в `gui-legacy/`; активным приложением стал Electron GUI из `src/`.
-- Пакеты релиза получили понятные суффиксы платформ: `-win`, `-mac-arm64`, `-linux`.
-- Документация синхронизирована на русском, английском и китайском языках.
+- Runtime configuration changes go through backup, Xray validation, and rollback on failure.
+- Installer, update, firewall ownership, and lifecycle paths have additional checks.
+- The archival PySide6 GUI is separated into `gui-legacy/`; the active application is the Electron GUI in `src/`.
+- Release packages use clear platform suffixes: `-win`, `-mac-arm64`, and `-linux`.
+- Documentation is synchronized in Russian, English, and Chinese.
 
-### Исправлено
+### Fixed
 
-- Исправлены сценарии миграций, HAPP subscription, IPv6 DNS/URL fallback, сертификатов и синхронизации профилей.
-- Убраны ошибки в GUI deployment, SSH-проверках, JSON CLI-ответах, SNI/port-change и тестовом CI.
+- Migration, HAPP subscription, IPv6 DNS/URL fallback, certificate, and profile synchronization scenarios.
+- GUI deployment, SSH validation, JSON CLI responses, SNI/port-change, and CI issues.
 
-### Ограничения
+### Limitations
 
-- Полный интерактивный menu surface, bypass, probe-test, revoke, happ-setup, cascade, self-steal и service logs остаются в CLI.
-- Hardening-задачи последующего аудита `safe_jq_write`, lifecycle rollback, JSON escaping и проверок существующих inbound не входят в этот релиз.
+- The full interactive menu, bypass, probe-test, revoke, happ-setup, cascade, self-steal, and service logs remain CLI-only.
+- Hardening tasks found in a later audit around `safe_jq_write`, lifecycle rollback, JSON escaping, and existing-inbound validation are not included in this release.
 
-Подробные русские release notes: [docs/releases/v0.5.0.md](docs/releases/v0.5.0.md).
+Detailed English release notes: [docs/releases/v0.5.0.en.md](docs/releases/v0.5.0.en.md).
+Russian release notes: [docs/releases/v0.5.0.md](docs/releases/v0.5.0.md).
