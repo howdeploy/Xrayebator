@@ -119,7 +119,13 @@ jobs:
         run: |
           notes_file="docs/releases/${GITHUB_REF_NAME}.md"
           if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            echo "Release ${GITHUB_REF_NAME} already exists; leaving it unchanged."
+            echo "Release ${GITHUB_REF_NAME} already exists; updating target and uploading artifacts."
+            gh release edit "${GITHUB_REF_NAME}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --target "${GITHUB_SHA}"
+            gh release upload "${GITHUB_REF_NAME}" artifacts/* \
+              --repo "${GITHUB_REPOSITORY}" \
+              --clobber
           elif [[ -f "$notes_file" ]]; then
             gh release create "${GITHUB_REF_NAME}" artifacts/* \
               --repo "${GITHUB_REPOSITORY}" \
