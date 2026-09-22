@@ -10100,15 +10100,19 @@ uninstall_adguard_home() {
 
 # CLI dispatch (Phase 5, REQ-B02). Subcommand-style.
 quickstart_command() {
-  local email=""
+  local email="" email_mode="provided"
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --email) email="$2"; shift 2 ;;
+      --email) email="$2"; email_mode="provided"; shift 2 ;;
+      --without-email) email=""; email_mode="without"; shift ;;
       *) shift ;;
     esac
   done
 
-  if [[ -z "$email" ]] || ! [[ "$email" =~ ^[^@]+@[^@]+\.[^@]+$ ]]; then
+  # email нужен только Certbot (ACME-контакт для уведомлений/восстановления).
+  # В режиме without передаём --register-unsafely-without-email вместо
+  # подстановки фиктивного адреса.
+  if [[ "$email_mode" == "provided" ]] && { [[ -z "$email" ]] || ! [[ "$email" =~ ^[^@]+@[^@]+\.[^@]+$ ]]; }; then
     echo '{"ok":false,"error":"Некорректный email (нужен для Let'\''s Encrypt)"}'
     return 1
   fi
@@ -10370,13 +10374,21 @@ NGINXHTTP
   if [[ "$cert_expiry_ok" -eq 0 ]]; then
     # Получить TLS сертификат
     echo "  -> Получение TLS сертификата..." >&2
+    # ACME-контакт: с email — -m, без — явный unsafely-without-email (без фиктивного адреса).
+    local certbot_email_args=()
+    if [[ "$email_mode" == "provided" ]]; then
+      certbot_email_args=(-m "$email")
+    else
+      certbot_email_args=(--register-unsafely-without-email)
+      echo "  -> Email не указан: регистрация ACME без контактного адреса (уведомлений не будет)" >&2
+    fi
     if ! "$certbot_bin" certonly \
         --cert-name "$server_ip" \
         --preferred-profile shortlived \
         --webroot --webroot-path "$webroot" \
         --ip-address "$server_ip" \
         --non-interactive --agree-tos \
-        -m "$email" \
+        "${certbot_email_args[@]}" \
         --deploy-hook "systemctl reload nginx" \
         >/tmp/certbot-ip.log 2>&1; then
       local certbot_reason
@@ -11809,6 +11821,7 @@ if [[ "$XRAYEBATOR_SOURCED" -eq 0 ]]; then
       echo -e "  ${CYAN}sudo xrayebator${NC}                  — открыть интерактивное меню"
       echo -e "  ${CYAN}sudo xrayebator update [branch]${NC}  — обновить Xray-core (main/dev/experimental)"
       echo -e "  ${CYAN}sudo xrayebator quickstart --email EMAIL${NC}  — авторазвёртывание: подписка+IP-TLS+HAPP profile"
+      echo -e "  ${CYAN}sudo xrayebator quickstart --without-email${NC}  — то же, но ACME-регистрация без email (без уведомлений)"
       echo -e "  ${CYAN}sudo xrayebator happ-setup${NC}       — создать/переиспользовать HAPP multi-route профиль"
       echo -e "  ${CYAN}sudo xrayebator probe-test${NC}       — проверить доступность SNI с VPS"
       echo -e "  ${CYAN}sudo xrayebator profiles${NC}          — JSON-список профилей"
