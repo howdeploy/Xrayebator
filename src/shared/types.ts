@@ -68,6 +68,7 @@ export interface SshAccessInput {
   privateKeyPath?: string
   privateKeyCredentialId?: string
   privateKeyName?: string
+  /** true — ключ в системном keychain; false — только выбранный файл в текущей сессии. */
   privateKeyPersisted?: boolean
   passphrase?: string
   privilegeMode: SshPrivilegeMode

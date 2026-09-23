@@ -4,6 +4,7 @@ import { basename, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { readFileSync, statSync } from 'node:fs'
 import type {
+  ImportServerPayload,
   ProfileCreateInput,
   ProfileFingerprintInput,
   ProfilePortInput,
@@ -12,11 +13,12 @@ import type {
   ServerMaintenanceResult,
   SshAccessInput
 } from '@shared/types'
-import type { ServerStore } from './core/servers'
+import type { ServerConnectionMetadata, ServerStore } from './core/servers'
 import { Deployer } from './core/deployer'
 import { fetchSubscription } from './core/subscription'
 import { ProfileManager } from './core/profiles'
 import { ServerManager } from './core/server-manager'
+import { ServerInspector } from './core/server-inspector'
 import { probePortsFor } from './core/probe-ports'
 import { createSshCredentials, normalizeSshAccess, resolvePrivateKey } from './core/ssh-access'
 import { createSshKeychain, MAX_PRIVATE_KEY_BYTES } from './core/ssh-keychain'
@@ -130,9 +132,26 @@ export function registerIpcHandlers({ store }: IpcContext): void {
 
   ipcMain.handle('servers:list', (): Server[] => store.list())
   ipcMain.handle('servers:get', (_e, id: string): Server | null => store.get(id) ?? null)
-  ipcMain.handle('servers:remove', (_e, id: string): void => {
+  ipcMain.handle('servers:remove', async (_e, id: string): Promise<void> => {
     const server = store.get(id)
     if (!server || !store.remove(id)) return
+    const credentialId = server.privateKeyCredentialId
+    if (credentialId) {
+      // Ключ удаляем из keychain только когда на него не ссылается другая карточка.
+      if (store.countCredentialReferences(credentialId) === 0) {
+        const transient = transientKeys.get(credentialId)
+        if (transient) {
+          transient.fill(0)
+          transientKeys.delete(credentialId)
+        } else {
+          try {
+            await keychain.remove(credentialId)
+          } catch {
+            // Ключ уже отсутствует или хранилище недоступно — карточка всё равно удалена.
+          }
+        }
+      }
+    }
     const sameEndpointRemains = store
       .list()
       .some(
@@ -176,6 +195,7 @@ export function registerIpcHandlers({ store }: IpcContext): void {
         const target = { host: payload.host, port: payload.port }
         const { credentials, access } = await credentialsFor(null, target, payload.access)
         const result = await deployer.deploy({
+          emailMode: payload.emailMode === 'without' ? 'without' : 'provided',
           email: payload.email,
           credentials
         })
@@ -224,6 +244,49 @@ export function registerIpcHandlers({ store }: IpcContext): void {
     const keys = await fetchSubscription(server.subscriptionUrl)
     store.updateKeys(serverId, keys)
     return { serverId, subscriptionUrl: server.subscriptionUrl, keys }
+  })
+
+  ipcMain.handle('servers:import', async (_e, payload: ImportServerPayload) => {
+    if (!payload || typeof payload !== 'object') throw new Error('Некорректный запрос импорта')
+    if (!payload.access || payload.access.authMethod !== 'privateKey') {
+      throw new Error('Импорт существующего сервера доступен только по SSH-ключу')
+    }
+    const target = { host: payload.host, port: payload.port }
+    const { credentials, access } = await credentialsFor(null, target, payload.access)
+    const inspector = new ServerInspector(credentials, (url) => fetchSubscription(url))
+    const result = await inspector.inspect()
+
+    const connection: ServerConnectionMetadata = {
+      username: access.username,
+      authMethod: access.authMethod,
+      privilegeMode: access.privilegeMode,
+      privateKeyPath: access.privateKeyPersisted ? null : access.privateKeyPath ?? null,
+      privateKeyCredentialId: access.privateKeyCredentialId ?? null,
+      privateKeyName: access.privateKeyName ?? null,
+      privateKeyPersisted: access.privateKeyPersisted ?? null
+    }
+
+    const server = store.upsertImported(
+      {
+        name: payload.host,
+        host: payload.host,
+        port: payload.port,
+        username: access.username,
+        os: result.os,
+        country: result.country,
+        city: result.city,
+        flag: result.flag,
+        routesCount: result.routesCount,
+        subscriptionUrl: result.subscriptionUrl,
+        keys: result.keys,
+        setupStatus: result.setupStatus,
+        diagnostics: result.diagnostics,
+        hostKeyFingerprint: store.getHostKey(payload.host, payload.port) ?? null
+      },
+      connection
+    )
+
+    return { serverId: server.id, diagnostics: result.diagnostics, keys: result.keys }
   })
 
   const profileManagerFor = async (
