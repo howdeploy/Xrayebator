@@ -14,7 +14,11 @@ fail() {
   exit 1
 }
 
-quickstart_block=$(tr -d '\r' < xrayebator | sed -n '/^quickstart_command() {$/,/^happ_setup_command() {$/p')
+# Полностью читаем источник в переменную: awk/sed с ранним exit в管道 роняют tr
+# на SIGPIPE (pipefail в CI), а here-string безотказен.
+source_text=$(tr -d '\r' < xrayebator)
+
+quickstart_block=$(sed -n '/^quickstart_command() {$/,/^happ_setup_command() {$/p' <<< "$source_text")
 [[ -n "$quickstart_block" ]] || fail "quickstart_command block not found"
 
 grep -Fq -- '--without-email' <<< "$quickstart_block" \
@@ -37,11 +41,11 @@ fi
 echo "✓ quickstart поддерживает --without-email без фиктивного адреса"
 
 # ── inspect: read-only диагностика для GUI-импорта ──
-inspect_block=$(tr -d '\r' < xrayebator | awk '/^inspect_command\(\) \{$/{f=1} f&&/^quickstart_command\(\) \{$/{exit} f')
+inspect_block=$(awk '/^inspect_command\(\) \{$/{f=1} f&&/^quickstart_command\(\) \{$/{exit} f' <<< "$source_text")
 [[ -n "$inspect_block" ]] || fail "inspect_command block not found"
 
 # Диспетч должен открывать subcommand.
-grep -Eq '^[[:space:]]*inspect\)' <(tr -d '\r' < xrayebator) \
+grep -Eq '^[[:space:]]*inspect\)' <<< "$source_text" \
   || fail "dispatch не регистрирует inspect"
 
 # JSON печатается через jq -n (одним блоком), диагностику — в stderr.
