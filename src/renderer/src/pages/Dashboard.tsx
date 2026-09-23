@@ -189,7 +189,7 @@ export function Dashboard({
           <div className={styles.onboardingGrid}>
             <button type="button" className={styles.onboardingCard} onClick={onAdd}>
               <span className={styles.onboardingIcon}>
-                <Rocket size={22} />
+                <Rocket size={26} />
               </span>
               <span className={styles.onboardingBody}>
                 <strong>{t('dashboard.onboardDeployTitle')}</strong>
@@ -202,7 +202,7 @@ export function Dashboard({
               onClick={onImport}
             >
               <span className={styles.onboardingIcon}>
-                <Link2 size={22} />
+                <Link2 size={26} />
               </span>
               <span className={styles.onboardingBody}>
                 <strong>{t('dashboard.onboardImportTitle')}</strong>

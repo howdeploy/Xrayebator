@@ -184,7 +184,7 @@
 
 .onboardingGrid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: 1fr;
   gap: 14px;
 }
 
@@ -218,10 +218,10 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 44px;
-  height: 44px;
+  width: 54px;
+  height: 54px;
   flex-shrink: 0;
-  border-radius: 12px;
+  border-radius: 14px;
   background: color-mix(in srgb, var(--accent) 14%, var(--bg-1));
   color: var(--accent);
 }
@@ -259,10 +259,4 @@
   max-width: 420px;
   width: 100%;
   outline: none;
-}
-
-@media (max-width: 760px) {
-  .onboardingGrid {
-    grid-template-columns: 1fr;
-  }
 }
