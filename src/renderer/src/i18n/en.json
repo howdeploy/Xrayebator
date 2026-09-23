@@ -76,7 +76,7 @@
     "running": "Connecting...",
     "progress": "Diagnostics progress",
     "notSaved": "The server was not saved",
-    "selectKeyNote": "Select a private SSH key — import works only via a key.",
+    "selectKeyNote": "Select a private SSH key to connect with key authentication.",
     "steps": {
       "ssh": "SSH connection and host key check",
       "inspect": "Finding and diagnosing Xrayebator",

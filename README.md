@@ -292,7 +292,7 @@ What the GUI can do:
 |---|---|
 | Dashboard | Server cards with reachability and installation status; an empty screen offers “Deploy a new server” or “Connect an existing server”; language switch |
 | Add server | Deploy a new VPS with an explicit email choice: `quickstart --email` or `quickstart --without-email`; save the server and public subscription |
-| Connect existing | Import a recognized Xrayebator installation over SSH key using read-only `xrayebator inspect --json`; partial installs are saved with diagnostics, without automatic repair |
+| Connect existing | Import a recognized Xrayebator installation over SSH (password or key) using read-only `xrayebator inspect --json`; partial installs are saved with diagnostics, without automatic repair |
 | Server keys | Refresh the public subscription, copy the URL, show `vless://` links and QR codes |
 | Server settings | SSH access by password or private key, direct root or sudo; list/create/delete profiles, change fingerprint, SNI and port, plus update or uninstall Xrayebator on the server |
 

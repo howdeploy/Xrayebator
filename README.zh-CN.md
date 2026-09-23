@@ -276,7 +276,7 @@ GUI 的功能：
 |---|---|
 | Dashboard | 服务器卡片与连通/安装状态；空页面提供“部署新服务器”或“连接现有服务器”；语言切换 |
 | 添加服务器 | 显式选择是否提供 email：`quickstart --email` 或 `quickstart --without-email`；保存服务器与公网订阅 |
-| 连接现有服务器 | 通过 SSH 密钥和只读 `xrayebator inspect --json` 导入已识别的 Xrayebator；部分安装会连同诊断状态保存，不自动修复 |
+| 连接现有服务器 | 通过 SSH（密码或密钥）和只读 `xrayebator inspect --json` 导入已识别的 Xrayebator；部分安装会连同诊断状态保存，不自动修复 |
 | 服务器密钥 | 刷新公网订阅、复制链接、显示 `vless://` 链接与二维码 |
 | 服务器设置 | 使用 SSH 密码或私钥、直接 root 或 sudo：列出/创建/删除配置档，修改指纹、SNI 和端口，以及更新或卸载服务器上的 Xrayebator |
 

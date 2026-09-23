@@ -3,7 +3,7 @@ import { Button, TextField, Label, Input, Spinner } from '@heroui/react'
 import { CheckCircle2, Circle } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { ImportStep, Server, SshAccessInput } from '@shared/types'
-import { SshAccessForm } from '../components/SshAccessForm'
+import { SshAccessForm, isSshAccessReady } from '../components/SshAccessForm'
 import styles from './ImportServer.module.css'
 
 interface ImportServerProps {
@@ -23,7 +23,8 @@ export function ImportServer({ onDone, onBack }: ImportServerProps): React.JSX.E
   const [form, setForm] = useState<FormState>({ host: '', port: '22' })
   const [access, setAccess] = useState<SshAccessInput>({
     username: 'root',
-    authMethod: 'privateKey',
+    authMethod: 'password',
+    password: '',
     privilegeMode: 'root'
   })
   const [running, setRunning] = useState(false)
@@ -36,8 +37,7 @@ export function ImportServer({ onDone, onBack }: ImportServerProps): React.JSX.E
     return window.api.servers.onImportEvent((event) => setCurrentStep(event.step))
   }, [running])
 
-  const keyReady = access.authMethod === 'privateKey' && Boolean(access.privateKeyCredentialId)
-  const ready = form.host.trim().length > 0 && access.username.trim().length > 0 && keyReady
+  const ready = form.host.trim().length > 0 && isSshAccessReady(access)
 
   const startImport = (): void => {
     setError(null)
@@ -90,12 +90,7 @@ export function ImportServer({ onDone, onBack }: ImportServerProps): React.JSX.E
               onChange={(e) => setForm((f) => ({ ...f, port: e.target.value }))}
             />
           </TextField>
-          <SshAccessForm
-            value={access}
-            onChange={setAccess}
-            disabled={running}
-            allowedAuthMethods={['privateKey']}
-          />
+          <SshAccessForm value={access} onChange={setAccess} disabled={running} />
 
           <Button
             className={styles.importBtn}
@@ -109,9 +104,11 @@ export function ImportServer({ onDone, onBack }: ImportServerProps): React.JSX.E
             {running ? t('import.running') : t('import.button')}
           </Button>
 
-          {!keyReady && !running && (
-            <div className={styles.note}>{t('import.selectKeyNote')}</div>
-          )}
+          {access.authMethod === 'privateKey' &&
+            !access.privateKeyCredentialId &&
+            !running && (
+              <div className={styles.note}>{t('import.selectKeyNote')}</div>
+            )}
           {error && (
             <div className={styles.error}>
               {t('deploy.error')}: {error}

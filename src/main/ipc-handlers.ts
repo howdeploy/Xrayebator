@@ -249,8 +249,8 @@ export function registerIpcHandlers({ store }: IpcContext): void {
 
   ipcMain.handle('servers:import', async (event, payload: ImportServerPayload) => {
     if (!payload || typeof payload !== 'object') throw new Error('Некорректный запрос импорта')
-    if (!payload.access || payload.access.authMethod !== 'privateKey') {
-      throw new Error('Импорт существующего сервера доступен только по SSH-ключу')
+    if (!payload.access) {
+      throw new Error('Не указаны параметры SSH-доступа')
     }
     const emitStep = (step: ImportStep): void => {
       if (!event.sender.isDestroyed()) {

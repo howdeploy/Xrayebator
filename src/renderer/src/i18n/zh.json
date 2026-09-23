@@ -75,7 +75,7 @@
     "running": "连接中...",
     "progress": "诊断进度",
     "notSaved": "服务器未保存",
-    "selectKeyNote": "请选择私有 SSH 密钥 — 仅支持通过密钥导入。",
+    "selectKeyNote": "请选择私有 SSH 密钥以使用密钥连接。",
     "steps": {
       "ssh": "SSH 连接与 host key 检查",
       "inspect": "查找并诊断 Xrayebator",
