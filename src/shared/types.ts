@@ -41,6 +41,7 @@ export interface InspectionSnapshot {
   subscription_mode: string | null
   subscription_domain: string | null
   subscription_port: number | null
+  subscription_service?: string | null
   subscription_url: string | null
   country: string | null
   city: string | null
