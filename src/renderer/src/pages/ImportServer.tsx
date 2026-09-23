@@ -1,0 +1,155 @@
+import { useEffect, useState } from 'react'
+import { Button, TextField, Label, Input, Spinner } from '@heroui/react'
+import { CheckCircle2, Circle } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
+import type { ImportStep, Server, SshAccessInput } from '@shared/types'
+import { SshAccessForm } from '../components/SshAccessForm'
+import styles from './ImportServer.module.css'
+
+interface ImportServerProps {
+  onDone: (server: Server) => void
+  onBack: () => void
+}
+
+const STEP_ORDER: ImportStep[] = ['ssh', 'inspect', 'subscription', 'save']
+
+interface FormState {
+  host: string
+  port: string
+}
+
+export function ImportServer({ onDone, onBack }: ImportServerProps): React.JSX.Element {
+  const { t } = useTranslation()
+  const [form, setForm] = useState<FormState>({ host: '', port: '22' })
+  const [access, setAccess] = useState<SshAccessInput>({
+    username: 'root',
+    authMethod: 'privateKey',
+    privilegeMode: 'root'
+  })
+  const [running, setRunning] = useState(false)
+  const [currentStep, setCurrentStep] = useState<ImportStep | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  // Main process отправляет каждый шаг только при реальном входе в эту фазу.
+  useEffect(() => {
+    if (!running) return
+    return window.api.servers.onImportEvent((event) => setCurrentStep(event.step))
+  }, [running])
+
+  const keyReady = access.authMethod === 'privateKey' && Boolean(access.privateKeyCredentialId)
+  const ready = form.host.trim().length > 0 && access.username.trim().length > 0 && keyReady
+
+  const startImport = (): void => {
+    setError(null)
+    setRunning(true)
+    setCurrentStep(null)
+    window.api.servers
+      .import({
+        host: form.host.trim(),
+        port: Number(form.port) || 22,
+        access
+      })
+      .then((result) => window.api.servers.get(result.serverId))
+      .then((server) => {
+        if (!server) throw new Error(t('import.notSaved'))
+        onDone(server)
+      })
+      .catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : String(err))
+        setRunning(false)
+      })
+  }
+
+  return (
+    <div className={styles.root}>
+      <header className={styles.header}>
+        <Button variant="secondary" size="sm" isDisabled={running} onPress={onBack}>
+          {t('dashboard.back')}
+        </Button>
+        <h1 className={styles.title}>{t('import.title')}</h1>
+      </header>
+
+      <div className={styles.body}>
+        <div className={styles.form}>
+          <p className={styles.hint}>{t('import.hint')}</p>
+          <TextField variant="secondary">
+            <Label>{t('deploy.host')}</Label>
+            <Input
+              value={form.host}
+              placeholder="185.23.xx.xx"
+              disabled={running}
+              onChange={(e) => setForm((f) => ({ ...f, host: e.target.value }))}
+            />
+          </TextField>
+          <TextField variant="secondary">
+            <Label>{t('deploy.port')}</Label>
+            <Input
+              value={form.port}
+              placeholder="22"
+              disabled={running}
+              onChange={(e) => setForm((f) => ({ ...f, port: e.target.value }))}
+            />
+          </TextField>
+          <SshAccessForm
+            value={access}
+            onChange={setAccess}
+            disabled={running}
+            allowedAuthMethods={['privateKey']}
+          />
+
+          <Button
+            className={styles.importBtn}
+            variant="primary"
+            size="lg"
+            fullWidth
+            isDisabled={running || !ready}
+            onPress={startImport}
+          >
+            {running && <Spinner size="sm" />}
+            {running ? t('import.running') : t('import.button')}
+          </Button>
+
+          {!keyReady && !running && (
+            <div className={styles.note}>{t('import.selectKeyNote')}</div>
+          )}
+          {error && (
+            <div className={styles.error}>
+              {t('deploy.error')}: {error}
+            </div>
+          )}
+        </div>
+
+        <div className={styles.status}>
+          <div className={styles.statusTitle}>{t('import.progress')}</div>
+          <ol className={styles.steps}>
+            {STEP_ORDER.map((step) => {
+              const currentIndex = currentStep ? STEP_ORDER.indexOf(currentStep) : -1
+              const state =
+                currentIndex > STEP_ORDER.indexOf(step)
+                  ? 'done'
+                  : currentStep === step
+                    ? 'active'
+                    : 'todo'
+              return (
+                <li key={step} className={`${styles.step} ${state === 'todo' ? '' : styles[state]}`}>
+                  <div className={styles.stepRow}>
+                    <span className={styles.stepIcon}>
+                      {state === 'done' ? (
+                        <CheckCircle2 size={20} className={styles.stepCheck} />
+                      ) : state === 'active' ? (
+                        <span className={styles.stepDot} />
+                      ) : (
+                        <Circle size={16} className={styles.stepTodo} />
+                      )}
+                    </span>
+                    <span>{t(`import.steps.${step}`)}</span>
+                  </div>
+                </li>
+              )
+            })}
+          </ol>
+        </div>
+      </div>
+    </div>
+  )
+}

@@ -1,9 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
 import { Button, TextField, Label, Input, Spinner } from '@heroui/react'
-import { CheckCircle2, Circle } from 'lucide-react'
+import { CheckCircle2, Circle, Mail, MailX } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import type { DeployEvent, DeployStep, Server, SshAccessInput } from '@shared/types'
-import { isSshAccessReady, SshAccessForm } from '../components/SshAccessForm'
+import type {
+  DeployEvent,
+  DeployStep,
+  EmailMode,
+  Server,
+  SshAccessInput
+} from '@shared/types'
+import { SshAccessForm } from '../components/SshAccessForm'
+import { buildDeployPayload, isDeployReady } from './deploy-readiness'
 import styles from './AddServer.module.css'
 
 interface AddServerProps {
@@ -24,6 +31,7 @@ const STEP_ORDER: DeployStep[] = [
 interface FormState {
   host: string
   port: string
+  emailMode: EmailMode
   email: string
 }
 
@@ -32,6 +40,7 @@ export function AddServer({ onDone, onBack }: AddServerProps): React.JSX.Element
   const [form, setForm] = useState<FormState>({
     host: '',
     port: '22',
+    emailMode: 'provided',
     email: ''
   })
   const [access, setAccess] = useState<SshAccessInput>({
@@ -91,18 +100,12 @@ export function AddServer({ onDone, onBack }: AddServerProps): React.JSX.Element
     currentStepRef.current = null
     setCurrentStep(null)
     setDeploying(true)
-    window.api.deploy.start({
-      host: form.host.trim(),
-      port: Number(form.port) || 22,
-      emailMode: 'provided',
-      email: form.email.trim(),
-      access
-    })
+    window.api.deploy.start(buildDeployPayload(form, access))
   }
 
   const input = (
     label: string,
-    key: keyof FormState,
+    key: Extract<keyof FormState, string>,
     placeholder = '',
     type: 'text' | 'password' | 'email' = 'text'
   ): React.JSX.Element => (
@@ -110,7 +113,7 @@ export function AddServer({ onDone, onBack }: AddServerProps): React.JSX.Element
       <Label>{label}</Label>
       <Input
         type={type}
-        value={form[key]}
+        value={form[key] as string}
         placeholder={placeholder}
         disabled={deploying}
         onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))}
@@ -137,19 +140,55 @@ export function AddServer({ onDone, onBack }: AddServerProps): React.JSX.Element
           {input(t('deploy.host'), 'host', '185.23.xx.xx')}
           {input(t('deploy.port'), 'port', '22')}
           <SshAccessForm value={access} onChange={setAccess} disabled={deploying} />
-          {input(t('deploy.email'), 'email', 'user@example.com', 'email')}
+
+          <div className={styles.fieldGroup}>
+            <span className={styles.groupLabel}>{t('deploy.emailMode')}</span>
+            <div className={styles.choiceGrid}>
+              <button
+                type="button"
+                className={`${styles.choice} ${
+                  form.emailMode === 'provided' ? styles.choiceActive : ''
+                }`}
+                disabled={deploying}
+                aria-pressed={form.emailMode === 'provided'}
+                onClick={() => setForm((f) => ({ ...f, emailMode: 'provided' }))}
+              >
+                <Mail size={17} />
+                <span>
+                  <strong>{t('deploy.emailProvided')}</strong>
+                  <small>{t('deploy.emailProvidedHint')}</small>
+                </span>
+              </button>
+              <button
+                type="button"
+                className={`${styles.choice} ${
+                  form.emailMode === 'without' ? styles.choiceActive : ''
+                }`}
+                disabled={deploying}
+                aria-pressed={form.emailMode === 'without'}
+                onClick={() => setForm((f) => ({ ...f, emailMode: 'without' }))}
+              >
+                <MailX size={17} />
+                <span>
+                  <strong>{t('deploy.emailWithout')}</strong>
+                  <small>{t('deploy.emailWithoutHint')}</small>
+                </span>
+              </button>
+            </div>
+          </div>
+
+          {form.emailMode === 'provided' ? (
+            input(t('deploy.email'), 'email', 'user@example.com', 'email')
+          ) : (
+            <div className={styles.warning}>{t('deploy.withoutEmailWarning')}</div>
+          )}
 
           <Button
             className={styles.deployBtn}
             variant="primary"
             size="lg"
             fullWidth
-            isDisabled={
-              deploying ||
-              !form.host.trim() ||
-              !form.email.trim() ||
-              !isSshAccessReady(access)
-            }
+            isDisabled={deploying || !isDeployReady(form, access)}
             onPress={startDeploy}
           >
             {deploying && <Spinner size="sm" />}

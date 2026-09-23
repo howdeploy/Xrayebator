@@ -228,6 +228,13 @@ export type DeployStep =
 
 export type DeployStatus = 'pending' | 'running' | 'done' | 'error'
 
+/** Фазы read-only импорта: main process шлёт шаг только при реальном входе в фазу. */
+export type ImportStep = 'ssh' | 'inspect' | 'subscription' | 'save'
+
+export interface ImportProgressEvent {
+  step: ImportStep
+}
+
 export interface DeployStartPayload {
   host: string
   port: number
@@ -255,6 +262,7 @@ export interface ElectronAPI {
   servers: {
     list: () => Promise<Server[]>
     import: (payload: ImportServerPayload) => Promise<ImportResult>
+    onImportEvent: (callback: (event: ImportProgressEvent) => void) => () => void
     remove: (id: string) => Promise<void>
     get: (id: string) => Promise<Server | null>
     check: (id: string) => Promise<boolean>

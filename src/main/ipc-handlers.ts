@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { readFileSync, statSync } from 'node:fs'
 import type {
   ImportServerPayload,
+  ImportStep,
   ProfileCreateInput,
   ProfileFingerprintInput,
   ProfilePortInput,
@@ -71,9 +72,9 @@ export function registerIpcHandlers({ store }: IpcContext): void {
     try {
       await keychain.save(credentialId, temporaryKey)
       return { credentialId, name: basename(path), persisted: true }
-    } catch (error) {
-      // Keychain unavailable: permit this one operation through the approved path only.
-      // The UI is told that reuse is unavailable, and no plaintext copy is stored.
+    } catch {
+      // Keychain unavailable: keep a session-only in-memory copy (never returned to
+      // the renderer, never written to disk); the UI is told reuse is unavailable.
       const temporaryCredentialId = randomUUID().replace(/-/g, '')
       transientKeys.set(temporaryCredentialId, Buffer.from(temporaryKey))
       return { credentialId: temporaryCredentialId, name: basename(path), persisted: false }
@@ -246,15 +247,26 @@ export function registerIpcHandlers({ store }: IpcContext): void {
     return { serverId, subscriptionUrl: server.subscriptionUrl, keys }
   })
 
-  ipcMain.handle('servers:import', async (_e, payload: ImportServerPayload) => {
+  ipcMain.handle('servers:import', async (event, payload: ImportServerPayload) => {
     if (!payload || typeof payload !== 'object') throw new Error('Некорректный запрос импорта')
     if (!payload.access || payload.access.authMethod !== 'privateKey') {
       throw new Error('Импорт существующего сервера доступен только по SSH-ключу')
     }
+    const emitStep = (step: ImportStep): void => {
+      if (!event.sender.isDestroyed()) {
+        event.sender.send('servers:importEvent', { step })
+      }
+    }
+    emitStep('ssh')
     const target = { host: payload.host, port: payload.port }
     const { credentials, access } = await credentialsFor(null, target, payload.access)
-    const inspector = new ServerInspector(credentials, (url) => fetchSubscription(url))
+    emitStep('inspect')
+    const inspector = new ServerInspector(credentials, async (url) => {
+      emitStep('subscription')
+      return fetchSubscription(url)
+    })
     const result = await inspector.inspect()
+    emitStep('save')
 
     const connection: ServerConnectionMetadata = {
       username: access.username,

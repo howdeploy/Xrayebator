@@ -182,24 +182,72 @@
   gap: 8px;
 }
 
-.emptyCard {
+.onboardingGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.onboardingCard {
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 26px 22px;
+  min-height: 120px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--bg-2);
+  color: var(--text-2);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+}
+
+.onboardingCard:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg-2));
+}
+
+.onboardingCard:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.onboardingIcon {
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 12px;
-  padding: 64px 24px;
-  min-height: 220px;
-  border: 2px dashed color-mix(in srgb, var(--text-2) 40%, transparent);
-  color: var(--text-2);
-  width: 100%;
-}.emptyPlus {
-  font-size: 36px;
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-1));
   color: var(--accent);
 }
 
-.emptyText {
+.onboardingCardSecondary .onboardingIcon {
+  background: var(--bg-3);
+  color: var(--text-1);
+}
+
+.onboardingBody {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.onboardingBody strong {
   font-size: 15px;
+  font-weight: 600;
+  color: var(--text-0);
+}
+
+.onboardingBody small {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-2);
 }
 
 .confirmDialog {
@@ -211,4 +259,10 @@
   max-width: 420px;
   width: 100%;
   outline: none;
+}
+
+@media (max-width: 760px) {
+  .onboardingGrid {
+    grid-template-columns: 1fr;
+  }
 }

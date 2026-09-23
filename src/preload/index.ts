@@ -3,6 +3,7 @@ import type {
   DeployEvent,
   DeployStartPayload,
   ElectronAPI,
+  ImportProgressEvent,
   PrivateKeyReference,
   ImportResult,
   ImportServerPayload,
@@ -33,6 +34,12 @@ const api: ElectronAPI = {
     list: (): Promise<Server[]> => ipcRenderer.invoke('servers:list'),
     import: (payload: ImportServerPayload): Promise<ImportResult> =>
       ipcRenderer.invoke('servers:import', payload),
+    onImportEvent: (callback: (event: ImportProgressEvent) => void): (() => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, event: ImportProgressEvent): void =>
+        callback(event)
+      ipcRenderer.on('servers:importEvent', listener)
+      return () => ipcRenderer.removeListener('servers:importEvent', listener)
+    },
     remove: (id: string): Promise<void> => ipcRenderer.invoke('servers:remove', id),
     get: (id: string): Promise<Server | null> => ipcRenderer.invoke('servers:get', id),
     check: (id: string): Promise<boolean> => ipcRenderer.invoke('servers:check', id),

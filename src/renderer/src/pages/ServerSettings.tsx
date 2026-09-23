@@ -59,6 +59,9 @@ export function ServerSettings({ server, onBack }: ServerSettingsProps): React.J
     authMethod: server.authMethod ?? 'password',
     password: '',
     privateKeyPath: server.privateKeyPath ?? undefined,
+    privateKeyCredentialId: server.privateKeyCredentialId ?? undefined,
+    privateKeyName: server.privateKeyName ?? undefined,
+    privateKeyPersisted: server.privateKeyPersisted ?? undefined,
     passphrase: '',
     privilegeMode: server.privilegeMode ?? 'root',
     sudoPassword: ''

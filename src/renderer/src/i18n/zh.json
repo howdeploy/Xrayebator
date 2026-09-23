@@ -5,6 +5,12 @@
   "dashboard": {
     "title": "我的服务器",
     "add": "添加",
+    "addDeploy": "部署新服务器",
+    "addImport": "连接现有服务器",
+    "onboardDeployTitle": "部署新服务器",
+    "onboardDeployHint": "在纯净的 VPS 上安装 Xrayebator",
+    "onboardImportTitle": "连接现有服务器",
+    "onboardImportHint": "查找已安装的 Xrayebator 并打开其控制面板",
     "empty": "添加第一台服务器",
     "routes_other": "{{count}} 条路线",
     "keys": "密钥",
@@ -22,6 +28,12 @@
     "username": "用户名",
     "password": "密码",
     "email": "邮箱",
+    "emailMode": "Let's Encrypt 邮箱",
+    "emailProvided": "填写邮箱",
+    "emailProvidedHint": "推荐：续期通知与 ACME 账户找回",
+    "emailWithout": "不使用邮箱继续",
+    "emailWithoutHint": "证书仍可工作，但没有 Let's Encrypt 通知",
+    "withoutEmailWarning": "没有邮箱时，Let's Encrypt 无法发送续期通知或恢复 ACME 账户。之后可在终端中更改。",
     "button": "部署服务器",
     "running": "部署中...",
     "steps": {
@@ -51,6 +63,21 @@
     "waiting": "等待输出...",
     "error": "错误"
   },
+  "import": {
+    "title": "连接现有服务器",
+    "hint": "应用将查找已安装的 Xrayebator 并打开其控制面板。服务器上的内容不会被自动重装或更新。",
+    "button": "查找并连接",
+    "running": "连接中...",
+    "progress": "诊断进度",
+    "notSaved": "服务器未保存",
+    "selectKeyNote": "请选择私有 SSH 密钥 — 仅支持通过密钥导入。",
+    "steps": {
+      "ssh": "SSH 连接与 host key 检查",
+      "inspect": "查找并诊断 Xrayebator",
+      "subscription": "检查订阅",
+      "save": "保存服务器"
+    }
+  },
   "sshAccess": {
     "username": "SSH 用户",
     "authMethod": "身份验证",
@@ -61,6 +88,7 @@
     "sshPassword": "SSH 密码",
     "selectKey": "选择密钥",
     "changeKey": "更换密钥",
+    "keyNotPersisted": "系统密钥库不可用：密钥仅保存在本次应用会话中，重启后请重新选择。",
     "noKey": "未选择密钥",
     "passphrase": "密钥口令",
     "optional": "可选",

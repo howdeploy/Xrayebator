@@ -1,12 +1,20 @@
 import { useEffect, useState } from 'react'
-import { Button, Chip, AlertDialog, Dropdown, DropdownItem } from '@heroui/react'
+import {
+  Button,
+  Chip,
+  AlertDialog,
+  Dropdown,
+  DropdownItem
+} from '@heroui/react'
 import {
   Settings2,
   Trash2,
   TriangleAlert,
   KeyRound,
   ChevronDown,
-  Check
+  Check,
+  Rocket,
+  Link2
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { setLanguage, supportedLngs, type SupportedLng } from '../i18n'
@@ -23,6 +31,7 @@ const LANG_LABELS: Record<SupportedLng, string> = {
 interface DashboardProps {
   servers: Server[]
   onAdd: () => void
+  onImport: () => void
   onOpen: (server: Server) => void
   onSettings: (server: Server) => void
   onRemove: (id: string) => void
@@ -31,6 +40,7 @@ interface DashboardProps {
 export function Dashboard({
   servers,
   onAdd,
+  onImport,
   onOpen,
   onSettings,
   onRemove
@@ -95,9 +105,24 @@ export function Dashboard({
             </Dropdown.Popover>
           </Dropdown>
           {servers.length > 0 && (
-            <Button variant="primary" size="md" onPress={onAdd}>
-              + {t('dashboard.add')}
-            </Button>
+            <Dropdown>
+              <Dropdown.Trigger className={styles.langSelect} aria-label={t('dashboard.add')}>
+                <span className={styles.langSelectValue}>+ {t('dashboard.add')}</span>
+                <ChevronDown size={14} className={styles.langSelectChevron} />
+              </Dropdown.Trigger>
+              <Dropdown.Popover placement="bottom end" className={styles.langPopup}>
+                <Dropdown.Menu>
+                  <DropdownItem key="deploy" className={styles.langItem} onAction={onAdd}>
+                    <Rocket size={14} />
+                    <span className={styles.langItemLabel}>{t('dashboard.addDeploy')}</span>
+                  </DropdownItem>
+                  <DropdownItem key="import" className={styles.langItem} onAction={onImport}>
+                    <Link2 size={14} />
+                    <span className={styles.langItemLabel}>{t('dashboard.addImport')}</span>
+                  </DropdownItem>
+                </Dropdown.Menu>
+              </Dropdown.Popover>
+            </Dropdown>
           )}
         </div>
       </header>
@@ -152,15 +177,30 @@ export function Dashboard({
         ))}
 
         {servers.length === 0 && (
-          <Button
-            className={styles.emptyCard}
-            variant="ghost"
-            size="lg"
-            onPress={onAdd}
-          >
-            <span className={styles.emptyPlus}>+</span>
-            <span className={styles.emptyText}>{t('dashboard.empty')}</span>
-          </Button>
+          <div className={styles.onboardingGrid}>
+            <button type="button" className={styles.onboardingCard} onClick={onAdd}>
+              <span className={styles.onboardingIcon}>
+                <Rocket size={22} />
+              </span>
+              <span className={styles.onboardingBody}>
+                <strong>{t('dashboard.onboardDeployTitle')}</strong>
+                <small>{t('dashboard.onboardDeployHint')}</small>
+              </span>
+            </button>
+            <button
+              type="button"
+              className={`${styles.onboardingCard} ${styles.onboardingCardSecondary}`}
+              onClick={onImport}
+            >
+              <span className={styles.onboardingIcon}>
+                <Link2 size={22} />
+              </span>
+              <span className={styles.onboardingBody}>
+                <strong>{t('dashboard.onboardImportTitle')}</strong>
+                <small>{t('dashboard.onboardImportHint')}</small>
+              </span>
+            </button>
+          </div>
         )}
       </div>
 

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Button, Input, Label, TextField } from '@heroui/react'
 import { FileKey2, KeyRound, LockKeyhole, ShieldCheck, ShieldQuestion } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import type { SshAccessInput } from '@shared/types'
+import type { SshAccessInput, SshAuthMethod } from '@shared/types'
 import styles from './SshAccessForm.module.css'
 
 interface SshAccessFormProps {
@@ -11,6 +11,8 @@ interface SshAccessFormProps {
   disabled?: boolean
   hostKeyFingerprint?: string | null
   onForgetHostKey?: () => void
+  /** Ограничивает выбор способа входа (например, только ключ для импорта). */
+  allowedAuthMethods?: SshAuthMethod[]
 }
 
 export function isSshAccessReady(access: SshAccessInput): boolean {
@@ -24,7 +26,8 @@ export function SshAccessForm({
   onChange,
   disabled = false,
   hostKeyFingerprint,
-  onForgetHostKey
+  onForgetHostKey,
+  allowedAuthMethods = ['password', 'privateKey']
 }: SshAccessFormProps): React.JSX.Element {
   const { t } = useTranslation()
   const [keyError, setKeyError] = useState<string | null>(null)
@@ -38,7 +41,13 @@ export function SshAccessForm({
     setKeyError(null)
     try {
       const selection = await window.api.ssh.selectPrivateKey()
-      if (selection) update({ privateKeyCredentialId: selection.credentialId, privateKeyName: selection.name })
+      if (selection)
+        update({
+          authMethod: 'privateKey',
+          privateKeyCredentialId: selection.credentialId,
+          privateKeyName: selection.name,
+          privateKeyPersisted: selection.persisted !== false
+        })
     } catch (error) {
       setKeyError(error instanceof Error ? error.message : String(error))
     }
@@ -57,41 +66,43 @@ export function SshAccessForm({
         />
       </TextField>
 
-      <div className={styles.fieldGroup}>
-        <span className={styles.label}>{t('sshAccess.authMethod')}</span>
-        <div className={styles.choiceGrid}>
-          <button
-            type="button"
-            className={`${styles.choice} ${
-              value.authMethod === 'password' ? styles.choiceActive : ''
-            }`}
-            disabled={disabled}
-            aria-pressed={value.authMethod === 'password'}
-            onClick={() => update({ authMethod: 'password' })}
-          >
-            <LockKeyhole size={17} />
-            <span>
-              <strong>{t('sshAccess.password')}</strong>
-              <small>{t('sshAccess.passwordHint')}</small>
-            </span>
-          </button>
-          <button
-            type="button"
-            className={`${styles.choice} ${
-              value.authMethod === 'privateKey' ? styles.choiceActive : ''
-            }`}
-            disabled={disabled}
-            aria-pressed={value.authMethod === 'privateKey'}
-            onClick={() => update({ authMethod: 'privateKey' })}
-          >
-            <KeyRound size={17} />
-            <span>
-              <strong>{t('sshAccess.privateKey')}</strong>
-              <small>{t('sshAccess.privateKeyHint')}</small>
-            </span>
-          </button>
+      {allowedAuthMethods.length > 1 && (
+        <div className={styles.fieldGroup}>
+          <span className={styles.label}>{t('sshAccess.authMethod')}</span>
+          <div className={styles.choiceGrid}>
+            <button
+              type="button"
+              className={`${styles.choice} ${
+                value.authMethod === 'password' ? styles.choiceActive : ''
+              }`}
+              disabled={disabled}
+              aria-pressed={value.authMethod === 'password'}
+              onClick={() => update({ authMethod: 'password' })}
+            >
+              <LockKeyhole size={17} />
+              <span>
+                <strong>{t('sshAccess.password')}</strong>
+                <small>{t('sshAccess.passwordHint')}</small>
+              </span>
+            </button>
+            <button
+              type="button"
+              className={`${styles.choice} ${
+                value.authMethod === 'privateKey' ? styles.choiceActive : ''
+              }`}
+              disabled={disabled}
+              aria-pressed={value.authMethod === 'privateKey'}
+              onClick={() => update({ authMethod: 'privateKey' })}
+            >
+              <KeyRound size={17} />
+              <span>
+                <strong>{t('sshAccess.privateKey')}</strong>
+                <small>{t('sshAccess.privateKeyHint')}</small>
+              </span>
+            </button>
+          </div>
         </div>
-      </div>
+      )}
 
       {value.authMethod === 'password' ? (
         <TextField variant="secondary">
@@ -116,6 +127,9 @@ export function SshAccessForm({
               {keyName ?? t('sshAccess.noKey')}
             </span>
           </div>
+          {keyName && value.privateKeyPersisted === false && (
+            <span className={styles.note}>{t('sshAccess.keyNotPersisted')}</span>
+          )}
           <TextField variant="secondary">
             <Label>{t('sshAccess.passphrase')}</Label>
             <Input
