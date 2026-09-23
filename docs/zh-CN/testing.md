@@ -15,7 +15,7 @@ for test_file in validation/*.sh; do bash "$test_file" || exit; done
 
 ## 测试覆盖范围
 
-`validation/` 中有 24 个静态与本地回归测试：
+`validation/` 中有 25 个静态与本地回归测试：
 
 | 测试 | 检查内容 |
 |---|---|
@@ -39,6 +39,7 @@ for test_file in validation/*.sh; do bash "$test_file" || exit; done
 | `test-sni-change-cli.sh` | `sni-change` CLI：JSON 输出、Reality、XHTTP host、配置档同步与回滚 |
 | `test-port-change-cli.sh` | `port-change` CLI：unit/shared/move 入站场景、无效端口、缺少配置档、多线路 `--route` |
 | `test-bypass-cli.sh` | `bypass` CLI：JSON 输出、路由规则更新、带 SNI 探测的 add |
+| `test-quickstart-email-and-inspect.sh` | `quickstart` 的显式 email 模式（`--without-email` 不使用虚假地址）以及 `inspect --json` 的只读不变量 |
 | `test-quickstart-migration-parity.sh` | `quickstart` 执行与 `main_menu` 相同的关键迁移 |
 | `test-quickstart-subscription-port.sh` | 确认 `quickstart` 使用规范的订阅基础地址 helper，不回退到无关的硬编码 URL |
 | `test-audit-functional.sh` | HowDeploy 审计（P0/P1）的功能回归检查 |
@@ -79,19 +80,26 @@ npm test              # Vitest 单元测试
 | `tests/unit/countryFlag.test.ts` | 服务器卡片的国家旗帜 |
 | `tests/unit/vless.test.ts` | `vless://` URL 解析 |
 | `tests/unit/shell-command.test.ts` | POSIX 安全的 shell 参数 quoting |
-| `tests/unit/ssh-access.test.ts` | SSH 访问参数验证 |
+| `tests/unit/ssh-access.test.ts` | SSH 访问参数验证与 keychain 密钥解析顺序 |
 | `tests/unit/ssh-client.test.ts` | SSH 连接与 host-key verification |
+| `tests/unit/ssh-keychain.test.ts` | 系统钥匙串的私钥保存/读取/删除及大小防护（mock keytar） |
 | `tests/unit/server-manager.test.ts` | 更新分支安全性验证 |
+| `tests/unit/server-store.test.ts` | 按 host+port 的幂等导入 upsert 与 credential 引用计数 |
+| `tests/unit/server-inspector.test.ts` | 诊断规范化：公网与仅本地/不可达订阅、partial 及拒绝导入状态 |
+| `tests/unit/deployer.test.ts` | quickstart 参数构建：provided/without email 模式，不使用虚假地址 |
+| `tests/unit/ui-contracts.test.ts` | email 模式选择下的部署就绪判断与 payload 构造 |
+
+`npm run typecheck` 还会检查 `tsconfig.contracts.json`，其中编译 `tests/type-contracts/` 中严格的 onboarding 契约（必需的 `emailMode`、keychain 引用密钥选择器、已暴露的 import API）；仅靠 Vitest 转译无法捕获这类类型回归。
 
 说明：`tests/unit/shell-command.test.ts` 有意调用 `/bin/sh`，在没有 POSIX `/bin/sh` 的 Windows
 上会失败（`status=null`）。完整 suite 应在 Linux（包括 `release.yml` 的 Ubuntu job）运行；Linux
-上 39 个测试全部通过。
+上全部测试通过。
 
 ## CI workflow
 
 三个独立 workflow：
 
-- **ci-linux.yml** — Bash validation：在 ubuntu-24.04 上对所有脚本执行 `bash -n`，并运行全部 24 个
+- **ci-linux.yml** — Bash validation：在 ubuntu-24.04 上对所有脚本执行 `bash -n`，并运行全部 25 个
   `validation/test-*.sh`；在 push 到 `main`、`dev`、`experimental` 以及 pull request 时运行。
 - **release.yml** — Electron 构建（Windows/macOS/Linux）。只在 `v*` tag 和手动触发时运行；先在
   Ubuntu 上执行 `npm run typecheck`、`npm test`、`npm run build`，再在三种平台执行

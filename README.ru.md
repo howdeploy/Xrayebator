@@ -306,8 +306,9 @@ npm run dev          # Electron + Vite dev server
 npm run build        # скомпилировать renderer и main process
 ```
 
-Проверки Electron: `npm test` гоняет 9 unit-файлов из `tests/`; `npm run typecheck` проверяет
-TypeScript, а `npm run build` собирает приложение. На нативном Windows POSIX-тест
+Проверки Electron: `npm test` гоняет 14 unit-файлов из `tests/`; `npm run typecheck` проверяет
+TypeScript, включая строгие onboarding-контракты из `tests/type-contracts/`, а `npm run build`
+собирает приложение. На нативном Windows POSIX-тест
 `tests/unit/shell-command.test.ts` может падать из-за отсутствия `/bin/sh`; источник истины — Linux CI.
 См. [Тестирование](docs/ru/testing.md#десктоп-gui) и [справочник Electron GUI](docs/ru/desktop-gui.md).
 

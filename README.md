@@ -310,8 +310,9 @@ npm run dev          # Electron + Vite dev server
 npm run build        # compile the renderer and the main process
 ```
 
-Electron checks: `npm test` runs the 9 unit files in `tests/`; `npm run typecheck` checks the
-TypeScript surface. `npm run build` produces the app bundle. On native Windows, the POSIX-only
+Electron checks: `npm test` runs the 14 unit files in `tests/`; `npm run typecheck` checks the
+TypeScript surface, including the strict onboarding contracts in `tests/type-contracts/`.
+`npm run build` produces the app bundle. On native Windows, the POSIX-only
 `tests/unit/shell-command.test.ts` may fail because `/bin/sh` is absent; Linux CI is the source of truth.
 See [Testing](docs/testing.md#desktop-gui) and [Electron Desktop GUI](docs/desktop-gui.md).
 
