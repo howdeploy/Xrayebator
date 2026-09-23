@@ -224,10 +224,24 @@ if [[ "$XRAYEBATOR_SOURCED" -eq 0 ]]; then
   fi
 fi
 
-# Ждёт освобождения apt/dpkg lock (apt-daily, unattended-upgrades и т.п.).
-# На свежих Ubuntu после первого входа фоновые сервисы держат lock до ~10 минут,
-# из-за чего `apt-get install` молча висит и падает по timeout (GUI: «quickstart код 1»).
-# Возвращает 0, когда lock свободен, или 1 по истечении timeout (сек).
+# Встроенное в apt ожидание dpkg lock. На Ubuntu 22.04 apt уже ставит дефолт
+# DPkg::Lock::Timeout=120 (видно в apt-config dump) — поднятием до 180 мы лишь
+# страхуем системы без дефолта. Это НЕ основной механизм ожидания: entire
+# очередь unattended-upgrades занимает lock ~10 минут (замер на живом VPS
+# 2026-09-23), а apt с опцией ждёт только её окно. Основной механизм —
+# _apt_wait_lock по процессу-воркеру.
+APT_LOCK_OPTS=(-o "DPkg::Lock::Timeout=180")
+
+# Ждёт освобождения apt/dpkg lock (apt-daily, unattended-upgrades и т.п.)
+# до запуска собственной apt-команды. Возвращает 0, когда можно ставить пакеты,
+# или 1 по истечении timeout (сек).
+# Критично: на свежеподнятых Ubuntu unattended-upgrades прогоняет полный
+# security-апгрейд (~90 пакетов, ~10 минут — dpkg вызывается отдельно на
+# каждый). Между пакетами flock свободен секунды, голый flock проскакивает в
+# такой зазор, apt стартует и умирает по своему lock-timeout или внешнему kill
+# (зафиксировано на живом VPS 2026-09-23: quickstart падал с «apt-get install
+# nginx failed» при формально «свободном» lock).
+# Поэтому занятым считаем и активный рабочий процесс unattended-upgrade.
 _apt_wait_lock() {
   local max_sec="${1:-300}"
   local deadline=$(( $(date +%s) + max_sec ))
@@ -240,14 +254,24 @@ _apt_wait_lock() {
   while (( $(date +%s) < deadline )); do
     local held=0
     local lock
-    for lock in "${locks[@]}"; do
-      # flock не создаёт файл — touch обязателен для несуществующих lock-путей.
-      touch "$lock" 2>/dev/null || true
-      if ! flock -n "$lock" true 2>/dev/null; then
-        held=1
-        break
-      fi
-    done
+    # Активный рабочий процесс unattended-upgrade = очередь пакетов ещё идёт.
+    # По comm не различить (ядро обрезает до 15 символов «unattended-upgr» и у
+    # воркера, и у резидентного shutdown-helper'а с самого бутa) — проверяем
+    # cmdline: путь скрипта ровно «/usr/bin/unattended-upgrade» (helper'овский
+    # «/usr/share/unattended-upgrades/unattended-upgrade-shutdown» не совпадает).
+    if command -v pgrep >/dev/null 2>&1 && pgrep -f '/usr/bin/unattended-upgrade( |$)' >/dev/null 2>&1; then
+      held=1
+    fi
+    if [[ "$held" -eq 0 ]]; then
+      for lock in "${locks[@]}"; do
+        # flock не создаёт файл — touch обязателен для несуществующих lock-путей.
+        touch "$lock" 2>/dev/null || true
+        if ! flock -n "$lock" true 2>/dev/null; then
+          held=1
+          break
+        fi
+      done
+    fi
     if [[ "$held" -eq 0 ]]; then
       return 0
     fi
@@ -1251,7 +1275,7 @@ _ensure_certbot_ip_tls() {
   done
 
   echo -e "${YELLOW}  → Системный certbot не поддерживает IP certificates; ставлю актуальный certbot через snap...${NC}"
-  if ! apt-get install -y snapd >/dev/null 2>&1; then
+  if ! apt-get "${APT_LOCK_OPTS[@]}" install -y snapd >/dev/null 2>&1; then
     echo -e "${RED}✗ Не удалось установить snapd для Certbot 5.4+${NC}"
     return 1
   fi
@@ -4661,7 +4685,7 @@ install_selfsteal_stub_menu() {
   fi
 
   echo -e "${CYAN}  → Установка nginx + certbot...${NC}"
-  if ! apt-get install -y nginx certbot >/dev/null 2>&1; then
+  if ! apt-get "${APT_LOCK_OPTS[@]}" install -y nginx certbot >/dev/null 2>&1; then
     echo -e "${RED}✗ apt-get install nginx certbot не удалось${NC}"
     return 1
   fi
@@ -5384,10 +5408,10 @@ install_subscription_server() {
   if ! command -v socat &>/dev/null; then
     echo -e "${CYAN}  → Установка socat...${NC}"
     _apt_wait_lock 300 || true
-    if ! timeout 180 apt-get install -y socat >/dev/null 2>&1; then
+    if ! timeout 240 apt-get "${APT_LOCK_OPTS[@]}" install -y socat >/dev/null 2>&1; then
       _apt_wait_lock 300 || true
       timeout 180 apt-get update >/dev/null 2>&1 || true
-      if ! timeout 180 apt-get install -y socat >/dev/null 2>&1; then
+      if ! timeout 240 apt-get "${APT_LOCK_OPTS[@]}" install -y socat >/dev/null 2>&1; then
         echo -e "${RED}✗ Не удалось установить socat${NC}"
         echo -e "${YELLOW}Установите вручную: apt-get install -y socat${NC}"
         return 1
@@ -6112,7 +6136,7 @@ install_subscription_ip_tls() {
   echo -e "${CYAN}  → HTTPS порт подписки: $pub_port${NC}"
 
   echo -e "${CYAN}  → Установка nginx...${NC}"
-  if ! apt-get install -y nginx >/dev/null 2>&1; then
+  if ! apt-get "${APT_LOCK_OPTS[@]}" install -y nginx >/dev/null 2>&1; then
     echo -e "${RED}✗ apt-get install nginx не удалось${NC}"
     return 1
   fi
@@ -6345,7 +6369,7 @@ install_subscription_public_tls() {
   echo -e "${CYAN}  → Публичный порт: $pub_port${NC}"
 
   echo -e "${CYAN}  → Установка nginx + certbot...${NC}"
-  if ! apt-get install -y nginx certbot >/dev/null 2>&1; then
+  if ! apt-get "${APT_LOCK_OPTS[@]}" install -y nginx certbot >/dev/null 2>&1; then
     echo -e "${RED}✗ apt-get install nginx certbot не удалось${NC}"
     return 1
   fi
@@ -10303,19 +10327,26 @@ quickstart_command() {
   # Установить nginx если нет
   if ! command -v nginx &>/dev/null; then
     echo "  -> Установка nginx..." >&2
-    # FIX: фоновые apt-daily/unattended-upgrades держат lock на свежих Ubuntu —
-    # без ожидания apt-get висит и quickstart падает с кодом 1 (GUI).
-    if ! _apt_wait_lock 300; then
-      echo '{"ok":false,"error":"apt lock не освободился за 5 минут (apt-daily/unattended-upgrades)"}'
+    # FIX (11.08): фоновые apt-daily/unattended-upgrades держат lock на свежих
+    # Ubuntu — без ожидания apt-get висит и quickstart падает с кодом 1 (GUI).
+    # FIX (23.09): прогон unattended-upgrades на свежеподнятом VPS занимает
+    # ~10 минут (замер: 21:10:39→21:20:23, ~90 пакетов); flock между пакетами
+    # свободен секунды и проскакивает гонку, поэтому бюджет ожидания — 12 минут
+    # и учёт самого процесса-воркера внутри _apt_wait_lock.
+    if ! _apt_wait_lock 720; then
+      echo '{"ok":false,"error":"apt занят обновлениями дольше 12 минут (unattended-upgrades). Повторите quickstart чуть позже"}'
       return 1
     fi
-    if ! timeout 180 apt-get install -y nginx >/dev/null 2>&1; then
+    # ВНИМАНИЕ: timeout обязан превышать DPkg::Lock::Timeout=180 внутри apt,
+    # иначе внешний kill обрывает ожидание lock раньше времени и воспроизводит
+    # исходный баг.
+    if ! timeout 300 apt-get "${APT_LOCK_OPTS[@]}" install -y nginx >/dev/null 2>&1; then
       # При пропущенном install.sh (повторный деплой) apt-индексы могут быть
       # устаревшими — обновляем и пробуем ещё раз, прежде чем сдаться.
       echo "  -> apt-get install nginx не удался, обновляю индексы и повторяю..." >&2
-      _apt_wait_lock 300 || true
+      _apt_wait_lock 720 || true
       timeout 180 apt-get update >/dev/null 2>&1 || true
-      if ! timeout 180 apt-get install -y nginx >/dev/null 2>&1; then
+      if ! timeout 300 apt-get "${APT_LOCK_OPTS[@]}" install -y nginx >/dev/null 2>&1; then
         echo '{"ok":false,"error":"apt-get install nginx failed"}'
         return 1
       fi
@@ -10332,7 +10363,7 @@ quickstart_command() {
   if [[ -z "$certbot_bin" ]]; then
     echo "  -> Установка certbot через snap..." >&2
     _apt_wait_lock 300 || true
-    timeout 180 apt-get install -y snapd >/dev/null 2>&1 || true
+    timeout 240 apt-get "${APT_LOCK_OPTS[@]}" install -y snapd >/dev/null 2>&1 || true
     systemctl enable --now snapd.socket >/dev/null 2>&1 || true
     export PATH="/snap/bin:$PATH"
     if command -v snap &>/dev/null; then
