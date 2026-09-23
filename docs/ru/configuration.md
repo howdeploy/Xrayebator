@@ -116,6 +116,8 @@ legacy-файлы и блоки, ранее созданные Xrayebator, и с
 | `sudo xrayebator update <branch>` | Self-update менеджера из canonical raw-репозитория (ветка branch), продолжить новым скриптом, затем обновить Xray-core |
 | `sudo xrayebator probe-test` | Проверить SNI reachability с VPS |
 | `sudo xrayebator quickstart --email <адрес>` | Путь одноразового деплоя (используется GUI): broad setup/migration, IP-TLS endpoint на `8443` и стандартный schema-v3 HAPP-профиль из 7 маршрутов; выводит JSON с `subscription_url`. Migration calls best-effort, проверяйте итоговый профиль и сервисы |
+| `sudo xrayebator quickstart --without-email` | Тот же путь развёртывания без ACME email; Certbot регистрирует аккаунт с `--register-unsafely-without-email`, поэтому уведомления и восстановление аккаунта по email недоступны |
+| `sudo xrayebator inspect --json` | Read-only проверка установки для GUI-импорта: возвращает состояние Xray, профилей и маркеров подписки; не запускает установку, миграции или изменения конфигурации |
 | `sudo xrayebator happ-setup` | Сокращённый re-entry на существующей установке: проверяет subscription service и usable multi-route profile; при отсутствии markers проверяет IP-TLS endpoint на `8443`, но не фабрикует markers |
 | `sudo xrayebator profiles` | Вывести все профили сервера JSON-массивом (для «Настроек сервера» GUI) |
 | `sudo xrayebator profile-create --name ИМЯ [--transport tcp\|tcp-utls\|tcp-xudp\|tcp-mux\|grpc\|xhttp] [--port P] [--count N]` | Создать профили без интерактива; `{"ok":true,"names":[...],"errors":[...]}` |

@@ -11,6 +11,11 @@
     "onboardDeployHint": "在纯净的 VPS 上安装 Xrayebator",
     "onboardImportTitle": "连接现有服务器",
     "onboardImportHint": "查找已安装的 Xrayebator 并打开其控制面板",
+    "setup": {
+      "ready": "已配置",
+      "partial": "配置不完整",
+      "unknown": "已导入"
+    },
     "empty": "添加第一台服务器",
     "routes_other": "{{count}} 条路线",
     "keys": "密钥",
@@ -118,6 +123,24 @@
   },
   "settings": {
     "title": "服务器配置文件",
+    "diagnostics": {
+      "title": "安装状态",
+      "manager": "管理器",
+      "xray": "Xray",
+      "profiles": "配置文件",
+      "subscription": "订阅",
+      "detected": "已找到",
+      "missing": "未找到",
+      "invalid": "已损坏",
+      "running": "运行中",
+      "stopped": "已停止",
+      "available": "存在配置文件",
+      "empty": "没有配置文件",
+      "public": "公网 HTTPS",
+      "localOnly": "仅本地",
+      "unreachable": "无响应",
+      "unknown": "未知"
+    },
     "language": "界面语言",
     "hint": "选择服务器访问方式。Root + 密码仍是默认快捷方式，同时支持 SSH 密钥和 sudo。",
     "sshPassword": "SSH 密码",

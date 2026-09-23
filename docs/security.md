@@ -108,23 +108,33 @@ TCPKeepAlive yes
 
 ## Desktop GUI credentials
 
-The active Electron GUI supports SSH passwords and private keys, with direct-root or sudo execution.
-Passwords, sudo passwords, key passphrases and private-key bytes are kept only in the active form or
-operation; they are not persisted. A private key is read only after it was selected through the
-native Electron file dialog.
+The active Electron GUI supports SSH passwords and private keys, with direct-root or sudo execution. A
+private key selected through the native Electron file dialog is read by the main process and stored in
+the operating-system keychain via `keytar` (Windows Credential Manager, macOS Keychain, Linux Secret
+Service), so the same key can be reused for later operations and after app restarts without selecting
+the file again. When the OS keychain is unavailable there is deliberately no plaintext fallback: the
+key survives only in main-process memory for the current session and the UI warns that re-selection
+will be required after restart.
+
+SSH passwords, sudo passwords and key passphrases are never persisted; an encrypted key's passphrase
+is requested again in each session. Private-key bytes never cross the preload boundary — the renderer
+receives only a non-secret credential id and the display file name.
 
 The GUI does persist the server metadata needed to return to a server, including the host, SSH port,
-username, authentication method, privilege mode and selected key path. It also persists preferences,
-the `subscription_url`, fetched `vless://` links and the SHA-256 SSH host-key pin. The subscription
-URL and VLESS links are bearer credentials, so protect the local Electron application data and revoke
-the subscription if they leak.
+username, authentication method, privilege mode, credential id, display key name and installation
+diagnostics, plus preferences, the `subscription_url`, fetched `vless://` links and the SHA-256 SSH
+host-key pin. The subscription URL and VLESS links are bearer credentials, so protect the local
+Electron application data and revoke the subscription if they leak. Removing the last server card that
+references a credential deletes that keychain entry; entries shared with another card are kept.
+
+Existing and imported servers can also be managed read-only: importing over SSH recognizes Xrayebator
+installations only and never reconfigures a server implicitly. An email is optional during deployment:
+without one, Certbot registers the ACME account with `--register-unsafely-without-email`, so renewal
+notices and account recovery are unavailable — both consequences are shown in the UI before deploying.
 
 SSH host keys use trust on first successful authentication. The fingerprint is then pinned; any later
 mismatch fails closed before commands are executed. After an intentional VPS reinstall, explicitly
 reset the pin in Server Settings and confirm the new key on the next successful connection.
-
-`keytar` is listed in `package.json`, but the active Electron GUI does not use it to store SSH
-passwords or passphrases in an operating-system keychain. The secrets remain session-only.
 
 See [Electron Desktop GUI](desktop-gui.md) for the complete Electron boundary, command adapters and
 packaging details.

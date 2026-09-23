@@ -11,6 +11,11 @@
     "onboardDeployHint": "Install Xrayebator on a clean VPS",
     "onboardImportTitle": "Connect an existing server",
     "onboardImportHint": "Find an installed Xrayebator and open its panel",
+    "setup": {
+      "ready": "Configured",
+      "partial": "Partially configured",
+      "unknown": "Imported"
+    },
     "empty": "Add your first server",
     "routes_one": "{{count}} route",
     "routes_other": "{{count}} routes",
@@ -119,6 +124,24 @@
   },
   "settings": {
     "title": "Server profiles",
+    "diagnostics": {
+      "title": "Installation status",
+      "manager": "Manager",
+      "xray": "Xray",
+      "profiles": "Profiles",
+      "subscription": "Subscription",
+      "detected": "found",
+      "missing": "not found",
+      "invalid": "broken",
+      "running": "running",
+      "stopped": "stopped",
+      "available": "profiles exist",
+      "empty": "no profiles",
+      "public": "public HTTPS",
+      "localOnly": "local only",
+      "unreachable": "not responding",
+      "unknown": "unknown"
+    },
     "language": "Interface language",
     "hint": "Choose how to access the server. Root + password remains the fast default; SSH keys and sudo are also supported.",
     "sshPassword": "SSH password",

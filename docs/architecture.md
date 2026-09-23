@@ -106,9 +106,11 @@ http://127.0.0.1:8080/sub/<token>         # local-only fallback
 ```
 
 The interactive HAPP setup can select the public port and `_subscription_base_url` preserves that
-choice. The non-interactive `quickstart --email <address>` IP-TLS path currently provisions nginx,
-certificate and markers on `8443`, then emits JSON containing `subscription_url` for that endpoint.
-The token is stored in the profile as `sub_token`; revoke rotates it and invalidates the previous URL.
+choice. The non-interactive `quickstart --email <address>` and `quickstart --without-email` IP-TLS paths
+provision nginx, certificate and markers on `8443`, then emit JSON containing `subscription_url` for that
+endpoint. Without an email, Certbot is explicitly told to register without an ACME contact; renewal
+notices and email-based recovery are unavailable. The token is stored in the profile as `sub_token`;
+revoke rotates it and invalidates the previous URL.
 
 A newly provisioned standard HAPP managed profile has `schema_version: 3` and seven routes,
 including `xhttp-legacy` and `xhttp-pq`. The published HAPP connection list contains six VLESS

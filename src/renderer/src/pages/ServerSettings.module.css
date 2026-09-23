@@ -105,6 +105,29 @@
   gap: 20px;
 }
 
+.diagnosticsCard {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 18px 20px;
+}
+
+.diagnosticsGrid {
+  display: grid;
+  grid-template-columns: auto 1fr auto 1fr;
+  gap: 6px 14px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.diagnosticsGrid span:nth-child(odd) {
+  color: var(--text-1);
+  font-weight: 500;
+}
+
 .connectCard,
 .createCard,
 .listCard {

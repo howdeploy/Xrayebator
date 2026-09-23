@@ -113,6 +113,8 @@ is a client-side profile/route setting; changing it does not restart Xray or alt
 | `sudo xrayebator update <branch>` | Self-update the manager from the canonical raw repository branch, continue with the new script, then update Xray-core |
 | `sudo xrayebator probe-test` | Check SNI reachability from the VPS before switching |
 | `sudo xrayebator quickstart --email <address>` | One-shot deploy path used by the desktop GUI: runs the broad setup/migration path, provisions the current IP-TLS endpoint on `8443`, and creates a standard HAPP profile with `schema_version: 3` and 7 routes; emits JSON with `subscription_url` |
+| `sudo xrayebator quickstart --without-email` | Same new-server path without an ACME contact email; Certbot uses `--register-unsafely-without-email`, so no renewal notices or email-based account recovery are available |
+| `sudo xrayebator inspect --json` | Read-only GUI import probe: reports manager, Xray, profile and subscription markers without installing, migrating or changing services/configuration |
 | `sudo xrayebator happ-setup` | Reduced existing-install HAPP path: ensures the subscription service and a usable multi-route profile, but does not replace the endpoint prerequisite; when `.subscription_domain` or `.subscription_port` is missing, it verifies a real public TLS endpoint before writing markers and otherwise fails |
 | `sudo xrayebator profiles` | Print all server profiles as a JSON array for the desktop GUI Server Settings page |
 | `sudo xrayebator profile-create --name NAME [--transport tcp\|tcp-utls\|tcp-xudp\|tcp-mux\|grpc\|xhttp] [--port P] [--count N]` | Create one or more profiles non-interactively; prints `{"ok":true,"names":[...],"errors":[...]}` |
@@ -151,6 +153,10 @@ deployment, provisions the IP-TLS subscription endpoint on `8443` and its certif
 or reuses the managed HAPP profile. A newly created standard profile uses `schema_version: 3` with seven
 routes, including `xhttp-legacy` and `xhttp-pq`. Migration calls in this non-interactive path are
 best-effort; verify markers, the profile JSON and service status after deployment.
+
+`quickstart --without-email` performs the same broad setup and endpoint provisioning as the email form, but registers the ACME account with `--register-unsafely-without-email`; Certbot renewal notices and email-based account recovery are unavailable.
+
+`inspect --json` is the GUI's read-only import probe. It reports whether this is an Xrayebator installation, Xray/profile/service markers and saved subscription metadata; it does not run migrations, create profiles, change configuration, restart services or edit firewall rules.
 
 `happ-setup` is the reduced path for an existing installation. It runs only the critical migrations,
 restores the subscription service and ensures a multi-route profile; it is not a replacement for

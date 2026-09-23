@@ -98,8 +98,7 @@ http://127.0.0.1:8080/sub/<token>         # 仅本地回退
 ```
 
 交互式 HAPP 设置可以选择公共端口，`_subscription_base_url` 会保留这一选择。非交互式的
-`quickstart --email <address>` IP-TLS 流程目前在 `8443` 配置 nginx、证书和标记，然后返回指向该
-endpoint 的 `subscription_url`。令牌以 `sub_token` 形式存储在配置档中；执行 revoke 会轮换令牌并使之前的 URL 失效。
+`quickstart --email <address>` 和 `quickstart --without-email` IP-TLS 流程会在 `8443` 配置 nginx、证书和标记，然后返回该 endpoint 的 `subscription_url`。不提供邮箱时，Certbot 会在没有 ACME 联系地址的情况下注册，因此无法接收续期通知或通过邮箱恢复。令牌以 `sub_token` 形式存储在配置档中；执行 revoke 会轮换令牌并使之前的 URL 失效。
 
 新创建的标准托管 HAPP 配置档是 schema-v3 七路由配置档，包括 `xhttp-legacy` 和后量子 XHTTP 路由。
 发布的 HAPP 连接列表包含六个 VLESS 路由，因为 PQ 路由仍可通过原始/配置档路径访问。助手也可能

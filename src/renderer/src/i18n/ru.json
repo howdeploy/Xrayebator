@@ -11,6 +11,11 @@
     "onboardDeployHint": "Установить Xrayebator на чистый VPS",
     "onboardImportTitle": "Подключить существующий",
     "onboardImportHint": "Найти установленный Xrayebator и открыть его панель",
+    "setup": {
+      "ready": "Настроен",
+      "partial": "Настроен частично",
+      "unknown": "Импортирован"
+    },
     "empty": "Добавьте первый сервер",
     "routes_one": "{{count}} маршрут",
     "routes_few": "{{count}} маршрута",
@@ -120,6 +125,24 @@
   },
   "settings": {
     "title": "Профили сервера",
+    "diagnostics": {
+      "title": "Состояние установки",
+      "manager": "Менеджер",
+      "xray": "Xray",
+      "profiles": "Профили",
+      "subscription": "Подписка",
+      "detected": "найден",
+      "missing": "не найден",
+      "invalid": "повреждён",
+      "running": "запущен",
+      "stopped": "остановлен",
+      "available": "есть профили",
+      "empty": "профилей нет",
+      "public": "публичная HTTPS",
+      "localOnly": "только локально",
+      "unreachable": "не отвечает",
+      "unknown": "неизвестно"
+    },
     "language": "Язык интерфейса",
     "hint": "Выберите способ SSH-доступа. Root + пароль остаётся быстрым вариантом по умолчанию; также поддерживаются SSH-ключи и sudo.",
     "sshPassword": "SSH-пароль",

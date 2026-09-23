@@ -447,6 +447,21 @@ export function ServerSettings({ server, onBack }: ServerSettingsProps): React.J
       </header>
 
       <div className={styles.body}>
+        {server.diagnostics && (
+          <section className={styles.diagnosticsCard}>
+            <h2 className={styles.sectionTitle}>{t('settings.diagnostics.title')}</h2>
+            <div className={styles.diagnosticsGrid}>
+              <span>{t('settings.diagnostics.manager')}</span>
+              <span>{t(`settings.diagnostics.${server.diagnostics.manager}`)}</span>
+              <span>{t('settings.diagnostics.xray')}</span>
+              <span>{t(`settings.diagnostics.${server.diagnostics.xray}`)}</span>
+              <span>{t('settings.diagnostics.profiles')}</span>
+              <span>{t(`settings.diagnostics.${server.diagnostics.profiles}`)}</span>
+              <span>{t('settings.diagnostics.subscription')}</span>
+              <span>{t(`settings.diagnostics.${server.diagnostics.subscription}`)}</span>
+            </div>
+          </section>
+        )}
         <section className={styles.connectCard}>
           <p className={styles.hint}>
             {t('settings.hint')}

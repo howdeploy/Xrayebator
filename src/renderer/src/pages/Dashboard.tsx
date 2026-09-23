@@ -142,6 +142,15 @@ export function Dashboard({
                   {server.name}
                 </div>
                 <div className={styles.cardMeta}>
+                  <Chip size="sm" color={
+                    server.setupStatus === 'ready'
+                      ? 'success'
+                      : server.setupStatus === 'partial'
+                        ? 'warning'
+                        : 'default'
+                  }>
+                    {t(`dashboard.setup.${server.setupStatus ?? 'unknown'}`)}
+                  </Chip>
                   <Chip size="sm" color="default">
                     {server.country || '—'}
                   </Chip>
