@@ -280,7 +280,7 @@ GUI 的功能：
 | 服务器密钥 | 刷新公网订阅、复制链接、显示 `vless://` 链接与二维码 |
 | 服务器设置 | 使用 SSH 密码或私钥、直接 root 或 sudo：列出/创建/删除配置档，修改指纹、SNI 和端口，以及更新或卸载服务器上的 Xrayebator |
 
-选中的私钥通过 `keytar` 保存在操作系统钥匙串中，可在之后的 SSH 操作和应用重启后复用；服务器卡片只保存 credential id 和显示文件名。SSH 密码、sudo 密码和私钥口令不会持久化；加密密钥的口令需要重新输入。系统钥匙串不可用时不会写入明文回退文件：密钥仅保留在 main process 内存中直到当前会话结束，界面会提示重启后需重新选择。应用还会保存 `subscription_url`、获取到的 `vless://` 链接和固定的 SSH host-key fingerprint。这些是 bearer/client credentials：请保护本地应用数据，泄露后通过终端 workflow 吊销订阅。
+选中的私钥与成功登录时使用过的 SSH 密码都会通过 `keytar` 保存在操作系统钥匙串中，之后的 SSH 操作和应用重启均可复用；服务器卡片只保存非敏感的 credential id 和显示文件名。单独的 sudo 密码与加密私钥口令不会持久化，需要时重新输入。系统钥匙串不可用时不会写入明文回退文件：密钥仅保留在 main process 内存中直到当前会话结束，界面会提示重启后需重新输入。应用还会保存 `subscription_url`、获取到的 `vless://` 链接和固定的 SSH host-key fingerprint。这些是 bearer/client credentials：请保护本地应用数据，泄露后通过终端 workflow 吊销订阅。
 
 GUI 只暴露终端菜单的一个子集。bypass、`probe-test`、订阅吊销、`happ-setup`、级联、self-steal
 以及服务日志/状态仍需从终端执行。完整的 Electron GUI 边界、安全模型与打包说明见

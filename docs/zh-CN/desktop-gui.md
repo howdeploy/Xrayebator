@@ -46,7 +46,7 @@ Server keys 会从保存的 `subscription_url` 刷新订阅，并显示返回的
 
 ### Server settings
 
-Server settings 先通过 SSH 认证，然后可以：
+Server settings 先通过 SSH 认证。如果卡片中已有系统钥匙串保存的 SSH 密码或持久化私钥，页面会自动尝试连接；成功后访问表单收起为简洁的“访问已确认”状态，并提供显式的“更改访问方式”操作。连接后可以：
 
 - 列出已有配置档；
 - 创建一个或多个配置档并删除配置档；
@@ -63,7 +63,7 @@ SNI 和端口属于 inbound 级别的设置：修改它们可能影响共享该 
 
 GUI 支持 SSH 密码认证或私钥认证，并支持直接以 `root` 执行或通过 `sudo` 提升权限。私钥通过 Electron 原生文件对话框选择；main process 读取字节并通过 `keytar` 保存到操作系统钥匙串（Windows Credential Manager、macOS Keychain 或 Linux Secret Service），renderer 只收到非敏感 credential id 和显示文件名。之后的 SSH 操作以及应用重启后都可以复用该密钥。
 
-如果系统钥匙串不可用，应用不会在磁盘上创建明文回退副本：密钥只保留在 main process 内存中，直到应用退出；界面会提示重启后需要重新选择。SSH 密码、sudo 密码和私钥口令不会持久化；加密私钥的口令需要在新会话中重新输入。私钥字节不会越过 preload boundary。`electron-store` 会保存服务器卡片、连接偏好、credential id、显示文件名、安装诊断、订阅 URL、已获取的 VLESS 链接（bearer/client credentials）和 SSH host-key SHA-256 pin（TOFU）。请保护本地应用数据；若订阅 URL 或 VLESS 链接泄露，请通过终端 workflow 吊销订阅。删除引用某个 credential 的最后一张服务器卡片时会删除对应钥匙串记录；其他卡片仍引用时会保留。
+如果系统钥匙串不可用，应用不会在磁盘上创建明文回退副本：密钥只保留在 main process 内存中，直到应用退出；界面会提示重启后需要重新选择。SSH 登录密码在首次成功认证后保存到系统钥匙串，之后的操作和应用重启均可复用；服务器卡片只保存非敏感 credential id。单独的 sudo 密码和加密私钥口令不会持久化，需要时重新输入。私钥字节和密码值都不会越过 preload boundary：renderer 只收到 credential id 和显示名。`electron-store` 会保存服务器卡片、连接偏好、credential id、显示文件名、安装诊断、订阅 URL、已获取的 VLESS 链接（bearer/client credentials）和 SSH host-key SHA-256 pin（TOFU）。请保护本地应用数据；若订阅 URL 或 VLESS 链接泄露，请通过终端 workflow 吊销订阅。删除引用某个 credential 的最后一张服务器卡片时会删除对应钥匙串记录；其他卡片仍引用时会保留。
 
 Electron 边界包含以下保护措施：
 

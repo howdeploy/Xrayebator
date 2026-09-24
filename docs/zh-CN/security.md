@@ -100,9 +100,9 @@ TCPKeepAlive yes
 
 活跃的 Electron GUI 支持 SSH 密码和私钥，并可选择直接 root 或 sudo。通过 Electron 原生文件对话框选择的私钥由 main process 读取，并通过 `keytar` 保存到操作系统钥匙串（Windows Credential Manager、macOS Keychain 或 Linux Secret Service），因此后续 SSH 操作和应用重启后都可以复用。Renderer 只收到非敏感 credential id 和显示文件名；私钥字节不会跨越 preload boundary。
 
-如果系统钥匙串不可用，应用不会在磁盘上保存明文回退副本：密钥只保留在 main process 内存中直到应用退出，界面会提示重启后需要重新选择。SSH 密码、sudo 密码和私钥口令都不持久化；加密私钥的口令在需要时重新输入。
+如果系统钥匙串不可用，应用不会在磁盘上保存明文回退副本：密钥只保留在 main process 内存中直到应用退出，界面会提示重启后需要重新选择。SSH 登录密码仅在首次成功登录后保存到系统钥匙串并可继续复用；单独的 sudo 密码和加密私钥口令不持久化，需要时重新输入。
 
-GUI 会保存返回服务器所需的元数据：主机、SSH 端口、用户名、认证方式、权限模式、credential id、密钥显示名、安装诊断、偏好、`subscription_url`、获取到的 `vless://` 链接以及 SHA-256 SSH host-key pin。订阅 URL 和 VLESS 链接是 bearer credentials，因此请保护本地 Electron 应用数据，泄露后吊销订阅。删除最后一张引用某 credential 的服务器卡片时会删除钥匙串记录；若其他卡片仍引用则保留。
+GUI 会保存返回服务器所需的元数据：主机、SSH 端口、用户名、认证方式、权限模式、credential id（密码与私钥）、密钥显示名、安装诊断、偏好、`subscription_url`、获取到的 `vless://` 链接以及 SHA-256 SSH host-key pin。订阅 URL 和 VLESS 链接是 bearer credentials，因此请保护本地 Electron 应用数据，泄露后吊销订阅。删除最后一张引用某 credential 的服务器卡片时会删除钥匙串记录；若其他卡片仍引用则保留。
 
 SSH 导入只识别 Xrayebator，并默认只执行只读诊断；部分配置的服务器会按实际状态导入，不会自动修复。部署时 email 可选；不填写时 Certbot 使用 `--register-unsafely-without-email`，因此没有续期通知和 ACME 账户邮箱恢复，GUI 会在部署前说明。
 

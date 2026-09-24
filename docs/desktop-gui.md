@@ -45,7 +45,7 @@ Server keys refreshes the subscription from the saved `subscription_url` and dis
 
 ### Server settings
 
-Server settings first authenticates over SSH and can then:
+Server settings first authenticates over SSH. When the card already has a keychain-backed SSH password or a persisted private key, the page attempts to connect automatically; after success the access form collapses to a compact "access confirmed" status with an explicit "Change access" action. Once connected, the page can:
 
 - list existing profiles;
 - create one or more profiles and delete profiles;
@@ -62,7 +62,7 @@ SNI and port are inbound-level settings: changing them can affect every profile 
 
 The GUI supports SSH password authentication or a private key, with either direct `root` execution or elevated commands through `sudo`. A private key is selected through the native Electron file dialog; the main process reads the bytes, stores them in the operating-system keychain via `keytar` (Windows Credential Manager, macOS Keychain, or Linux Secret Service), and returns to the renderer only a non-secret credential id plus the display file name. The key is reused across later operations and app restarts without re-picking the file. If the OS keychain is unavailable, the key is kept only in main-process memory for the current app session and the UI warns that reuse after restart is unavailable; there is no plaintext fallback on disk.
 
-SSH passwords, sudo passwords, and key passphrases are never persisted — the passphrase is asked again for each session when the key is encrypted. `electron-store` persists the server card and connection preferences, the subscription URL, and the fetched VLESS links (bearer/client credentials), as well as the username, authentication method, privilege mode, credential id, display key name, installation diagnostics, and the SHA-256 SSH host-key pin. Protect the local application data; if the subscription URL or VLESS links leak, revoke the subscription through the terminal workflow. A later fingerprint mismatch fails closed before commands are executed; an intentional server reinstall requires an explicit host-key reset in Server settings. Removing the last card that references a credential deletes the keychain entry; shared references are preserved.
+The SSH login password is persisted to the operating-system keychain after the first successful authentication and reused across later operations and app restarts; the server card stores only its non-secret credential id. A distinct sudo password and an encrypted-key passphrase are never persisted — they are asked again when needed. Private-key bytes and password values never cross the preload boundary: the renderer receives only credential ids and display names. `electron-store` persists the server card and connection preferences, the subscription URL, and the fetched VLESS links (bearer/client credentials), as well as the username, authentication method, privilege mode, credential ids, display key name, installation diagnostics, and the SHA-256 SSH host-key pin. Protect the local application data; if the subscription URL or VLESS links leak, revoke the subscription through the terminal workflow. A later fingerprint mismatch fails closed before commands are executed; an intentional server reinstall requires an explicit host-key reset in Server settings. Removing the last card that references a credential deletes the matching keychain entry; shared references are preserved.
 
 The Electron boundary includes the following protections:
 

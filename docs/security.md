@@ -116,12 +116,12 @@ the file again. When the OS keychain is unavailable there is deliberately no pla
 key survives only in main-process memory for the current session and the UI warns that re-selection
 will be required after restart.
 
-SSH passwords, sudo passwords and key passphrases are never persisted; an encrypted key's passphrase
-is requested again in each session. Private-key bytes never cross the preload boundary — the renderer
-receives only a non-secret credential id and the display file name.
+The SSH login password and a selected private key are persisted to the operating-system keychain after successful authentication — the password only after the first successful sign-in, the key when it is picked through the native file dialog — and are reused for later operations and after app restarts. When the OS keychain is unavailable there is deliberately no plaintext fallback: the key survives only in main-process memory for the current session and the UI warns that re-selection will be required after restart.
+
+A distinct sudo password and an encrypted key's passphrase are never persisted; they are requested again in each session. Credentials and password values never cross the preload boundary — the renderer receives only non-secret credential ids and the display key name.
 
 The GUI does persist the server metadata needed to return to a server, including the host, SSH port,
-username, authentication method, privilege mode, credential id, display key name and installation
+username, authentication method, privilege mode, credential ids, display key name and installation
 diagnostics, plus preferences, the `subscription_url`, fetched `vless://` links and the SHA-256 SSH
 host-key pin. The subscription URL and VLESS links are bearer credentials, so protect the local
 Electron application data and revoke the subscription if they leak. Removing the last server card that
