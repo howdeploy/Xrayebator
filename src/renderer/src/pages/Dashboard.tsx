@@ -14,12 +14,14 @@ import {
   ChevronDown,
   Check,
   Rocket,
-  Link2
+  Link2,
+  Lock
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { setLanguage, supportedLngs, type SupportedLng } from '../i18n'
 import type { Server } from '@shared/types'
 import { CountryFlag } from '../components/CountryFlag'
+import { accessSummary, type AccessSecretState } from './server-access'
 import styles from './Dashboard.module.css'
 
 const LANG_LABELS: Record<SupportedLng, string> = {
@@ -28,12 +30,27 @@ const LANG_LABELS: Record<SupportedLng, string> = {
   zh: '中文'
 }
 
+// Где лежит секрет доступа — ключ i18n; предупреждающий тон для не-персистентных случаев.
+const SECRET_I18N: Record<AccessSecretState, string> = {
+  passwordSaved: 'dashboard.secretPasswordSaved',
+  keySaved: 'dashboard.secretKeySaved',
+  sessionOnly: 'dashboard.secretSessionOnly',
+  notSaved: 'dashboard.secretNotSaved'
+}
+const SECRET_WARN: Record<AccessSecretState, boolean> = {
+  passwordSaved: false,
+  keySaved: false,
+  sessionOnly: true,
+  notSaved: true
+}
+
 interface DashboardProps {
   servers: Server[]
   onAdd: () => void
   onImport: () => void
   onOpen: (server: Server) => void
   onSettings: (server: Server) => void
+  onEditAccess: (server: Server) => void
   onRemove: (id: string) => void
 }
 
@@ -43,6 +60,7 @@ export function Dashboard({
   onImport,
   onOpen,
   onSettings,
+  onEditAccess,
   onRemove
 }: DashboardProps): React.JSX.Element {
   const { t, i18n } = useTranslation()
@@ -128,43 +146,67 @@ export function Dashboard({
       </header>
 
       <div className={styles.list}>
-        {servers.map((server) => (
-          <div key={server.id} className={styles.card}>
-            <div className={styles.cardHeader}>
-              <span
-                className={`${styles.statusDot} ${
-                  online[server.id] ? styles.statusDotOnline : styles.statusDotOffline
-                }`}
-              />
-              <div className={styles.cardInfo}>
-                <div className={styles.cardTitle}>
-                  <CountryFlag flag={server.flag} className={styles.flag} />
-                  {server.name}
+        {servers.map((server) => {
+          const summary = accessSummary(server)
+          return (
+            <div key={server.id} className={styles.card}>
+              <div className={styles.cardTop}>
+                <div className={styles.cardHeader}>
+                  <span
+                    className={`${styles.statusDot} ${
+                      online[server.id] ? styles.statusDotOnline : styles.statusDotOffline
+                    }`}
+                  />
+                  <div className={styles.cardInfo}>
+                    <div className={styles.cardTitle}>
+                      <CountryFlag flag={server.flag} className={styles.flag} />
+                      {server.name}
+                    </div>
+                    <div className={styles.cardMeta}>
+                      <Chip size="sm" color={
+                        server.setupStatus === 'ready'
+                          ? 'success'
+                          : server.setupStatus === 'partial'
+                            ? 'warning'
+                            : 'default'
+                      }>
+                        {t(`dashboard.setup.${server.setupStatus ?? 'unknown'}`)}
+                      </Chip>
+                      <Chip size="sm" color="default">
+                        {server.country || '—'}
+                      </Chip>
+                      {server.city && <span>{server.city}</span>}
+                      <Chip size="sm" color="default">
+                        {server.os ?? '—'}
+                      </Chip>
+                      <span>
+                        {t('dashboard.routes', { count: server.routesCount ?? 0 })}
+                      </span>
+                    </div>
+                  </div>
                 </div>
-                <div className={styles.cardMeta}>
-                  <Chip size="sm" color={
-                    server.setupStatus === 'ready'
-                      ? 'success'
-                      : server.setupStatus === 'partial'
-                        ? 'warning'
-                        : 'default'
-                  }>
-                    {t(`dashboard.setup.${server.setupStatus ?? 'unknown'}`)}
-                  </Chip>
-                  <Chip size="sm" color="default">
-                    {server.country || '—'}
-                  </Chip>
-                  {server.city && <span>{server.city}</span>}
-                  <Chip size="sm" color="default">
-                    {server.os ?? '—'}
-                  </Chip>
-                  <span>
-                    {t('dashboard.routes', { count: server.routesCount ?? 0 })}
-                  </span>
+                <div className={styles.cardAccess}>
+                  <div className={styles.accessEndpoint}>{summary.endpoint}</div>
+                  <div
+                    className={`${styles.accessSecret} ${
+                      SECRET_WARN[summary.secret] ? styles.accessSecretWarn : ''
+                    }`}
+                  >
+                    <Lock size={12} className={styles.accessSecretIcon} />
+                    {t(SECRET_I18N[summary.secret])}
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className={styles.accessEditBtn}
+                    onPress={() => onEditAccess(server)}
+                  >
+                    <Settings2 size={14} />
+                    {t('dashboard.changeAccess')}
+                  </Button>
                 </div>
               </div>
-            </div>
-            <div className={styles.cardActions}>
+              <div className={styles.cardActions}>
               <Button size="sm" variant="secondary" onPress={() => onOpen(server)}>
                 <KeyRound size={16} />
                 {t('dashboard.keys')}
@@ -181,9 +223,10 @@ export function Dashboard({
                 <Trash2 size={16} />
                 {t('dashboard.delete')}
               </Button>
+              </div>
             </div>
-          </div>
-        ))}
+          )
+        })}
 
         {servers.length === 0 && (
           <div className={styles.onboardingGrid}>

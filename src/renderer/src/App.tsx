@@ -11,7 +11,7 @@ type View =
   | { name: 'add' }
   | { name: 'import' }
   | { name: 'keys'; server: Server }
-  | { name: 'settings'; server: Server }
+  | { name: 'settings'; server: Server; editingAccess?: boolean }
 
 export default function App(): React.JSX.Element {
   const [view, setView] = useState<View>({ name: 'dashboard' })
@@ -65,6 +65,7 @@ export default function App(): React.JSX.Element {
     return (
       <ServerSettings
         server={view.server}
+        editingAccess={view.editingAccess ?? false}
         onBack={() => setView({ name: 'dashboard' })}
       />
     )
@@ -77,6 +78,7 @@ export default function App(): React.JSX.Element {
       onImport={() => setView({ name: 'import' })}
       onOpen={(server) => setView({ name: 'keys', server })}
       onSettings={(server) => setView({ name: 'settings', server })}
+      onEditAccess={(server) => setView({ name: 'settings', server, editingAccess: true })}
       onRemove={async (id) => {
         await window.api.servers.remove(id)
         setServers((prev) => prev.filter((s) => s.id !== id))

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { isSshAccessReady, setTypedSshPassword } from '../../src/renderer/src/components/SshAccessForm'
 import { buildDeployPayload, isDeployReady } from '../../src/renderer/src/pages/deploy-readiness'
-import { shouldAutoConnectServer } from '../../src/renderer/src/pages/server-access'
+import { shouldAutoConnectServer, accessSummary } from '../../src/renderer/src/pages/server-access'
 import type { SshAccessInput } from '../../src/shared/types'
 
 const readyAccess: SshAccessInput = {
@@ -94,6 +94,42 @@ describe('deploy readiness', () => {
       })
     ).toBe(false)
     expect(shouldAutoConnectServer({ authMethod: 'password' })).toBe(false)
+  })
+
+  it('summarizes where the saved SSH secret lives for the server card', () => {
+    expect(
+      accessSummary({
+        username: 'root',
+        host: '203.0.113.10',
+        port: 22,
+        authMethod: 'password',
+        passwordCredentialId: 'pw1',
+        passwordPersisted: true
+      })
+    ).toEqual({ endpoint: 'root@203.0.113.10:22', secret: 'passwordSaved' })
+    expect(
+      accessSummary({
+        username: 'ubuntu',
+        host: 'example.com',
+        port: 2222,
+        authMethod: 'privateKey',
+        privateKeyCredentialId: 'k1',
+        privateKeyPersisted: false
+      })
+    ).toEqual({ endpoint: 'ubuntu@example.com:2222', secret: 'sessionOnly' })
+    expect(
+      accessSummary({ username: 'root', host: 'h', port: 22, authMethod: 'password' })
+    ).toEqual({ endpoint: 'root@h:22', secret: 'notSaved' })
+    expect(
+      accessSummary({
+        username: 'root',
+        host: 'h',
+        port: 22,
+        authMethod: 'privateKey',
+        privateKeyCredentialId: 'k1',
+        privateKeyPersisted: true
+      })
+    ).toEqual({ endpoint: 'root@h:22', secret: 'keySaved' })
   })
 
   it('omits the email from the payload in without mode', () => {
