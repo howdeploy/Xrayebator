@@ -2,7 +2,9 @@
 
 User-facing Xrayebator changes. The server manager and Electron application are published from the canonical `howdeploy/Xrayebator` repository.
 
-## [Unreleased]
+## [0.5.5] - 2026-09-25
+
+Connecting to servers that already run Xrayebator, plus fixes found while testing on a live VPS.
 
 ### Added
 
