@@ -26,7 +26,9 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  box-sizing: border-box;
   gap: 6px;
+  height: 34px;
   background: var(--bg-2);
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -34,7 +36,7 @@
   font-size: 13px;
   font-weight: 600;
   line-height: 1;
-  padding: 9px 10px;
+  padding: 0 10px;
   cursor: pointer;
   transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
   text-transform: uppercase;
@@ -54,12 +56,15 @@
 }
 
 .langSelectValue {
+  display: flex;
+  align-items: center;
   min-width: 20px;
   text-align: center;
   white-space: nowrap;
 }
 
 .langSelectChevron {
+  display: block;
   color: var(--text-2);
   flex-shrink: 0;
 }

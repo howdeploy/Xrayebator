@@ -107,7 +107,7 @@ export function Dashboard({
           {servers.length > 0 && (
             <Dropdown>
               <Dropdown.Trigger className={styles.langSelect} aria-label={t('dashboard.add')}>
-                <span className={styles.langSelectValue}>+ {t('dashboard.add')}</span>
+                <span className={styles.langSelectValue}>{t('dashboard.add')}</span>
                 <ChevronDown size={14} className={styles.langSelectChevron} />
               </Dropdown.Trigger>
               <Dropdown.Popover placement="bottom end" className={styles.langPopup}>
