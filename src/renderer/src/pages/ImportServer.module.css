@@ -189,6 +189,53 @@
   background: color-mix(in srgb, var(--warning) 8%, var(--bg-2));
 }
 
+.logTitle {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-2);
+  opacity: 0.8;
+}
+
+.logPanel {
+  min-height: 120px;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 12px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.logLine {
+  color: var(--text-1);
+  opacity: 0.85;
+  line-height: 1.5;
+  word-break: break-all;
+  animation: fadeInUp 0.3s ease;
+}
+
+.logError {
+  color: var(--danger);
+  line-height: 1.5;
+  word-break: break-all;
+  animation: fadeInUp 0.3s ease;
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 @media (max-width: 900px) {
   .body {
     grid-template-columns: 1fr;

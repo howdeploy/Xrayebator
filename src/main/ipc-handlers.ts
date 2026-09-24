@@ -304,17 +304,27 @@ export function registerIpcHandlers({ store }: IpcContext): void {
         event.sender.send('servers:importEvent', { step })
       }
     }
+    const emitLog = (text: string): void => {
+      if (!event.sender.isDestroyed()) {
+        event.sender.send('servers:importEvent', { log: text })
+      }
+    }
     emitStep('ssh')
     const target = { host: payload.host, port: payload.port }
     const { credentials, access } = await credentialsFor(null, target, payload.access)
     emitStep('inspect')
-    const inspector = new ServerInspector(credentials, async (url) => {
-      emitStep('subscription')
-      return fetchSubscription(url)
-    })
+    const inspector = new ServerInspector(
+      credentials,
+      async (url) => {
+        emitStep('subscription')
+        return fetchSubscription(url)
+      },
+      emitLog
+    )
     const result = await inspector.inspect()
     await persistSshPassword(access)
     emitStep('save')
+    emitLog('card: сервер сохранён в списке, открываю панель настроек')
 
     const connection: ServerConnectionMetadata = {
       username: access.username,

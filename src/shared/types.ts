@@ -235,9 +235,8 @@ export type DeployStatus = 'pending' | 'running' | 'done' | 'error'
 /** Фазы read-only импорта: main process шлёт шаг только при реальном входе в фазу. */
 export type ImportStep = 'ssh' | 'inspect' | 'subscription' | 'save'
 
-export interface ImportProgressEvent {
-  step: ImportStep
-}
+/** Событие импорта: переход фазы либо строка консоли (секреты уже замаскированы в main). */
+export type ImportProgressEvent = { step: ImportStep } | { log: string }
 
 export interface DeployStartPayload {
   host: string

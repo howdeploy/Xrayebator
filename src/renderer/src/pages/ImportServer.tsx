@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Button, TextField, Label, Input, Spinner } from '@heroui/react'
 import { CheckCircle2, Circle } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import type { ImportStep, Server, SshAccessInput } from '@shared/types'
+import type { ImportProgressEvent, ImportStep, Server, SshAccessInput } from '@shared/types'
 import { SshAccessForm, isSshAccessReady } from '../components/SshAccessForm'
 import styles from './ImportServer.module.css'
 
@@ -29,18 +29,29 @@ export function ImportServer({ onDone, onBack }: ImportServerProps): React.JSX.E
   })
   const [running, setRunning] = useState(false)
   const [currentStep, setCurrentStep] = useState<ImportStep | null>(null)
+  const [log, setLog] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
+  const logPanelRef = useRef<HTMLDivElement>(null)
 
-  // Main process отправляет каждый шаг только при реальном входе в эту фазу.
+  useEffect(() => {
+    const panel = logPanelRef.current
+    if (panel) panel.scrollTop = panel.scrollHeight
+  }, [log, error])
+
+  // Main process отправляет переходы фаз и строки консоли только при реальном ходе работ.
   useEffect(() => {
     if (!running) return
-    return window.api.servers.onImportEvent((event) => setCurrentStep(event.step))
+    return window.api.servers.onImportEvent((event: ImportProgressEvent) => {
+      if ('step' in event) setCurrentStep(event.step)
+      else setLog((prev) => [...prev, event.log])
+    })
   }, [running])
 
   const ready = form.host.trim().length > 0 && isSshAccessReady(access)
 
   const startImport = (): void => {
     setError(null)
+    setLog([])
     setRunning(true)
     setCurrentStep(null)
     window.api.servers
@@ -145,6 +156,19 @@ export function ImportServer({ onDone, onBack }: ImportServerProps): React.JSX.E
               )
             })}
           </ol>
+
+          <div className={styles.logTitle}>{t('deploy.log')}</div>
+          <div className={styles.logPanel} ref={logPanelRef}>
+            {log.length === 0 && !error && (
+              <div className={styles.logLine}>{t('deploy.waiting')}</div>
+            )}
+            {log.map((line, i) => (
+              <div key={i} className={styles.logLine}>
+                &gt; {line}
+              </div>
+            ))}
+            {error && <div className={styles.logError}>&gt; {error}</div>}
+          </div>
         </div>
       </div>
     </div>

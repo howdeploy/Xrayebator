@@ -35,6 +35,11 @@ function isLocalSubscriptionUrl(url: string): boolean {
   )
 }
 
+/** URL подписки — bearer credential: перед выводом в консоль токен маскируется. */
+export function maskSubscriptionUrl(url: string): string {
+  return url.replace(/\/sub\/([a-f0-9]{4})[a-f0-9]+([a-f0-9]{4})(?=$|[/?#])/i, '/sub/$1…$2')
+}
+
 /** Публичный URL, который GUI может пробовать; null — probe не выполнять. */
 export function subscriptionProbeTarget(snapshot: InspectionSnapshot): string | null {
   const url = snapshot.subscription_url?.trim() ?? ''
@@ -112,17 +117,22 @@ export function normalizeInspection(
 /**
  * Read-only инспектор существующей установки для GUI-импорта.
  * Выполняет ТОЛЬКО `xrayebator inspect --json`; никаких mutation-команд.
+ * onLog получает строки консоли (пароли/токены маскируются до отправки).
  */
 export class ServerInspector {
   constructor(
     private readonly creds: SshCredentials,
-    private readonly probeSubscription: (url: string) => Promise<VlessLink[]> = async () => []
+    private readonly probeSubscription: (url: string) => Promise<VlessLink[]> = async () => [],
+    private readonly onLog: (text: string) => void = () => {}
   ) {}
 
   async inspect(): Promise<NormalizedInspection> {
     const client = new SshClient(this.creds)
+    this.onLog(`SSH: подключаюсь к ${this.creds.host}:${this.creds.port} (${this.creds.username})`)
     try {
       await client.connect()
+      this.onLog('SSH: соединение установлено, host key подтверждён')
+      this.onLog('$ xrayebator inspect --json')
       const res = await client.exec(shellCommand('xrayebator', ['inspect', '--json']), {
         elevated: true
       })
@@ -135,6 +145,7 @@ export class ServerInspector {
             `${err instanceof Error ? err.message : String(err)}`
         )
       }
+      this.onLog(`inspect: код ${res.code}, менеджер ${snapshot.manager}, Xray ${snapshot.xray}, профилей ${snapshot.profile_count}`)
       if (!snapshot.ok) {
         throw new Error(snapshot.error ?? 'Xrayebator на сервере не распознан')
       }
@@ -142,16 +153,30 @@ export class ServerInspector {
       const publicUrl = subscriptionProbeTarget(snapshot)
       let probe: SubscriptionProbe = null
       if (publicUrl) {
+        this.onLog(`subscription: $ curl ${maskSubscriptionUrl(publicUrl)}`)
         try {
           const keys = await this.probeSubscription(publicUrl)
-          probe = keys && keys.length > 0 ? keys : 'unreachable'
-        } catch {
+          if (keys && keys.length > 0) {
+            probe = keys
+            this.onLog(`subscription: получено маршрутов: ${keys.length}`)
+          } else {
+            probe = 'unreachable'
+            this.onLog('subscription: публичный endpoint не вернул маршрутов')
+          }
+        } catch (err) {
           probe = 'unreachable'
+          this.onLog(`subscription: проверка не прошла (${err instanceof Error ? err.message : String(err)})`)
         }
       } else {
         probe = null
+        this.onLog('subscription: публичный HTTPS endpoint не обнаружен — пропускаю проверку')
       }
-      return normalizeInspection(snapshot, probe)
+      const normalized = normalizeInspection(snapshot, probe)
+      this.onLog(`итог: ${normalized.setupStatus}, ключей: ${normalized.keys.length}`)
+      return normalized
+    } catch (err) {
+      this.onLog(`ошибка: ${err instanceof Error ? err.message : String(err)}`)
+      throw err
     } finally {
       client.close()
     }

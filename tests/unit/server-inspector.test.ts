@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import type { InspectionSnapshot, VlessLink } from '../../src/shared/types'
-import { normalizeInspection, subscriptionProbeTarget } from '../../src/main/core/server-inspector'
+import {
+  maskSubscriptionUrl,
+  normalizeInspection,
+  subscriptionProbeTarget
+} from '../../src/main/core/server-inspector'
 
 const baseInspection: InspectionSnapshot = {
   ok: true,
@@ -76,6 +80,14 @@ describe('normalizeInspection', () => {
         null
       )
     ).toThrow()
+  })
+
+  it('masks the subscription token before the URL can reach any console', () => {
+    expect(maskSubscriptionUrl('https://203.0.113.10:8443/sub/0123456789abcdef0123456789abcdef')).toBe(
+      'https://203.0.113.10:8443/sub/0123…cdef'
+    )
+    // без токена в URL — без изменений
+    expect(maskSubscriptionUrl('https://example.com')).toBe('https://example.com')
   })
 
   it('skips probing without a public URL', () => {
