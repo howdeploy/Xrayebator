@@ -36,7 +36,7 @@ promise that installer and updater paths behave identically.
 
 ## Validation suite
 
-`validation/` contains exactly 25 scripts. Run every `validation/test-*.sh`; the current set is:
+`validation/` contains exactly 26 scripts. Run every `validation/test-*.sh`; the current set is:
 
 | Script | What it checks |
 |---|---|
@@ -56,6 +56,7 @@ promise that installer and updater paths behave identically.
 | `test-multiroute-argument-preservation.sh` | Preservation of multiroute transport arguments |
 | `test-port-change-cli.sh` | Port-change CLI scenarios, firewall moves and route selection |
 | `test-project-update-rollback.sh` | Rollback of a failed project update |
+| `test-apt-lock-race.sh` | apt-lock race: `DPkg::Lock::Timeout` on installs, the unattended-upgrade worker check, and the 12-minute quickstart budget |
 | `test-quickstart-email-and-inspect.sh` | Explicit `quickstart` email mode (`--without-email` without a fake address) and the read-only invariants of `inspect --json` |
 | `test-quickstart-migration-parity.sh` | Parity between quickstart and main-menu migrations |
 | `test-quickstart-subscription-port.sh` | Ensures quickstart uses the canonical subscription base helper and does not regress to an unrelated hardcoded URL |
@@ -146,7 +147,7 @@ provide useful local coverage, while CI runs the Electron typecheck and unit sui
 The workflows have separate responsibilities:
 
 - `.github/workflows/ci-linux.yml` is the Bash core gate on `ubuntu-24.04`: it installs `jq`,
-  `uuid-runtime` and `ripgrep`, runs all four Bash syntax checks, then runs all 25 validation
+  `uuid-runtime` and `ripgrep`, runs all four Bash syntax checks, then runs all 26 validation
   scripts.
 - `.github/workflows/release.yml` is the active Electron release path for `v*` tags or manual runs.
   It runs `npm run typecheck` and `npm test` on Ubuntu, then builds/packages Windows, macOS and Linux

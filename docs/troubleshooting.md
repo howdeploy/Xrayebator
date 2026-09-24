@@ -212,6 +212,10 @@ count and provider limits. Grow the user count gradually and watch the load.
 Multiple profiles can be used at once: different subscriptions, SNIs, ports and routes give more
 options for bypassing blocks, but they share the same VPS resources.
 
+## Quickstart fails with `apt-get install nginx failed`
+
+On a freshly provisioned Ubuntu VPS, `unattended-upgrades` may hold the apt/dpkg lock for ~10 minutes and invoke `dpkg` separately for every package, so a plain flock check slips into the gap between packages. The quickstart path now also waits for an active `unattended-upgrade` worker (12-minute budget) and passes `-o DPkg::Lock::Timeout=180` to `apt-get install`. Rerun the deployment when it reports the lock is still busy, or wait for the queue to finish. `validation/test-apt-lock-race.sh` locks these behaviors.
+
 ## An error appeared during installation or use
 
 Copy the full error text from the terminal. For installation failures, include the relevant
