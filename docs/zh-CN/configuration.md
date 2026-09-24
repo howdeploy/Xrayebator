@@ -171,6 +171,68 @@ npm run typecheck    # TypeScript 检查
 
 菜单是交互式的：方向键移动光标，空格切换分组，回车应用。
 
+## HAPP 客户端路由配置
+
+订阅端点通过响应头 `routing:` 向 HAPP 下发客户端路由配置。托管的默认配置 `xrayebator-default`
+设置了 `GlobalProxy: "true"`，因此除私有 IPv4 段之外的所有目标都会走隧道。
+
+这与[分流路由](#分流路由)不是同一个开关。分流路由改变的是**服务端**把请求发往何处；客户端仍然会把它
+送进隧道，目标站点看到的依旧是 VPS 的地址。在没有级联的节点上，兜底 outbound 本来就是 `direct`，
+所以分流路由无法改变俄罗斯站点看到的结果。只有客户端配置才能让本国流量不进入隧道。
+
+### 覆盖文件
+
+| 变量 | 默认值 | 含义 |
+|---|---|---|
+| `HAPP_ROUTING_ENABLED` | `true` | 设为 `false` 则不再下发 `routing:` 响应头 |
+| `HAPP_ROUTING_JSON_FILE` | `/usr/local/etc/xray/.happ_routing.json` | 运维方的覆盖文件 |
+
+如果覆盖文件存在并通过 HAPP 结构校验，它会对所有订阅者取代托管的默认配置。格式错误的 JSON 会被忽略
+并回退到默认配置，而不会下发给客户端。无需重启 `xrayebator-sub.service`：该文件在每次请求时读取。
+
+判定是按目标逐个进行的。`GlobalProxy: "false"` 时默认行为是 `direct`，只有 `ProxySites` 和
+`ProxyIp` 走隧道；`GlobalProxy: "true"` 则相反，`DirectSites` 和 `DirectIp` 成为例外。
+
+### 分流示例
+
+本国流量留在运营商网络，被封锁的服务经由 VPS：
+
+```json
+{
+  "Name": "xrayebator-split",
+  "GlobalProxy": "false",
+  "RemoteDNSType": "DoH",
+  "RemoteDNSDomain": "https://cloudflare-dns.com/dns-query",
+  "RemoteDNSIP": "1.1.1.1",
+  "DomesticDNSType": "DoU",
+  "DomesticDNSDomain": "",
+  "DomesticDNSIP": "77.88.8.8",
+  "Geoipurl": "https://example.com/geo/geoip.dat",
+  "Geositeurl": "https://example.com/geo/geosite.dat",
+  "LastUpdated": "1788700000",
+  "DnsHosts": { "cloudflare-dns.com": "1.1.1.1" },
+  "DirectSites": ["domain:ru", "domain:xn--p1ai"],
+  "DirectIp": ["geoip:private", "geoip:ru"],
+  "ProxySites": ["domain:google.com", "domain:youtube.com", "domain:instagram.com"],
+  "ProxyIp": ["149.154.160.0/20", "91.108.4.0/22", "91.105.192.0/23"],
+  "BlockSites": [],
+  "BlockIp": [],
+  "DomainStrategy": "IPIfNonMatch",
+  "FakeDNS": "false"
+}
+```
+
+三个容易出错的地方：
+
+- **Telegram 按 IP 地址通信，而不是域名。** 域名规则匹配不到它。请从
+  <https://core.telegram.org/resources/cidr.txt> 获取网段，不要凭记忆填写：该列表会变化，遗漏一个
+  网段会悄悄拖慢媒体下载，而聊天看起来仍然正常。
+- **`LastUpdated` 必须递增。** 只有当该值大于已保存的值时，HAPP 才会重新导入配置。
+- **geo 数据库必须能被客户端访问。** 托管的默认配置指向 `/sub/<token>/geoip.dat`，该路径与具体订阅者
+  绑定。面向全体的覆盖文件无法内嵌某一个订阅者的 token，因此请把数据库放在任何客户端都能下载的位置。
+
+客户端下载新的 geo 数据库期间，先前的配置继续生效，因此下载失败只会保持路由不变，而不会使其损坏。
+
 ## 级联与上游节点
 
 级联是服务端的出站与路由模式，而不是新的客户端配置档。客户端仍然连接当前 VPS：
