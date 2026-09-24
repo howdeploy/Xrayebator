@@ -19,7 +19,7 @@ The renderer reaches privileged operations only through the narrow preload `cont
 
 ### Dashboard
 
-Dashboard displays the saved server cards, a reachability status dot, an installation status chip (`Configured`, `Partially configured`, or `Imported`), location/OS and route metadata, and actions for keys, settings, and removing a local server card. On an empty Dashboard the operator chooses between two scenarios: **Deploy a new server** (install Xrayebator on a clean VPS) and **Connect an existing server** (find an installed Xrayebator over SSH and open its panel without touching the installation). With servers already present, `+ Add` opens the same choice. Its reachability check is a bounded TCP check performed by the Electron main process; it is not the server-side `probe-test` command. The language selector switches between `RU`, `EN`, and `中文`.
+Dashboard displays the saved server cards, a reachability status dot, an installation status chip (`Configured`, `Partially configured`, or `Imported`), location/OS and route metadata, and actions for keys, settings, and removing a local server card. The right side of each card summarizes the saved access — `user@host:port` and where the secret lives (password or key in the system keychain, or this session only) — together with a **Change access** action that opens the access form for that card. On an empty Dashboard the operator chooses between two scenarios: **Deploy a new server** (install Xrayebator on a clean VPS) and **Connect an existing server** (find an installed Xrayebator over SSH and open its panel without touching the installation). With servers already present, `Add` opens the same choice. Its reachability check is a bounded TCP check performed by the Electron main process; it is not the server-side `probe-test` command. The language selector switches between `RU`, `EN`, and `中文`.
 
 ### Add server
 
@@ -45,7 +45,7 @@ Server keys refreshes the subscription from the saved `subscription_url` and dis
 
 ### Server settings
 
-Server settings first authenticates over SSH. When the card already has a keychain-backed SSH password or a persisted private key, the page attempts to connect automatically; after success the access form collapses to a compact "access confirmed" status with an explicit "Change access" action. Once connected, the page can:
+Server settings first authenticates over SSH. When the card already has a keychain-backed SSH password or a persisted private key, the page attempts to connect automatically and then shows only the profile panel — the access form appears only when there is no saved secret or after a failed connection. The access summary and the "Change access" action live on the server card in the dashboard, not inside the profile page. Once connected, the page can:
 
 - list existing profiles;
 - create one or more profiles and delete profiles;
