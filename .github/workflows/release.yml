@@ -29,6 +29,10 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: Install Linux system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsecret-1-dev
       - run: npm ci
       - run: npm test
 
