@@ -28,6 +28,8 @@
     "secretSessionOnly": "仅本次会话有效",
     "secretNotSaved": "未保存凭据",
     "back": "返回",
+    "statOs": "操作系统",
+    "statRoutes": "活跃线路",
     "confirmDeleteTitle": "从应用中移除服务器？",
     "confirmDeleteBody": "服务器「{{name}}」将从应用中删除，连同其密钥。服务器上的安装不会受影响。",
     "cancel": "取消"

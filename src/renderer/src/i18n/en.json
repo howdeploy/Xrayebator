@@ -29,6 +29,8 @@
     "secretSessionOnly": "this session only",
     "secretNotSaved": "no secret saved",
     "back": "Back",
+    "statOs": "Operating system",
+    "statRoutes": "Active routes",
     "confirmDeleteTitle": "Remove server from the app?",
     "confirmDeleteBody": "Server «{{name}}» will be removed from the app along with its keys. The installation on the server itself remains untouched.",
     "cancel": "Cancel"

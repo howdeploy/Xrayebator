@@ -121,17 +121,128 @@
 
 .card {
   width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
   background: var(--bg-2);
   border: 1px solid var(--border);
   border-radius: 16px;
   padding: 18px;
 }
 
+.cardHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
 .cardHeader {
   display: flex;
   align-items: center;
   gap: 14px;
-  margin-bottom: 14px;
+  min-width: 0;
+}
+
+.cardLocation {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.cardLocationIcon {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+.cardStats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.statCard {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 12px 14px;
+  background: color-mix(in srgb, var(--text-1) 6%, var(--bg-2));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.statIcon {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+.statText {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.statValue {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-0);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.statLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.statMenuBtn {
+  margin-left: auto;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.statMenuBtn:hover {
+  background: color-mix(in srgb, var(--text-1) 12%, transparent);
+  color: var(--text-0);
+}
+
+/* Статус установки — без плашки, цветом текста как у точки доступности. */
+.setupBadge {
+  flex-shrink: 0;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.setupBadgeReady {
+  color: var(--success);
+}
+
+.setupBadgePartial {
+  color: var(--warning);
+}
+
+.setupBadgeDefault {
+  color: var(--text-2);
 }
 
 .cardInfo {
@@ -185,71 +296,6 @@
 .cardActions {
   display: flex;
   gap: 8px;
-}
-
-.cardTop {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 14px;
-}
-
-.cardHeader {
-  margin-bottom: 0;
-  min-width: 0;
-}
-
-.cardAccess {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 6px;
-  flex-shrink: 0;
-  text-align: right;
-  min-width: 250px;
-  padding: 12px 14px;
-  background: var(--bg-1);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-}
-
-.accessTitle {
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-2);
-}
-
-.accessEndpoint {
-  font-family: var(--font-mono);
-  font-size: 13px;
-  color: var(--text-0);
-  word-break: break-all;
-}
-
-.accessSecret {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 12px;
-  line-height: 1.4;
-  color: var(--text-2);
-  white-space: nowrap;
-}
-
-.accessSecretWarn {
-  color: var(--warning);
-}
-
-.accessSecretIcon {
-  flex-shrink: 0;
-  opacity: 0.8;
-}
-
-.accessEditBtn {
-  margin-top: 2px;
 }
 
 .onboardingGrid {

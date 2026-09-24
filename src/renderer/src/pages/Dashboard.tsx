@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import {
   Button,
-  Chip,
   AlertDialog,
   Dropdown,
   DropdownItem
@@ -16,7 +15,11 @@ import {
   Rocket,
   Link2,
   Lock,
-  Pencil
+  MapPin,
+  MonitorCog,
+  Route,
+  User,
+  EllipsisVertical
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { setLanguage, supportedLngs, type SupportedLng } from '../i18n'
@@ -151,7 +154,7 @@ export function Dashboard({
           const summary = accessSummary(server)
           return (
             <div key={server.id} className={styles.card}>
-              <div className={styles.cardTop}>
+              <div className={styles.cardHead}>
                 <div className={styles.cardHeader}>
                   <span
                     className={`${styles.statusDot} ${
@@ -163,51 +166,78 @@ export function Dashboard({
                       <CountryFlag flag={server.flag} className={styles.flag} />
                       {server.name}
                     </div>
-                    <div className={styles.cardMeta}>
-                      <Chip size="sm" color={
-                        server.setupStatus === 'ready'
-                          ? 'success'
-                          : server.setupStatus === 'partial'
-                            ? 'warning'
-                            : 'default'
-                      }>
-                        {t(`dashboard.setup.${server.setupStatus ?? 'unknown'}`)}
-                      </Chip>
-                      <Chip size="sm" color="default">
-                        {server.country || '—'}
-                      </Chip>
-                      {server.city && <span>{server.city}</span>}
-                      <Chip size="sm" color="default">
-                        {server.os ?? '—'}
-                      </Chip>
-                      <span>
-                        {t('dashboard.routes', { count: server.routesCount ?? 0 })}
-                      </span>
+                    <div className={styles.cardLocation}>
+                      <MapPin size={13} className={styles.cardLocationIcon} />
+                      {[server.country, server.city].filter(Boolean).join(' · ') || '—'}
                     </div>
                   </div>
                 </div>
-                <div className={styles.cardAccess}>
-                  <div className={styles.accessTitle}>{t('dashboard.accessTitle')}</div>
-                  <div className={styles.accessEndpoint}>{summary.endpoint}</div>
-                  <div
-                    className={`${styles.accessSecret} ${
-                      SECRET_WARN[summary.secret] ? styles.accessSecretWarn : ''
-                    }`}
-                  >
-                    <Lock size={12} className={styles.accessSecretIcon} />
-                    <span>{t(SECRET_I18N[summary.secret])}</span>
+                <span
+                  className={`${styles.setupBadge} ${
+                    server.setupStatus === 'ready'
+                      ? styles.setupBadgeReady
+                      : server.setupStatus === 'partial'
+                        ? styles.setupBadgePartial
+                        : styles.setupBadgeDefault
+                  }`}
+                >
+                  {t(`dashboard.setup.${server.setupStatus ?? 'unknown'}`)}
+                </span>
+              </div>
+
+              <div className={styles.cardStats}>
+                <div className={styles.statCard}>
+                  <MonitorCog size={18} className={styles.statIcon} />
+                  <div className={styles.statText}>
+                    <span className={styles.statValue}>{server.os ?? '—'}</span>
+                    <span className={styles.statLabel}>{t('dashboard.statOs')}</span>
                   </div>
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    className={styles.accessEditBtn}
-                    onPress={() => onEditAccess(server)}
-                  >
-                    <Pencil size={16} />
-                    {t('dashboard.changeAccess')}
-                  </Button>
+                </div>
+                <div className={styles.statCard}>
+                  <Route size={18} className={styles.statIcon} />
+                  <div className={styles.statText}>
+                    <span className={styles.statValue}>{server.routesCount ?? 0}</span>
+                    <span className={styles.statLabel}>{t('dashboard.statRoutes')}</span>
+                  </div>
+                </div>
+                <div className={styles.statCard}>
+                  <User size={18} className={styles.statIcon} />
+                  <div className={styles.statText}>
+                    <span className={styles.statValue}>{summary.endpoint}</span>
+                    <span
+                      className={`${styles.statLabel} ${
+                        SECRET_WARN[summary.secret] ? styles.accessSecretWarn : ''
+                      }`}
+                    >
+                      <Lock size={11} className={styles.accessSecretIcon} />
+                      {t(SECRET_I18N[summary.secret])}
+                    </span>
+                  </div>
+                  <Dropdown>
+                    <Dropdown.Trigger
+                      className={styles.statMenuBtn}
+                      aria-label={t('dashboard.changeAccess')}
+                    >
+                      <EllipsisVertical size={16} />
+                    </Dropdown.Trigger>
+                    <Dropdown.Popover placement="bottom end" className={styles.langPopup}>
+                      <Dropdown.Menu>
+                        <DropdownItem
+                          key="access"
+                          className={styles.langItem}
+                          onAction={() => onEditAccess(server)}
+                        >
+                          <Lock size={14} />
+                          <span className={styles.langItemLabel}>
+                            {t('dashboard.changeAccess')}
+                          </span>
+                        </DropdownItem>
+                      </Dropdown.Menu>
+                    </Dropdown.Popover>
+                  </Dropdown>
                 </div>
               </div>
+
               <div className={styles.cardActions}>
                 <Button size="sm" variant="secondary" onPress={() => onOpen(server)}>
                   <KeyRound size={16} />
