@@ -40,6 +40,8 @@ GUI 会显示部署日志和步骤状态，但进行中的部署没有 IPC 取�
 ### 连接现有服务器（导入）
 
 导入向导接收 host、SSH 端口和用户名，并提供与部署新服务器页面相同的 SSH 访问方式：密码或私钥（私钥通过 `keytar` 保存在系统钥匙串中并可复用）。GUI 通过 SSH 执行只读命令 `xrayebator inspect --json`，仅识别 Xrayebator 安装；不会自动运行安装程序、`quickstart`、`happ-setup`、迁移、更新、服务重启、防火墙修改或配置变更。部分配置的安装仍会导入，并分别显示 manager、Xray、配置档和订阅状态；仅本地或不可达的订阅不会被标记为可用。再次导入相同的 `host + port` 会更新原卡片，不会产生重复项，并保留 server id 和 host-key pin。成功导入后会直接打开 Server settings。
+
+向导显示步骤索引和实际执行工作的实时控制台：SSH 连接、`xrayebator inspect --json` 调用、返回的组件状态、订阅探测和最终结果。订阅 URL 是 bearer credential，因此其令牌在进入控制台前会被遮蔽（`…`）；密码和密钥字节完全不会出现在其中。
 ### Server keys
 
 Server keys 会从保存的 `subscription_url` 刷新订阅，并显示返回的 VLESS 线路。每条 VLESS 链接都可以复制或生成二维码；订阅 URL 也可以复制，页面还提供复制全部内容的操作。此页面不会在服务器上创建独立订阅，也不会轮换订阅令牌。

@@ -39,6 +39,8 @@ The GUI shows deployment logs and step status, but it does not provide a cancell
 
 Import accepts host, SSH port, SSH user and SSH access details (password or private key, the same choice as in Add server), then runs a strictly read-only `xrayebator inspect --json` over the same SSH stack: it recognizes Xrayebator installations only, and never runs `quickstart`, `happ-setup`, installers, updates, migrations, restarts, or firewall changes. A partially configured installation is still imported with honest component statuses (manager / Xray / profiles / subscription); a local-only or unreachable subscription is stored as such and no dead URL is presented as working. Importing the same `host + port` again updates the existing card instead of creating a duplicate; the server id and host-key pin survive the update. After a successful import the app opens Server Settings directly.
 
+The wizard shows a step index and a live console of the work actually performed: the SSH connect, the `xrayebator inspect --json` call, the reported component statuses, the subscription probe and the result. The subscription URL is a bearer credential, so its token is masked (`…`) before it reaches the console; passwords and key bytes never appear there at all.
+
 ### Server keys
 
 Server keys refreshes the subscription from the saved `subscription_url` and displays the returned VLESS routes. Each VLESS link can be copied or rendered as a QR code; the subscription URL can also be copied, and the page offers a copy-all action. This page does not create a separate server-side subscription or rotate a subscription token.

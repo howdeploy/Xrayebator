@@ -41,7 +41,9 @@ endpoint/service rather than assuming that a successful script exit proves every
 ## Subscription security
 
 The subscription URL is a bearer credential. It is not public, but anyone holding the full URL can
-download the route list and the token-protected subscription resources.
+download the route list and the token-protected subscription resources. The desktop GUI therefore
+masks the token (`…`) before the URL can appear in either console — the deployment log and the import
+wizard console; passwords and private-key bytes are never written there.
 
 Already handled server-side:
 
