@@ -112,6 +112,18 @@ export function ServerSettings({ server, onBack }: ServerSettingsProps): React.J
 
   const connected = profiles !== null
   const accessReady = isSshAccessReady(access)
+  const accessSecretKey =
+    access.authMethod === 'password'
+      ? access.passwordPersisted === false
+        ? 'settings.passwordNotPersisted'
+        : access.passwordPersisted === true
+          ? 'settings.accessSecretPassword'
+          : 'settings.accessSecretNone'
+      : access.privateKeyCredentialId
+        ? access.privateKeyPersisted === false
+          ? 'settings.accessSecretSessionKey'
+          : 'settings.accessSecretKey'
+        : 'settings.accessSecretNone'
 
   const futureNames = useMemo(() => {
     const base = name.trim() || 'phone-1'
@@ -483,12 +495,19 @@ export function ServerSettings({ server, onBack }: ServerSettingsProps): React.J
             <div className={styles.accessStatusRow}>
               <Check size={16} className={styles.accessStatusIcon} />
               <div className={styles.accessStatusText}>
-                <strong>{t('settings.accessConnected')}</strong>
-                {access.authMethod === 'password' && access.passwordPersisted === false && (
-                  <small className={styles.accessStatusWarning}>
-                    {t('settings.passwordNotPersisted')}
-                  </small>
-                )}
+                <strong>
+                  {t('settings.accessConnected')}: {access.username}@{server.host}:{server.port}
+                </strong>
+                <small
+                  className={
+                    accessSecretKey === 'settings.passwordNotPersisted' ||
+                    accessSecretKey === 'settings.accessSecretSessionKey'
+                      ? styles.accessStatusWarning
+                      : styles.accessStatusMeta
+                  }
+                >
+                  {t(accessSecretKey)}
+                </small>
               </div>
               <Button variant="secondary" size="sm" isDisabled={busy} onPress={reset}>
                 <Power size={16} />
