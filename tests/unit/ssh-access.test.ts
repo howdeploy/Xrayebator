@@ -2,7 +2,11 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createSshCredentials, resolvePrivateKey } from '../../src/main/core/ssh-access'
+import {
+  createSshCredentials,
+  resolvePrivateKey,
+  resolveStoredSshPassword
+} from '../../src/main/core/ssh-access'
 import { formatHostKeyFingerprint } from '../../src/main/core/ssh-client'
 import type { Server } from '../../src/shared/types'
 
@@ -218,5 +222,44 @@ describe('SSH access', () => {
     expect(formatHostKeyFingerprint('00'.repeat(32))).toBe(
       `SHA256:${Buffer.alloc(32).toString('base64').replace(/=+$/, '')}`
     )
+  })
+
+  it('loads the saved SSH password when the form is empty', async () => {
+    const passwordStore = { load: vi.fn().mockResolvedValue('saved-secret') }
+    const access = await resolveStoredSshPassword(
+      { username: 'root', authMethod: 'password', privilegeMode: 'root' },
+      { ...storedServer, passwordCredentialId: 'password_credential_1234' },
+      passwordStore
+    )
+    expect(passwordStore.load).toHaveBeenCalledWith('password_credential_1234')
+    expect(access.password).toBe('saved-secret')
+    expect(access.passwordPersisted).toBe(true)
+  })
+
+  it('prefers a newly entered SSH password over a saved credential', async () => {
+    const passwordStore = { load: vi.fn().mockResolvedValue('old-secret') }
+    const access = await resolveStoredSshPassword(
+      {
+        username: 'root',
+        authMethod: 'password',
+        password: 'new-secret',
+        privilegeMode: 'root'
+      },
+      { ...storedServer, passwordCredentialId: 'password_credential_1234' },
+      passwordStore
+    )
+    expect(passwordStore.load).not.toHaveBeenCalled()
+    expect(access.password).toBe('new-secret')
+  })
+
+  it('asks for the password again when the saved keychain entry is missing', async () => {
+    const passwordStore = { load: vi.fn().mockResolvedValue(null) }
+    await expect(
+      resolveStoredSshPassword(
+        { username: 'root', authMethod: 'password', privilegeMode: 'root' },
+        { ...storedServer, passwordCredentialId: 'missing_password_1234' },
+        passwordStore
+      )
+    ).rejects.toThrow('не найден в системном хранилище')
   })
 })

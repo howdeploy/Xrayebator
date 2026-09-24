@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { KeychainApi } from '../../src/main/core/ssh-keychain'
-import { createSshKeychain } from '../../src/main/core/ssh-keychain'
+import { createSshKeychain, createSshPasswordStore } from '../../src/main/core/ssh-keychain'
 
 function mockApi(overrides: Partial<KeychainApi> = {}): KeychainApi {
   return {
@@ -78,5 +78,60 @@ describe('SSH keychain', () => {
     await expect(keychain.save('credential_12345678', Buffer.from('key'))).rejects.toThrow(
       'keychain locked'
     )
+  })
+})
+
+describe('SSH password store', () => {
+  it('stores and reloads only the SSH password in a separate keychain namespace', async () => {
+    const entries = new Map<string, string>()
+    const api = mockApi({
+      setPassword: vi.fn(async (service, account, value) => {
+        entries.set(`${service}:${account}`, value)
+      }),
+      getPassword: vi.fn(async (service, account) => entries.get(`${service}:${account}`) ?? null)
+    })
+    const store = createSshPasswordStore(api)
+
+    await store.save('password_12345678', 's3cret')
+    const loaded = await store.load('password_12345678')
+
+    expect(api.setPassword).toHaveBeenCalledWith(
+      'com.xrayebator.gui.ssh-password',
+      'password_12345678',
+      's3cret'
+    )
+    expect(loaded).toBe('s3cret')
+  })
+
+  it('rejects line breaks but allows ordinary r and n characters', async () => {
+    const api = mockApi()
+    const store = createSshPasswordStore(api)
+    await expect(store.save('password_12345678', 'spring')).resolves.toBeUndefined()
+    await expect(store.save('password_12345678', 'line1\nline2')).rejects.toThrow('перевод строки')
+  })
+
+  it('ignores an empty password and removes only the requested item', async () => {
+    const api = mockApi({ deletePassword: vi.fn().mockResolvedValue(true) })
+    const store = createSshPasswordStore(api)
+
+    await store.save('password_12345678', '')
+    expect(api.setPassword).not.toHaveBeenCalled()
+
+    await store.load('password_12345678')
+    expect(api.getPassword).toHaveBeenCalledWith(
+      'com.xrayebator.gui.ssh-password',
+      'password_12345678'
+    )
+
+    await store.remove('password_12345678')
+    expect(api.deletePassword).toHaveBeenCalledWith(
+      'com.xrayebator.gui.ssh-password',
+      'password_12345678'
+    )
+  })
+
+  it('rejects malformed credential IDs', async () => {
+    const store = createSshPasswordStore(mockApi())
+    await expect(store.load('../bad')).rejects.toThrow('идентификатор')
   })
 })

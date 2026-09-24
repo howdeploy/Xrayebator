@@ -20,6 +20,8 @@ export interface ServerConnectionMetadata {
   privateKeyCredentialId?: string | null
   privateKeyName?: string | null
   privateKeyPersisted?: boolean | null
+  passwordCredentialId?: string | null
+  passwordPersisted?: boolean | null
 }
 
 export interface ServerStore {
@@ -35,6 +37,8 @@ export interface ServerStore {
   updateConnection: (id: string, input: ServerConnectionMetadata) => StoredServer | undefined
   countCredentialReferences: (credentialId: string, exceptId?: string) => number
   clearCredentialReference: (id: string) => StoredServer | undefined
+  countPasswordCredentialReferences: (credentialId: string, exceptId?: string) => number
+  clearPasswordCredentialReference: (id: string) => StoredServer | undefined
   getHostKey: (host: string, port: number) => string | undefined
   trustHostKey: (host: string, port: number, fingerprint: string) => void
   forgetHostKey: (host: string, port: number) => void
@@ -54,6 +58,8 @@ function normalizeServer(server: StoredServer, hostKeys: Record<string, string>)
     privateKeyName: server.privateKeyName ?? null,
     privateKeyCredentialId: server.privateKeyCredentialId ?? null,
     privateKeyPersisted: server.privateKeyPersisted ?? null,
+    passwordCredentialId: server.passwordCredentialId ?? null,
+    passwordPersisted: server.passwordPersisted ?? null,
     setupStatus: server.setupStatus ?? (server.subscriptionUrl ? 'ready' : 'unknown'),
     diagnostics: server.diagnostics ?? null,
     hostKeyFingerprint:
@@ -124,6 +130,9 @@ export function createServerStore(): ServerStore {
         privateKeyPersisted: connection.privateKeyPersisted ?? existing?.privateKeyPersisted ?? null,
         privateKeyCredentialId:
           connection.privateKeyCredentialId ?? existing?.privateKeyCredentialId ?? null,
+        passwordCredentialId:
+          connection.passwordCredentialId ?? existing?.passwordCredentialId ?? null,
+        passwordPersisted: connection.passwordPersisted ?? existing?.passwordPersisted ?? null,
         subscriptionUrl: input.subscriptionUrl || existing?.subscriptionUrl || '',
         keys: input.keys?.length ? input.keys : existing?.keys ?? [],
         routesCount: input.routesCount ?? existing?.routesCount ?? null,
@@ -162,7 +171,15 @@ export function createServerStore(): ServerStore {
         privateKeyCredentialId:
           input.privateKeyCredentialId ?? servers[idx].privateKeyCredentialId ?? null,
         privateKeyName: input.privateKeyName ?? servers[idx].privateKeyName ?? null,
-        privateKeyPersisted: input.privateKeyPersisted ?? servers[idx].privateKeyPersisted ?? null
+        privateKeyPersisted: input.privateKeyPersisted ?? servers[idx].privateKeyPersisted ?? null,
+        passwordCredentialId:
+          input.passwordCredentialId !== undefined
+            ? input.passwordCredentialId
+            : servers[idx].passwordCredentialId ?? null,
+        passwordPersisted:
+          input.passwordPersisted !== undefined
+            ? input.passwordPersisted
+            : servers[idx].passwordPersisted ?? null
       }
       const next = [...servers]
       next[idx] = updated
@@ -182,6 +199,24 @@ export function createServerStore(): ServerStore {
       const index = servers.findIndex((server) => server.id === id)
       if (index === -1) return undefined
       const updated = { ...servers[index], privateKeyCredentialId: null }
+      const next = [...servers]
+      next[index] = updated
+      store.set('servers', next)
+      return normalizeServer(updated, store.get('hostKeys'))
+    },
+
+    countPasswordCredentialReferences(credentialId: string, exceptId?: string): number {
+      return store
+        .get('servers')
+        .filter((server) => server.id !== exceptId && server.passwordCredentialId === credentialId)
+        .length
+    },
+
+    clearPasswordCredentialReference(id: string): StoredServer | undefined {
+      const servers = store.get('servers')
+      const index = servers.findIndex((server) => server.id === id)
+      if (index === -1) return undefined
+      const updated = { ...servers[index], passwordCredentialId: null, passwordPersisted: null }
       const next = [...servers]
       next[index] = updated
       store.set('servers', next)

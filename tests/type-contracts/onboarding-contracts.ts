@@ -22,7 +22,10 @@ type KeyPickerReturnsReference = Assert<
 type ImportApiIsExposed = Assert<
   Equal<ElectronAPI['servers']['import'], (payload: ImportServerPayload) => Promise<ImportResult>>
 >
-type ServerStoresCredentialState = Assert<'privateKeyPersisted' extends keyof Server ? true : false>
+type ServerStoresCredentialState = Assert<
+  'privateKeyPersisted' extends keyof Server ? true : false
+>
+type ServerStoresPasswordCredential = Assert<'passwordCredentialId' extends keyof Server ? true : false>
 
 const diagnostics: ServerDiagnostics = {
   manager: 'detected',
@@ -46,5 +49,11 @@ const importPayload: ImportServerPayload = {
 const fixtures: [ServerDiagnostics, ImportServerPayload] = [diagnostics, importPayload]
 void fixtures
 
-type OnboardingContractAssertions = [EmailModeIsRequired, KeyPickerReturnsReference, ImportApiIsExposed, ServerStoresCredentialState]
+type OnboardingContractAssertions = [
+  EmailModeIsRequired,
+  KeyPickerReturnsReference,
+  ImportApiIsExposed,
+  ServerStoresCredentialState,
+  ServerStoresPasswordCredential
+]
 void (undefined as unknown as OnboardingContractAssertions)

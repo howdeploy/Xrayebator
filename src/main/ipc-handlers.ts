@@ -21,8 +21,16 @@ import { ProfileManager } from './core/profiles'
 import { ServerManager } from './core/server-manager'
 import { ServerInspector } from './core/server-inspector'
 import { probePortsFor } from './core/probe-ports'
-import { createSshCredentials, normalizeSshAccess, resolvePrivateKey } from './core/ssh-access'
-import { createSshKeychain, MAX_PRIVATE_KEY_BYTES } from './core/ssh-keychain'
+import {
+  createSshCredentials,
+  resolvePrivateKey,
+  resolveStoredSshPassword
+} from './core/ssh-access'
+import {
+  createSshKeychain,
+  createSshPasswordStore,
+  MAX_PRIVATE_KEY_BYTES
+} from './core/ssh-keychain'
 import type { SshCredentials } from './core/ssh-client'
 
 interface IpcContext {
@@ -36,6 +44,7 @@ export function registerIpcHandlers({ store }: IpcContext): void {
   }
 
   const keychain = createSshKeychain()
+  const passwordStore = createSshPasswordStore()
   const transientKeys = new Map<string, Buffer>()
   const credentialStore = {
     save: keychain.save,
@@ -83,6 +92,25 @@ export function registerIpcHandlers({ store }: IpcContext): void {
     }
   })
 
+  const persistSshPassword = async (
+    access: SshAccessInput,
+    existingCredentialId?: string | null
+  ): Promise<void> => {
+    if (access.authMethod !== 'password' || !access.password || access.passwordPersisted === true) {
+      return
+    }
+    const credentialId = existingCredentialId ?? access.passwordCredentialId ?? randomUUID().replace(/-/g, '')
+    try {
+      await passwordStore.save(credentialId, access.password)
+      access.passwordCredentialId = credentialId
+      access.passwordPersisted = true
+    } catch {
+      // OS keychain failure is non-fatal to the current authenticated session; no file fallback.
+      access.passwordCredentialId = undefined
+      access.passwordPersisted = false
+    }
+  }
+
   const credentialsFor = async (
     server: Pick<
       Server,
@@ -92,6 +120,8 @@ export function registerIpcHandlers({ store }: IpcContext): void {
       | 'privateKeyPath'
       | 'privateKeyCredentialId'
       | 'privateKeyName'
+       | 'passwordCredentialId'
+       | 'passwordPersisted'
       | 'hostKeyFingerprint'
     > | null,
     target: { host: string; port: number },
@@ -102,10 +132,10 @@ export function registerIpcHandlers({ store }: IpcContext): void {
     }
     const resolved = await resolvePrivateKey(accessInput, server, approvedPrivateKeyPaths, credentialStore)
     const privateKey = resolved.privateKey
-    const access = normalizeSshAccess(resolved.access, server?.privateKeyPath)
+    const resolvedAccess = await resolveStoredSshPassword(resolved.access, server, passwordStore)
     const expectedHostKey =
       store.getHostKey(target.host, target.port) ?? server?.hostKeyFingerprint ?? undefined
-    const credentials = createSshCredentials(target, access, {
+    const credentials = createSshCredentials(target, resolvedAccess, {
       approvedPrivateKeyPaths,
       expectedHostKeyFingerprint: expectedHostKey,
       fallbackPrivateKeyPath: server?.privateKeyPath,
@@ -114,21 +144,24 @@ export function registerIpcHandlers({ store }: IpcContext): void {
         store.trustHostKey(target.host, target.port, fingerprint)
       },
       onAuthenticated: server
-        ? () => {
+        ? async () => {
             if (expectedHostKey) store.trustHostKey(target.host, target.port, expectedHostKey)
+            await persistSshPassword(resolvedAccess, server.passwordCredentialId)
             store.updateConnection(server.id, {
-              username: access.username,
-              authMethod: access.authMethod,
-              privilegeMode: access.privilegeMode,
-              privateKeyPath: access.privateKeyPersisted ? null : access.privateKeyPath ?? null,
-              privateKeyCredentialId: access.privateKeyCredentialId ?? null,
-              privateKeyName: access.privateKeyName ?? null,
-              privateKeyPersisted: access.privateKeyPersisted ?? null
+              username: resolvedAccess.username,
+              authMethod: resolvedAccess.authMethod,
+              privilegeMode: resolvedAccess.privilegeMode,
+              privateKeyPath: resolvedAccess.privateKeyPersisted ? null : resolvedAccess.privateKeyPath ?? null,
+              privateKeyCredentialId: resolvedAccess.privateKeyCredentialId ?? null,
+              privateKeyName: resolvedAccess.privateKeyName ?? null,
+              privateKeyPersisted: resolvedAccess.privateKeyPersisted ?? null,
+              passwordCredentialId: resolvedAccess.passwordCredentialId ?? null,
+              passwordPersisted: resolvedAccess.passwordPersisted ?? null
             })
           }
         : undefined
     })
-    return { credentials, access }
+    return { credentials, access: resolvedAccess }
   }
 
   ipcMain.handle('servers:list', (): Server[] => store.list())
@@ -151,6 +184,17 @@ export function registerIpcHandlers({ store }: IpcContext): void {
             // Ключ уже отсутствует или хранилище недоступно — карточка всё равно удалена.
           }
         }
+      }
+    }
+    const passwordCredentialId = server.passwordCredentialId
+    if (
+      passwordCredentialId &&
+      store.countPasswordCredentialReferences(passwordCredentialId) === 0
+    ) {
+      try {
+        await passwordStore.remove(passwordCredentialId)
+      } catch {
+        // Ключница недоступна или запись уже удалена; карточка всё равно удалена.
       }
     }
     const sameEndpointRemains = store
@@ -200,6 +244,7 @@ export function registerIpcHandlers({ store }: IpcContext): void {
           email: payload.email,
           credentials
         })
+        await persistSshPassword(access)
 
         const server = store.add({
           name: payload.host,
@@ -219,6 +264,8 @@ export function registerIpcHandlers({ store }: IpcContext): void {
           privateKeyCredentialId: access.privateKeyCredentialId ?? null,
           privateKeyName: access.privateKeyName ?? null,
           privateKeyPersisted: access.privateKeyPersisted ?? null,
+          passwordCredentialId: access.passwordCredentialId ?? null,
+          passwordPersisted: access.passwordPersisted ?? null,
           hostKeyFingerprint: store.getHostKey(payload.host, payload.port) ?? null
         })
 
@@ -266,6 +313,7 @@ export function registerIpcHandlers({ store }: IpcContext): void {
       return fetchSubscription(url)
     })
     const result = await inspector.inspect()
+    await persistSshPassword(access)
     emitStep('save')
 
     const connection: ServerConnectionMetadata = {
@@ -275,7 +323,9 @@ export function registerIpcHandlers({ store }: IpcContext): void {
       privateKeyPath: access.privateKeyPersisted ? null : access.privateKeyPath ?? null,
       privateKeyCredentialId: access.privateKeyCredentialId ?? null,
       privateKeyName: access.privateKeyName ?? null,
-      privateKeyPersisted: access.privateKeyPersisted ?? null
+      privateKeyPersisted: access.privateKeyPersisted ?? null,
+      passwordCredentialId: access.passwordCredentialId ?? null,
+      passwordPersisted: access.passwordPersisted ?? null
     }
 
     const server = store.upsertImported(

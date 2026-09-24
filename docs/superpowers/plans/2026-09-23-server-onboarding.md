@@ -16,9 +16,11 @@
 - Импорт не запускает `quickstart`, `happ-setup`, установщик, обновление, миграции, restart, firewall или исправление конфигурации.
 - Email выбирается явно: режим `provided` вызывает `quickstart --email`, режим `without` вызывает `quickstart --without-email`; фиктивный email не подставлять.
 - Приватный ключ хранится только в системном keychain через `keytar`; не записывать байты ключа в `electron-store`, renderer state, URL, shell command или логи.
-- Passphrase и SSH/sudo-пароли не сохранять; passphrase вводится заново, когда ключ этого требует.
+- SSH-пароль после успешной аутентификации сохранять в системном keychain и повторно использовать; не записывать пароль в `electron-store` или renderer.
+- Отдельный sudo-пароль и passphrase не сохранять; если sudo-пароль не задан, использовать SSH-пароль по существующему правилу.
 - Существующий host-key TOFU pinning не ослаблять: fingerprint закреплять только после успешной аутентификации, mismatch блокирует команды.
-- При недоступном keychain не использовать plaintext-фолбек.
+- При недоступном keychain не использовать plaintext-фолбек; в этом режиме SSH-пароль придётся вводить заново после перезапуска.
+- При открытии Server Settings автоматически подключаться по сохранённым credentials; после успеха скрывать форму доступа и показывать действие для её повторного открытия.
 - Удалённые команды строить через существующий `shellCommand`/`shellQuote`; JSON stdout server-side CLI не загрязнять статусами.
 - Все jq-изменения серверного `xrayebator` выполнять через существующие safe-write/rollback правила; read-only inspect не должен менять файлы.
 - Bash-комментарии и сообщения остаются на русском; identifiers и TypeScript API — на английском; UI переводится во все три locale-файла.
@@ -743,14 +745,15 @@ Expected: FAIL until import helper/form exists.
 
 - [ ] **Step 4: Update SshAccessForm and ServerSettings**
 
-Вместо отображения только `privateKeyPath` показывать `privateKeyName`/basename; сохранять `privateKeyCredentialId` в access state. Для старых server cards разрешить path fallback только после native dialog approval. При `load`, `create`, `update`, `uninstall`, profile actions использовать saved credential id и не требовать повторного выбора файла.
+Вместо отображения только `privateKeyPath` показывать `privateKeyName`/basename; сохранять `privateKeyCredentialId` и `passwordCredentialId` в access state. Для старых server cards разрешить path fallback только после native dialog approval. При `load`, `create`, `update`, `uninstall`, profile actions использовать saved credential id и не требовать повторного выбора файла/пароля.
 
 Обновить note:
 
 - ключ хранится в системном keychain;
 - passphrase не сохраняется;
-- парольный доступ остаётся session-only;
-- если keychain запись потеряна, предложить выбрать ключ заново.
+- SSH-пароль сохраняется в системный keychain после первого успешного входа и переиспользуется; отдельный sudo-пароль не сохраняется;
+- если keychain запись потеряна, предложить ввести доступ заново;
+- при наличии сохранённого credential страница подключается автоматически, а после успеха форма доступа сворачивается в статус с кнопкой «Изменить доступ».
 
 В `ServerKeys` при `subscriptionUrl === ''` показывать `keys.none`/diagnostic message вместо попытки fetch пустого URL.
 
@@ -808,7 +811,7 @@ git commit -m "feat: добавить мастер импорта существ
 - read-only inspection and partial state;
 - optional email and ACME consequences;
 - `quickstart --without-email`;
-- keytar/system keychain boundary, no plaintext fallback, passphrase session-only;
+- keytar/system keychain boundary for the private key and the successful SSH login password, no plaintext fallback, sudo-пароль/passphrase session-only, auto-connect plus access-form collapse;
 - subscription URL/VLESS links remain bearer credentials;
 - legacy GUI keyring claims do not describe active Electron GUI.
 

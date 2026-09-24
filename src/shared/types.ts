@@ -65,6 +65,8 @@ export interface SshAccessInput {
   username: string
   authMethod: SshAuthMethod
   password?: string
+  passwordCredentialId?: string
+  passwordPersisted?: boolean
   privateKeyPath?: string
   privateKeyCredentialId?: string
   privateKeyName?: string
@@ -95,6 +97,8 @@ export interface Server {
   privateKeyName?: string | null
   privateKeyCredentialId?: string | null
   privateKeyPersisted?: boolean | null
+  passwordCredentialId?: string | null
+  passwordPersisted?: boolean | null
   setupStatus?: ServerSetupStatus
   diagnostics?: ServerDiagnostics | null
   hostKeyFingerprint?: string | null

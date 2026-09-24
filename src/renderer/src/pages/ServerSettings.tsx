@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button, TextField, Label, Input, Chip, Spinner, AlertDialog } from '@heroui/react'
 import {
   Settings2,
@@ -18,6 +18,7 @@ import {
 import { useTranslation } from 'react-i18next'
 import type { Server, ServerProfile, SniEntry, SshAccessInput } from '@shared/types'
 import { isSshAccessReady, SshAccessForm } from '../components/SshAccessForm'
+import { shouldAutoConnectServer } from './server-access'
 import styles from './ServerSettings.module.css'
 
 interface ServerSettingsProps {
@@ -58,6 +59,8 @@ export function ServerSettings({ server, onBack }: ServerSettingsProps): React.J
     username: server.username || 'root',
     authMethod: server.authMethod ?? 'password',
     password: '',
+    passwordCredentialId: server.passwordCredentialId ?? undefined,
+    passwordPersisted: server.passwordPersisted ?? undefined,
     privateKeyPath: server.privateKeyPath ?? undefined,
     privateKeyCredentialId: server.privateKeyCredentialId ?? undefined,
     privateKeyName: server.privateKeyName ?? undefined,
@@ -67,6 +70,7 @@ export function ServerSettings({ server, onBack }: ServerSettingsProps): React.J
     sudoPassword: ''
   })
   const [busy, setBusy] = useState(false)
+  const autoConnectStarted = useRef(false)
   const [profiles, setProfiles] = useState<ServerProfile[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [toast, setToast] = useState<string | null>(null)
@@ -134,10 +138,16 @@ export function ServerSettings({ server, onBack }: ServerSettingsProps): React.J
     try {
       const result = await window.api.profiles.list(server.id, access)
       setProfiles(result.profiles ?? [])
-      void window.api.servers
-        .get(server.id)
-        .then((refreshed) => setHostKeyFingerprint(refreshed?.hostKeyFingerprint ?? null))
-        .catch(() => {})
+      const refreshed = await window.api.servers.get(server.id)
+      setHostKeyFingerprint(refreshed?.hostKeyFingerprint ?? null)
+      if (refreshed) {
+        setAccess((current) => ({
+          ...current,
+          passwordCredentialId: refreshed.passwordCredentialId ?? current.passwordCredentialId,
+          passwordPersisted: refreshed.passwordPersisted ?? current.passwordPersisted,
+          password: refreshed.passwordPersisted ? '' : current.password
+        }))
+      }
     } catch (err) {
       setProfiles(null)
       setError(err instanceof Error ? err.message : String(err))
@@ -145,6 +155,12 @@ export function ServerSettings({ server, onBack }: ServerSettingsProps): React.J
       setBusy(false)
     }
   }
+
+  useEffect(() => {
+    if (autoConnectStarted.current) return
+    autoConnectStarted.current = true
+    if (shouldAutoConnectServer(server)) void load()
+  }, [server.id])
 
   const create = async (): Promise<void> => {
     if (!accessReady) {
@@ -462,19 +478,37 @@ export function ServerSettings({ server, onBack }: ServerSettingsProps): React.J
             </div>
           </section>
         )}
-        <section className={styles.connectCard}>
-          <p className={styles.hint}>
-            {t('settings.hint')}
-          </p>
-          <SshAccessForm
-            value={access}
-            onChange={setAccess}
-            disabled={busy}
-            hostKeyFingerprint={hostKeyFingerprint}
-            onForgetHostKey={() => setConfirmHostKeyReset(true)}
-          />
-          <div className={styles.accessActions}>
-            {!connected ? (
+        {connected ? (
+          <section className={styles.accessStatusCard}>
+            <div className={styles.accessStatusRow}>
+              <Check size={16} className={styles.accessStatusIcon} />
+              <div className={styles.accessStatusText}>
+                <strong>{t('settings.accessConnected')}</strong>
+                {access.authMethod === 'password' && access.passwordPersisted === false && (
+                  <small className={styles.accessStatusWarning}>
+                    {t('settings.passwordNotPersisted')}
+                  </small>
+                )}
+              </div>
+              <Button variant="secondary" size="sm" isDisabled={busy} onPress={reset}>
+                <Power size={16} />
+                {t('settings.changeAccess')}
+              </Button>
+            </div>
+          </section>
+        ) : (
+          <section className={styles.connectCard}>
+            <p className={styles.hint}>
+              {t('settings.hint')}
+            </p>
+            <SshAccessForm
+              value={access}
+              onChange={setAccess}
+              disabled={busy}
+              hostKeyFingerprint={hostKeyFingerprint}
+              onForgetHostKey={() => setConfirmHostKeyReset(true)}
+            />
+            <div className={styles.accessActions}>
               <Button
                 variant="primary"
                 size="lg"
@@ -485,15 +519,10 @@ export function ServerSettings({ server, onBack }: ServerSettingsProps): React.J
                 <Play size={16} />
                 {busy ? t('settings.connecting') : t('settings.connect')}
               </Button>
-            ) : (
-              <Button variant="secondary" size="lg" isDisabled={busy} onPress={reset}>
-                <Power size={16} />
-                {t('settings.changePassword')}
-              </Button>
-            )}
-          </div>
-          <p className={styles.passwordNote}>{t('settings.passwordNote')}</p>
-        </section>
+            </div>
+            <p className={styles.passwordNote}>{t('settings.passwordNote')}</p>
+          </section>
+        )}
 
         {error && <div className={styles.error}>{t('settings.error')}: {error}</div>}
         {toast && <div className={styles.toast}>{toast}</div>}

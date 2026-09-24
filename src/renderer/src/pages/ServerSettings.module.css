@@ -105,6 +105,44 @@
   gap: 20px;
 }
 
+.accessStatusCard {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 14px 18px;
+}
+
+.accessStatusRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.accessStatusIcon {
+  flex-shrink: 0;
+  color: var(--success);
+}
+
+.accessStatusText {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+
+.accessStatusText strong {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-0);
+}
+
+.accessStatusWarning {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--warning);
+}
+
 .diagnosticsCard {
   display: flex;
   flex-direction: column;

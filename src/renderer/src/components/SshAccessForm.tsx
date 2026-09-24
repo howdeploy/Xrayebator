@@ -17,8 +17,24 @@ interface SshAccessFormProps {
 
 export function isSshAccessReady(access: SshAccessInput): boolean {
   if (!access.username.trim()) return false
-  if (access.authMethod === 'password') return Boolean(access.password)
+  if (access.authMethod === 'password') {
+    return Boolean(access.password || access.passwordCredentialId)
+  }
   return Boolean(access.privateKeyCredentialId || access.privateKeyPath)
+}
+
+/**
+ * Ввод нового пароля всегда сбрасывает флаг "уже сохранено": keychain-запись должна
+ * перезаписаться после успешного входа. Очистка поля оставляет сохранённый credential.
+ */
+export function setTypedSshPassword(
+  access: SshAccessInput,
+  password: string
+): SshAccessInput {
+  if (password === '') {
+    return { ...access, password: '' }
+  }
+  return { ...access, password, passwordPersisted: false }
 }
 
 export function SshAccessForm({
@@ -113,7 +129,7 @@ export function SshAccessForm({
             disabled={disabled}
             placeholder="••••••••"
             autoComplete="current-password"
-            onChange={(event) => update({ password: event.target.value })}
+            onChange={(event) => onChange(setTypedSshPassword(value, event.target.value))}
           />
         </TextField>
       ) : (

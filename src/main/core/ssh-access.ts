@@ -1,7 +1,7 @@
 import { readFileSync, statSync } from 'node:fs'
 import { resolve } from 'node:path'
 import type { Server, SshAccessInput } from '@shared/types'
-import type { SshKeychain } from './ssh-keychain'
+import type { SshKeychain, SshPasswordStore } from './ssh-keychain'
 import type { SshCredentials } from './ssh-client'
 
 const MAX_PRIVATE_KEY_BYTES = 1024 * 1024
@@ -73,6 +73,27 @@ export async function resolvePrivateKey(
   return { access, privateKey: readFileSync(approvedPath) }
 }
 
+export async function resolveStoredSshPassword(
+  input: SshAccessInput,
+  server: Pick<Server, 'passwordCredentialId'> | null,
+  passwordStore: SshPasswordStore
+): Promise<SshAccessInput> {
+  const access = normalizeSshAccess(input)
+  if (access.authMethod !== 'password' || access.password) return access
+
+  const credentialId = access.passwordCredentialId ?? server?.passwordCredentialId ?? undefined
+  if (!credentialId) return access
+
+  const password = await passwordStore.load(credentialId)
+  if (!password) {
+    throw new Error('SSH-пароль не найден в системном хранилище; введите его заново')
+  }
+  access.password = password
+  access.passwordCredentialId = credentialId
+  access.passwordPersisted = true
+  return access
+}
+
 export function normalizeSshAccess(
   access: SshAccessInput,
   fallbackPrivateKeyPath?: string | null
@@ -81,6 +102,8 @@ export function normalizeSshAccess(
     username: access.username.trim(),
     authMethod: access.authMethod,
     password: access.password,
+    passwordCredentialId: access.passwordCredentialId,
+    passwordPersisted: access.passwordPersisted,
     privateKeyPath: access.privateKeyPath?.trim() || fallbackPrivateKeyPath || undefined,
     privateKeyCredentialId: access.privateKeyCredentialId,
     privateKeyName: access.privateKeyName,

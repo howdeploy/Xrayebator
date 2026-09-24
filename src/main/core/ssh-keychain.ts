@@ -1,6 +1,7 @@
 import keytar from 'keytar'
 
 export const SSH_KEYCHAIN_SERVICE = 'com.xrayebator.gui.ssh-key'
+export const SSH_PASSWORD_SERVICE = 'com.xrayebator.gui.ssh-password'
 export const MAX_PRIVATE_KEY_BYTES = 1024 * 1024
 
 export interface KeychainApi {
@@ -14,6 +15,14 @@ export interface SshKeychain {
   load(credentialId: string): Promise<Buffer | null>
   remove(credentialId: string): Promise<void>
 }
+
+export interface SshPasswordStore {
+  save(credentialId: string, password: string): Promise<void>
+  load(credentialId: string): Promise<string | null>
+  remove(credentialId: string): Promise<void>
+}
+
+const MAX_SSH_PASSWORD_LENGTH = 16 * 1024
 
 function validateCredentialId(credentialId: string): void {
   if (!/^[A-Za-z0-9_-]{8,128}$/.test(credentialId)) {
@@ -35,6 +44,39 @@ function decodeKey(encoded: string): Buffer {
     throw new Error('SSH-ключ в системном хранилище слишком большой')
   }
   return key
+}
+
+export function createSshPasswordStore(api: KeychainApi = keytar): SshPasswordStore {
+  const validatePassword = (password: string): void => {
+    if (!password || password.length > MAX_SSH_PASSWORD_LENGTH) {
+      throw new Error('SSH-пароль пустой или слишком большой')
+    }
+    if (/[\r\n\0]/.test(password)) {
+      throw new Error('SSH-пароль не может содержать перевод строки')
+    }
+  }
+
+  return {
+    async save(credentialId, password) {
+      validateCredentialId(credentialId)
+      if (!password) return
+      validatePassword(password)
+      await api.setPassword(SSH_PASSWORD_SERVICE, credentialId, password)
+    },
+
+    async load(credentialId) {
+      validateCredentialId(credentialId)
+      const password = await api.getPassword(SSH_PASSWORD_SERVICE, credentialId)
+      if (password === null) return null
+      validatePassword(password)
+      return password
+    },
+
+    async remove(credentialId) {
+      validateCredentialId(credentialId)
+      await api.deletePassword(SSH_PASSWORD_SERVICE, credentialId)
+    }
+  }
 }
 
 export function createSshKeychain(api: KeychainApi = keytar): SshKeychain {

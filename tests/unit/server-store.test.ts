@@ -105,6 +105,63 @@ describe('server store onboarding metadata', () => {
     expect(store.list()).toHaveLength(1)
   })
 
+  it('preserves a saved SSH password credential when an import has no new password', () => {
+    const store = createServerStore()
+    const initial = store.add({
+      ...baseServer,
+      passwordCredentialId: 'password_credential_1234'
+    } as Omit<Server, 'id' | 'createdAt'>)
+
+    const updated = store.upsertImported(
+      { ...baseServer, subscriptionUrl: '', keys: [] },
+      connection
+    )
+
+    expect(updated.id).toBe(initial.id)
+    expect((updated as Server & { passwordCredentialId?: string | null }).passwordCredentialId).toBe(
+      'password_credential_1234'
+    )
+  })
+
+  it('clears a stale password credential when the keychain cannot persist a replacement', () => {
+    const store = createServerStore()
+    const initial = store.add({
+      ...baseServer,
+      passwordCredentialId: 'password_credential_1234',
+      passwordPersisted: true
+    } as Omit<Server, 'id' | 'createdAt'>)
+
+    const updated = store.updateConnection(initial.id, {
+      username: 'root',
+      authMethod: 'password',
+      privilegeMode: 'root',
+      passwordCredentialId: null,
+      passwordPersisted: false
+    })
+
+    expect(updated?.passwordCredentialId).toBeNull()
+    expect(updated?.passwordPersisted).toBe(false)
+  })
+
+  it('clears a stale SSH password reference after the keychain fails to save a replacement', () => {
+    const store = createServerStore()
+    const initial = store.add({
+      ...baseServer,
+      passwordCredentialId: 'password_credential_1234',
+      passwordPersisted: true
+    } as Omit<Server, 'id' | 'createdAt'>)
+    const updated = store.updateConnection(initial.id, {
+      username: 'root',
+      authMethod: 'password',
+      privilegeMode: 'root',
+      passwordCredentialId: null,
+      passwordPersisted: false
+    })
+
+    expect(updated?.passwordCredentialId).toBeNull()
+    expect(updated?.passwordPersisted).toBe(false)
+  })
+
   it('counts shared credential references and clears only the selected server reference', () => {
     const store = createServerStore()
     const first = store.add(baseServer)
