@@ -15,7 +15,8 @@ import {
   Check,
   Rocket,
   Link2,
-  Lock
+  Lock,
+  Pencil
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { setLanguage, supportedLngs, type SupportedLng } from '../i18n'
@@ -186,6 +187,7 @@ export function Dashboard({
                   </div>
                 </div>
                 <div className={styles.cardAccess}>
+                  <div className={styles.accessTitle}>{t('dashboard.accessTitle')}</div>
                   <div className={styles.accessEndpoint}>{summary.endpoint}</div>
                   <div
                     className={`${styles.accessSecret} ${
@@ -193,36 +195,36 @@ export function Dashboard({
                     }`}
                   >
                     <Lock size={12} className={styles.accessSecretIcon} />
-                    {t(SECRET_I18N[summary.secret])}
+                    <span>{t(SECRET_I18N[summary.secret])}</span>
                   </div>
                   <Button
                     size="sm"
-                    variant="ghost"
+                    variant="secondary"
                     className={styles.accessEditBtn}
                     onPress={() => onEditAccess(server)}
                   >
-                    <Settings2 size={14} />
+                    <Pencil size={16} />
                     {t('dashboard.changeAccess')}
                   </Button>
                 </div>
               </div>
               <div className={styles.cardActions}>
-              <Button size="sm" variant="secondary" onPress={() => onOpen(server)}>
-                <KeyRound size={16} />
-                {t('dashboard.keys')}
-              </Button>
-              <Button size="sm" variant="secondary" onPress={() => onSettings(server)}>
-                <Settings2 size={16} />
-                {t('dashboard.settings')}
-              </Button>
-              <Button
-                size="sm"
-                variant="danger-soft"
-                onPress={() => setPendingRemove(server)}
-              >
-                <Trash2 size={16} />
-                {t('dashboard.delete')}
-              </Button>
+                <Button size="sm" variant="secondary" onPress={() => onOpen(server)}>
+                  <KeyRound size={16} />
+                  {t('dashboard.keys')}
+                </Button>
+                <Button size="sm" variant="secondary" onPress={() => onSettings(server)}>
+                  <Settings2 size={16} />
+                  {t('dashboard.settings')}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="danger-soft"
+                  onPress={() => setPendingRemove(server)}
+                >
+                  <Trash2 size={16} />
+                  {t('dashboard.delete')}
+                </Button>
               </div>
             </div>
           )
