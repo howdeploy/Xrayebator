@@ -139,6 +139,10 @@ sudo systemctl restart sshd
 
 多个配置档可以同时使用：不同的订阅、SNI、端口和线路提供了更多绕过封锁的选择，但它们共享同一台 VPS 的资源。
 
+## quickstart 报错 `apt-get install nginx failed`
+
+新装的 Ubuntu VPS 上，`unattended-upgrades` 可能持有 apt/dpkg 锁约 10 分钟，并且对每个包单独调用 `dpkg`，因此简单的锁检查会从包与包之间的空隙漏过。quickstart 现在会额外等待活跃的 `unattended-upgrade` 进程（12 分钟预算），并给 `apt-get install` 传入 `-o DPkg::Lock::Timeout=180`。当 quickstart 提示 apt 超过预算仍被占用时，请稍后重试部署，或等更新队列结束。该行为由 `validation/test-apt-lock-race.sh` 锁定。
+
 ## 安装或使用过程中出现报错
 
 请完整复制终端中的报错文本。如果问题出在 Xrayebator 代码上，请提交 issue。

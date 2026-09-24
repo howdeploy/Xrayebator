@@ -16,7 +16,7 @@ for test_file in validation/*.sh; do bash "$test_file" || exit; done
 
 ## Что покрывают тесты
 
-В `validation/` лежат 24 статических и локальных регрессионных теста:
+В `validation/` лежат 26 статических и локальных регрессионных тестов:
 
 | Тест | Что проверяет |
 |---|---|
@@ -40,6 +40,8 @@ for test_file in validation/*.sh; do bash "$test_file" || exit; done
 | `test-sni-change-cli.sh` | CLI `sni-change`: JSON stdout, Reality, XHTTP host, синхронизацию, rollback |
 | `test-port-change-cli.sh` | CLI `port-change`: сценарии unit/shared/move, неверный порт, multi-route `--route` |
 | `test-bypass-cli.sh` | CLI `bypass`: JSON stdout, routing-правила, add с проверкой SNI |
+| `test-apt-lock-race.sh` | Гонка apt-lock: `DPkg::Lock::Timeout` при установках, учёт воркера `unattended-upgrade` и бюджет 12 минут в quickstart |
+| `test-quickstart-email-and-inspect.sh` | Явный email-режим `quickstart` (`--without-email` без фиктивного адреса) и read-only инварианты `inspect --json` |
 | `test-quickstart-migration-parity.sh` | `quickstart` гоняет те же критичные миграции, что и `main_menu` |
 | `test-quickstart-subscription-port.sh` | `quickstart` использует canonical helper базы подписки и не возвращается к несвязанному hardcode URL |
 | `test-audit-functional.sh` | Функциональные regression-проверки аудита HowDeploy (P0/P1) |
@@ -82,19 +84,26 @@ npm test              # Vitest unit-тесты
 | `tests/unit/countryFlag.test.ts` | Флаг страны для карточек серверов |
 | `tests/unit/vless.test.ts` | Парсинг `vless://` URL |
 | `tests/unit/shell-command.test.ts` | POSIX-безопасное quoting аргументов shell |
-| `tests/unit/ssh-access.test.ts` | Валидация параметров SSH-доступа |
+| `tests/unit/ssh-access.test.ts` | Валидация параметров SSH-доступа и порядок разрешения ключа из keychain |
 | `tests/unit/ssh-client.test.ts` | SSH-соединение и host-key verification |
+| `tests/unit/ssh-keychain.test.ts` | Сохранение/чтение/удаление ключей в системном keychain с guard'ами размера (mock keytar) |
 | `tests/unit/server-manager.test.ts` | Валидация безопасных веток для обновления |
+| `tests/unit/server-store.test.ts` | Идемпотентный импорт upsert по host+port, подсчёт ссылок на credential |
+| `tests/unit/server-inspector.test.ts` | Нормализация диагностики: публичная vs local-only/unreachable подписка, partial- и refuse-import состояния |
+| `tests/unit/deployer.test.ts` | Аргументы quickstart: режимы provided/without email без фиктивного адреса |
+| `tests/unit/ui-contracts.test.ts` | Готовность deployment и формирование payload при выборе email-режима |
+
+`npm run typecheck` дополнительно проверяет `tsconfig.contracts.json` — он компилирует строгие onboarding-контракты из `tests/type-contracts/` (обязательный `emailMode`, keychain-ссылка в выборщике ключа, открытый import API); Vitest-транспиляция такие регрессии типов не ловит.
 
 Примечание: `tests/unit/shell-command.test.ts` намеренно вызывает `/bin/sh` и завершается ошибкой
 (`status=null`) на Windows, где POSIX `/bin/sh` отсутствует. Полный suite следует запускать на Linux
-(включая CI Ubuntu в `release.yml`), где все 39 тестов проходят.
+(включая CI Ubuntu в `release.yml`), где все тесты проходят.
 
 ## CI workflow
 
 Три независимых workflow:
 
-- **ci-linux.yml** — Bash validation: `bash -n` всех скриптов + все 24 `validation/test-*.sh` на
+- **ci-linux.yml** — Bash validation: `bash -n` всех скриптов + все 26 `validation/test-*.sh` на
   ubuntu-24.04. Запускается на push в `main`, `dev`, `experimental` и на pull request.
 - **release.yml** — Electron сборка (Windows/macOS/Linux). Запускается только на теги `v*` и manual
   dispatch. Выполняет `npm run typecheck`, `npm test`, `npm run build` на ubuntu, затем

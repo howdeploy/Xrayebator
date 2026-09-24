@@ -36,7 +36,7 @@ promise that installer and updater paths behave identically.
 
 ## Validation suite
 
-`validation/` contains exactly 24 scripts. Run every `validation/test-*.sh`; the current set is:
+`validation/` contains exactly 26 scripts. Run every `validation/test-*.sh`; the current set is:
 
 | Script | What it checks |
 |---|---|
@@ -56,6 +56,8 @@ promise that installer and updater paths behave identically.
 | `test-multiroute-argument-preservation.sh` | Preservation of multiroute transport arguments |
 | `test-port-change-cli.sh` | Port-change CLI scenarios, firewall moves and route selection |
 | `test-project-update-rollback.sh` | Rollback of a failed project update |
+| `test-apt-lock-race.sh` | apt-lock race: `DPkg::Lock::Timeout` on installs, the unattended-upgrade worker check, and the 12-minute quickstart budget |
+| `test-quickstart-email-and-inspect.sh` | Explicit `quickstart` email mode (`--without-email` without a fake address) and the read-only invariants of `inspect --json` |
 | `test-quickstart-migration-parity.sh` | Parity between quickstart and main-menu migrations |
 | `test-quickstart-subscription-port.sh` | Ensures quickstart uses the canonical subscription base helper and does not regress to an unrelated hardcoded URL |
 | `test-sni-change-cli.sh` | SNI-change JSON output, transport fields, profile sync and rollback |
@@ -104,19 +106,29 @@ change the default policy, while uninstall should remove only rules recorded as 
 
 ## Electron GUI unit tests
 
-The active Electron GUI has exactly nine Vitest unit files:
+The active Electron GUI has exactly fourteen Vitest unit files:
 
 | Test | What it checks |
 |---|---|
 | `tests/unit/countryFlag.test.ts` | Country-flag lookup used by server cards |
+| `tests/unit/deployer.test.ts` | Quickstart argument building: provided/without email mode, no fake address, validation only in provided mode |
 | `tests/unit/extractJson.test.ts` | JSON extraction from noisy `xrayebator` command output |
 | `tests/unit/probe-ports.test.ts` | Ports used by the Dashboard reachability probe |
+| `tests/unit/server-inspector.test.ts` | Inspection normalization: public vs local-only/unreachable subscription, partial and refused-import states |
 | `tests/unit/server-manager.test.ts` | Safe update-branch validation |
+| `tests/unit/server-store.test.ts` | Idempotent import upsert by host+port, credential-reference counting |
 | `tests/unit/shell-command.test.ts` | POSIX shell quoting and sudo command construction |
-| `tests/unit/ssh-access.test.ts` | SSH credential validation and approved key access |
+| `tests/unit/ssh-access.test.ts` | SSH credential validation, approved key access and the keychain resolution order |
 | `tests/unit/ssh-client.test.ts` | Host-key trust, authentication and mismatch handling |
+| `tests/unit/ssh-keychain.test.ts` | System-keychain save/load/remove of private keys with size/corruption guards (mock keytar) |
 | `tests/unit/subscription.test.ts` | Subscription parsing, VLESS extraction and HTTP errors |
+| `tests/unit/ui-contracts.test.ts` | Deploy readiness and payload construction for the email-mode choice |
 | `tests/unit/vless.test.ts` | Port extraction from IPv4 and IPv6 VLESS URLs |
+
+`npm run typecheck` compiles `tsconfig.node.json`, `tsconfig.web.json` and `tsconfig.contracts.json` —
+the last project actually type-checks the strict onboarding contracts under
+`tests/type-contracts/` (required `emailMode`, keychain-reference key picker, exposed import API),
+because Vitest transpilation alone would not catch a regressed type.
 
 Run the Electron checks with:
 
@@ -135,7 +147,7 @@ provide useful local coverage, while CI runs the Electron typecheck and unit sui
 The workflows have separate responsibilities:
 
 - `.github/workflows/ci-linux.yml` is the Bash core gate on `ubuntu-24.04`: it installs `jq`,
-  `uuid-runtime` and `ripgrep`, runs all four Bash syntax checks, then runs all 24 validation
+  `uuid-runtime` and `ripgrep`, runs all four Bash syntax checks, then runs all 26 validation
   scripts.
 - `.github/workflows/release.yml` is the active Electron release path for `v*` tags or manual runs.
   It runs `npm run typecheck` and `npm test` on Ubuntu, then builds/packages Windows, macOS and Linux

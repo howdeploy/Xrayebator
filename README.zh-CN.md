@@ -274,15 +274,13 @@ GUI 的功能：
 
 | 页面 | 操作 |
 |---|---|
-| Dashboard | 服务器卡片与连通状态：打开、设置、删除；语言切换 |
-| 添加服务器 | 部署新 VPS：上传 `install.sh` 与 `xrayebator`，运行安装，放置二进制，执行 `quickstart --email`，保存服务器与 `subscription_url` |
-| 服务器密钥 | 刷新订阅、复制链接、显示 `vless://` 链接与二维码 |
+| Dashboard | 服务器卡片与连通/安装状态；空页面提供“部署新服务器”或“连接现有服务器”；语言切换 |
+| 添加服务器 | 显式选择是否提供 email：`quickstart --email` 或 `quickstart --without-email`；保存服务器与公网订阅 |
+| 连接现有服务器 | 通过 SSH（密码或密钥）和只读 `xrayebator inspect --json` 导入已识别的 Xrayebator；部分安装会连同诊断状态保存，不自动修复 |
+| 服务器密钥 | 刷新公网订阅、复制链接、显示 `vless://` 链接与二维码 |
 | 服务器设置 | 使用 SSH 密码或私钥、直接 root 或 sudo：列出/创建/删除配置档，修改指纹、SNI 和端口，以及更新或卸载服务器上的 Xrayebator |
 
-SSH 密码、sudo 密码、私钥口令和私钥内容只在当前表单/操作期间保存在内存中，不会持久化。
-本地会保存服务器卡片、连接偏好、`subscription_url`、获取到的 `vless://` 链接和固定的 SSH host-key
-fingerprint。订阅 URL 和 VLESS 链接属于 bearer/client credentials：请保护本地应用数据，泄露后
-通过终端 workflow 吊销订阅。
+选中的私钥与成功登录时使用过的 SSH 密码都会通过 `keytar` 保存在操作系统钥匙串中，之后的 SSH 操作和应用重启均可复用；服务器卡片只保存非敏感的 credential id 和显示文件名。单独的 sudo 密码与加密私钥口令不会持久化，需要时重新输入。系统钥匙串不可用时不会写入明文回退文件：密钥仅保留在 main process 内存中直到当前会话结束，界面会提示重启后需重新输入。应用还会保存 `subscription_url`、获取到的 `vless://` 链接和固定的 SSH host-key fingerprint。这些是 bearer/client credentials：请保护本地应用数据，泄露后通过终端 workflow 吊销订阅。
 
 GUI 只暴露终端菜单的一个子集。bypass、`probe-test`、订阅吊销、`happ-setup`、级联、self-steal
 以及服务日志/状态仍需从终端执行。完整的 Electron GUI 边界、安全模型与打包说明见
@@ -296,8 +294,9 @@ npm run dev          # Electron + Vite dev server
 npm run build        # 编译 renderer 与 main process
 ```
 
-Electron 检查：`npm test` 运行 `tests/` 中的 9 个单元测试文件；`npm run typecheck` 检查 TypeScript，
-`npm run build` 构建应用。在原生 Windows 上，POSIX 专用测试 `tests/unit/shell-command.test.ts`
+Electron 检查：`npm test` 运行 `tests/` 中的 14 个单元测试文件；`npm run typecheck` 检查 TypeScript，
+包含 `tests/type-contracts/` 中严格的 onboarding 契约；`npm run build` 构建应用。在原生 Windows 上，POSIX 专用测试
+`tests/unit/shell-command.test.ts`
 可能因缺少 `/bin/sh` 而失败；Linux CI 是事实来源。参见[测试](docs/zh-CN/testing.md#桌面图形界面)
 和 [Electron 桌面 GUI](docs/zh-CN/desktop-gui.md)。
 

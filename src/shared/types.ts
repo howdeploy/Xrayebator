@@ -2,19 +2,79 @@ export type SshAuthMethod = 'password' | 'privateKey'
 
 export type SshPrivilegeMode = 'root' | 'sudo'
 
+export type EmailMode = 'provided' | 'without'
+
+export type ServerSetupStatus = 'ready' | 'partial' | 'unknown'
+
+export type DiagnosticState = 'detected' | 'missing' | 'invalid' | 'unknown'
+
+export type XrayState = 'running' | 'stopped' | 'missing' | 'unknown'
+
+export type ProfilesState = 'available' | 'empty' | 'missing' | 'unknown'
+
+export type SubscriptionState = 'public' | 'localOnly' | 'missing' | 'unreachable' | 'unknown'
+
+export interface PrivateKeyReference {
+  credentialId: string
+  name: string
+  persisted?: boolean
+}
+
+export interface ServerDiagnostics {
+  manager: DiagnosticState
+  xray: XrayState
+  profiles: ProfilesState
+  subscription: SubscriptionState
+  inspectedAt: string
+}
+
+export interface InspectionSnapshot {
+  ok: boolean
+  recognized: boolean
+  os: string | null
+  manager: DiagnosticState
+  xray: XrayState
+  profiles: ProfilesState
+  profile_count: number
+  route_count: number
+  subscription_installed: boolean
+  subscription_mode: string | null
+  subscription_domain: string | null
+  subscription_port: number | null
+  subscription_service?: string | null
+  subscription_url: string | null
+  country: string | null
+  city: string | null
+  flag: string | null
+  error?: string
+}
+
+export interface ImportServerPayload {
+  host: string
+  port: number
+  access: SshAccessInput
+}
+
+export interface ImportResult {
+  serverId: string
+  diagnostics: ServerDiagnostics
+  keys: VlessLink[]
+}
+
 export interface SshAccessInput {
   username: string
   authMethod: SshAuthMethod
   password?: string
+  passwordCredentialId?: string
+  passwordPersisted?: boolean
   privateKeyPath?: string
+  privateKeyCredentialId?: string
+  privateKeyName?: string
+  /** true — ключ в системном keychain; false — только выбранный файл в текущей сессии. */
+  privateKeyPersisted?: boolean
   passphrase?: string
   privilegeMode: SshPrivilegeMode
   sudoPassword?: string
-}
-
-export interface PrivateKeySelection {
-  path: string
-  name: string
 }
 
 export interface Server {
@@ -34,6 +94,13 @@ export interface Server {
   authMethod?: SshAuthMethod
   privilegeMode?: SshPrivilegeMode
   privateKeyPath?: string | null
+  privateKeyName?: string | null
+  privateKeyCredentialId?: string | null
+  privateKeyPersisted?: boolean | null
+  passwordCredentialId?: string | null
+  passwordPersisted?: boolean | null
+  setupStatus?: ServerSetupStatus
+  diagnostics?: ServerDiagnostics | null
   hostKeyFingerprint?: string | null
 }
 
@@ -165,10 +232,17 @@ export type DeployStep =
 
 export type DeployStatus = 'pending' | 'running' | 'done' | 'error'
 
+/** Фазы read-only импорта: main process шлёт шаг только при реальном входе в фазу. */
+export type ImportStep = 'ssh' | 'inspect' | 'subscription' | 'save'
+
+/** Событие импорта: переход фазы либо строка консоли (секреты уже замаскированы в main). */
+export type ImportProgressEvent = { step: ImportStep } | { log: string }
+
 export interface DeployStartPayload {
   host: string
   port: number
-  email: string
+  emailMode: EmailMode
+  email?: string
   access: SshAccessInput
 }
 
@@ -186,10 +260,12 @@ export type DeployEvent =
 
 export interface ElectronAPI {
   ssh: {
-    selectPrivateKey: () => Promise<PrivateKeySelection | null>
+    selectPrivateKey: () => Promise<PrivateKeyReference | null>
   }
   servers: {
     list: () => Promise<Server[]>
+    import: (payload: ImportServerPayload) => Promise<ImportResult>
+    onImportEvent: (callback: (event: ImportProgressEvent) => void) => () => void
     remove: (id: string) => Promise<void>
     get: (id: string) => Promise<Server | null>
     check: (id: string) => Promise<boolean>

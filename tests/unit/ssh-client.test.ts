@@ -66,6 +66,34 @@ describe('SSH host key verification', () => {
     expect(trusted).not.toHaveBeenCalled()
   })
 
+  it('waits for async post-authentication persistence before resolving connect', async () => {
+    sshState.mode = 'ready'
+    let releaseCallback: (() => void) | undefined
+    const callbackGate = new Promise<void>((resolve) => {
+      releaseCallback = resolve
+    })
+    let connectResolved = false
+    const client = new SshClient({
+      host: 'server.example',
+      port: 22,
+      username: 'root',
+      password: 'secret',
+      privilegeMode: 'root',
+      onAuthenticated: async () => callbackGate
+    })
+
+    const connected = client.connect().then(() => {
+      connectResolved = true
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(connectResolved).toBe(false)
+
+    releaseCallback?.()
+    await connected
+    expect(connectResolved).toBe(true)
+    client.close()
+  })
+
   it('останавливает подключение при смене закреплённого fingerprint', async () => {
     sshState.mode = 'ready'
     const client = new SshClient({

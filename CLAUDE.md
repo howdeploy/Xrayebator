@@ -9,7 +9,7 @@ Xrayebator — automated Xray Reality VPN manager for bypassing DPI censorship i
 ## Validation
 
 There IS automated test coverage (despite what older notes said):
-- **`validation/`** — 24 Bash test scripts, including `test-main-readiness-regressions.sh`, covering migrations, VLESS URL generation, transaction safety, dedup, firewall, menu numbering, the bypass/sni-change/port-change CLIs, quickstart and audit regressions. They run on the host (`bash validation/test-*.sh`); CI installs `jq`, `uuidgen` and `ripgrep` on Ubuntu. A bare Windows Git Bash checkout is not equivalent to the Linux environment.
+- **`validation/`** — 26 Bash test scripts, including `test-main-readiness-regressions.sh`, covering migrations, VLESS URL generation, transaction safety, dedup, firewall, menu numbering, the bypass/sni-change/port-change CLIs, quickstart, email/inspect regressions, apt-lock race regressions and audit regressions. They run on the host (`bash validation/test-*.sh`); CI installs `jq`, `uuidgen` and `ripgrep` on Ubuntu. A bare Windows Git Bash checkout is not equivalent to the Linux environment.
 - **`gui-legacy/tests/`** — 16 pytest modules covering SSH, deploy, connection, subscription and TUN runtime (legacy PySide6 GUI). Run with the GUI venv: `gui-legacy/.venv/Scripts/python -m pytest gui-legacy/tests`.
 - **GUI (Electron)** — Vitest unit tests in `tests/`: `npm test`, plus `npm run typecheck`.
 - **CI** — `.github/workflows/ci-linux.yml` runs the full `validation/` suite; `.github/workflows/gui-release.yml` runs `ruff` + `pytest gui-legacy/tests` and builds Windows/macOS bundles; `.github/workflows/release.yml` ships the Electron app.
@@ -127,7 +127,7 @@ Do NOT use raw `jq ... > temp && mv temp file` — always go through `safe_jq_wr
 - `main` — stable, releases every 1-2 months
 - `dev` — quick fixes, weekly or biweekly
 - `experimental` — latest features, several times per week
-- This checkout is currently on `main`; do not assume `experimental` is the working branch.
+- This checkout is currently on `dev`; do not assume `experimental` is the working branch.
 
 ## CLI commands
 
@@ -135,7 +135,8 @@ Apart from the interactive menu (`sudo xrayebator`), the script exposes subcomma
 
 - `xrayebator update` — update only the Xray-core binary; `xrayebator update <branch>` self-updates the manager from the canonical raw branch and then updates Xray-core.
 - `xrayebator-update [branch]` — separate full `update.sh` lifecycle workflow; without a branch it displays `.current_branch` and opens interactive branch selection.
-- `xrayebator quickstart --email <email>` — UI CLI used by the desktop app: runs the broad setup/migration path, provisions the subscription endpoint, creates a standard **schema-v3 multi-route** HAPP profile (7 routes including `xhttp-legacy`), and prints JSON with `subscription_url`. The implementation currently tolerates migration failures in this non-interactive path; verify the resulting profile and services after deployment.
+- `xrayebator quickstart --email <email>` — UI CLI used by the desktop app: runs the broad setup/migration path, provisions the subscription endpoint, creates a standard **schema-v3 multi-route** HAPP profile (7 routes including `xhttp-legacy`), and prints JSON with `subscription_url`. The implementation currently tolerates migration failures in this non-interactive path; verify the resulting profile and services after deployment. Email mode is explicit: `quickstart --without-email` runs the same path but registers Certbot/ACME with `--register-unsafely-without-email` (no renewal notices, no email-based account recovery; never substitute a fake address). The GUI passes exactly one of the two forms.
+- `xrayebator inspect --json` — read-only install probe for the GUI "connect existing server" import: reports manager/Xray/profiles/subscription markers as one JSON object on stdout (diagnostics to stderr only). It must not migrate, install, restart, open firewall or write anything; `validation/test-quickstart-email-and-inspect.sh` guards these invariants statically.
 - `xrayebator happ-setup` — reduced existing-install HAPP path; ensures the subscription service and a usable multi-route profile, verifies a real public TLS endpoint when subscription markers are missing, and prints JSON with `subscription_url`. It does not have the same migration breadth as quickstart.
 - `xrayebator probe-test` — probe-test candidate SNIs from `sni_list.txt` and print reachability scores.
 - `xrayebator profiles` — print all profiles as a flat JSON array (used by the GUI "Server settings" page).

@@ -4,13 +4,15 @@ import { app } from 'electron'
 import { SshClient, SshCredentials } from './ssh-client'
 import { shellCommand, shellQuote } from './shell-command'
 import { fetchSubscription } from './subscription'
-import type { DeployStep, VlessLink } from '@shared/types'
+import { maskSubscriptionUrl } from './server-inspector'
+import type { DeployStep, EmailMode, VlessLink } from '@shared/types'
 
 export type DeployStepListener = (step: DeployStep, message: string) => void
 export type DeployLogListener = (text: string) => void
 
 export interface DeployInput {
-  email: string
+  emailMode: EmailMode
+  email?: string
   credentials: SshCredentials
 }
 
@@ -72,6 +74,20 @@ function extractInstallFailure(stdout: string, stderr: string): string {
   return tail.length > 240 ? `${tail.slice(0, 237)}...` : tail
 }
 
+/**
+ * Собирает аргументы quickstart: с email — `--email`, без — `--without-email`.
+ * В without-режиме присланный email игнорируется: фиктивный адрес не подставляется,
+ * `-m` не передаётся (серверный Certbot сам использует --register-unsafely-without-email).
+ */
+export function buildQuickstartArgs(input: { emailMode: EmailMode; email?: string }): string[] {
+  if (input.emailMode === 'without') return ['quickstart', '--without-email']
+  const email = (input.email ?? '').trim()
+  if (!email || email.length > 254 || /[\r\n\0]/.test(email) || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+    throw new Error('Некорректный email')
+  }
+  return ['quickstart', '--email', email]
+}
+
 export class Deployer {
   constructor(
     private readonly onStep: DeployStepListener,
@@ -79,9 +95,7 @@ export class Deployer {
   ) {}
 
   async deploy(input: DeployInput): Promise<DeployResult> {
-    if (!input.email || input.email.length > 254 || /[\r\n\0]/.test(input.email)) {
-      throw new Error('Некорректный email')
-    }
+    const quickstartArgs = buildQuickstartArgs(input)
     const client = new SshClient(input.credentials)
 
     try {
@@ -145,7 +159,7 @@ export class Deployer {
 
       this.onStep('quickstart', 'Запускаю quickstart...')
       const quick = await client.exec(
-        shellCommand('xrayebator', ['quickstart', '--email', input.email]),
+        shellCommand('xrayebator', quickstartArgs),
         { elevated: true }
       )
       if (quick.code !== 0) {
@@ -172,7 +186,9 @@ export class Deployer {
       if (!keys.length && subUrl) {
         throw new Error('Subscription вернул пустой список ключей')
       }
-      this.onLog(`Подписка: ${subUrl}; маршрутов получено: ${keys.length}`)
+      this.onLog(
+        `Подписка: ${subUrl ? maskSubscriptionUrl(subUrl) : '—'}; маршрутов получено: ${keys.length}`
+      )
 
       return {
         subscriptionUrl: subUrl ?? '',

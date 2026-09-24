@@ -19,21 +19,27 @@ The renderer reaches privileged operations only through the narrow preload `cont
 
 ### Dashboard
 
-Dashboard displays the saved server cards, a reachability status dot, location/OS and route metadata, and actions for keys, settings, and removing a local server card. Its reachability check is a bounded TCP check performed by the Electron main process; it is not the server-side `probe-test` command. The language selector switches between `RU`, `EN`, and `中文`.
+Dashboard displays the saved server cards. Each card shows the title with its location beneath, a status line (`Configured` in green, `Partially configured` in yellow, or `Imported`), and a row of three tiles — operating system, active routes, and SSH access (`user@host:port` plus where the secret lives: password or key in the system keychain, or this session only). The tile values come from the server card and the read-only inspection, so the OS, route count and SSH user are whatever the server actually reports. A three-dot menu in the access tile opens the access form for that card. Actions for keys, settings, and removing the card sit at the bottom. On an empty Dashboard the operator chooses between two scenarios: **Deploy a new server** (install Xrayebator on a clean VPS) and **Connect an existing server** (find an installed Xrayebator over SSH and open its panel without touching the installation). With servers already present, `Add` opens the same choice. Its reachability check is a bounded TCP check performed by the Electron main process; it is not the server-side `probe-test` command. The language selector switches between `RU`, `EN`, and `中文`.
 
 ### Add server
 
-Add server accepts the VPS host and SSH port, SSH access details, and an email for `quickstart`. The deployment progress is shown as these steps:
+Add server accepts the VPS host and SSH port, SSH access details, and an explicit email choice for `quickstart`: either **Provide an email** (default, shown as a field) or **Continue without email** (a warning explains that Let's Encrypt renewal notices and ACME account recovery are unavailable). The deployment progress is shown as these steps:
 
 1. connect over SSH and verify elevated access;
 2. inspect `/etc/os-release`;
 3. create a temporary `/tmp/xrayebator-<token>` directory and upload `install.sh` and `xrayebator`;
 4. run `bash install.sh` with the selected privileges;
 5. install the uploaded manager binary at `/usr/local/bin/xrayebator`;
-6. run `xrayebator quickstart --email <email>`;
+6. run `xrayebator quickstart --email <email>` or `xrayebator quickstart --without-email` — the second form passes `--register-unsafely-without-email` to Certbot and never substitutes a fake address;
 7. read the JSON result, including `subscription_url`, fetch the subscription, and save the server metadata and keys locally.
 
 The GUI shows deployment logs and step status, but it does not provide a cancellation channel for an in-flight deployment.
+
+### Connect existing server (import)
+
+Import accepts host, SSH port, SSH user and SSH access details (password or private key, the same choice as in Add server), then runs a strictly read-only `xrayebator inspect --json` over the same SSH stack: it recognizes Xrayebator installations only, and never runs `quickstart`, `happ-setup`, installers, updates, migrations, restarts, or firewall changes. A partially configured installation is still imported with honest component statuses (manager / Xray / profiles / subscription); a local-only or unreachable subscription is stored as such and no dead URL is presented as working. Importing the same `host + port` again updates the existing card instead of creating a duplicate; the server id and host-key pin survive the update. After a successful import the app opens Server Settings directly.
+
+The wizard shows a step index and a live console of the work actually performed: the SSH connect, the `xrayebator inspect --json` call, the reported component statuses, the subscription probe and the result. The subscription URL is a bearer credential, so its token is masked (`…`) before it reaches the console; passwords and key bytes never appear there at all.
 
 ### Server keys
 
@@ -41,7 +47,7 @@ Server keys refreshes the subscription from the saved `subscription_url` and dis
 
 ### Server settings
 
-Server settings first authenticates over SSH and can then:
+Server settings first authenticates over SSH. When the card already has a keychain-backed SSH password or a persisted private key, the page attempts to connect automatically and then shows only the profile panel — the access form appears only when there is no saved secret or after a failed connection. The access summary and the "Change access" action live on the server card in the dashboard, not inside the profile page. Once connected, the page can:
 
 - list existing profiles;
 - create one or more profiles and delete profiles;
@@ -56,11 +62,9 @@ SNI and port are inbound-level settings: changing them can affect every profile 
 
 ## SSH and security
 
-The GUI supports SSH password authentication or a private key, with either direct `root` execution or elevated commands through `sudo`. A private key is selected through the native Electron file dialog; the main process rejects an arbitrary path that was not approved by that dialog.
+The GUI supports SSH password authentication or a private key, with either direct `root` execution or elevated commands through `sudo`. A private key is selected through the native Electron file dialog; the main process reads the bytes, stores them in the operating-system keychain via `keytar` (Windows Credential Manager, macOS Keychain, or Linux Secret Service), and returns to the renderer only a non-secret credential id plus the display file name. The key is reused across later operations and app restarts without re-picking the file. If the OS keychain is unavailable, the key is kept only in main-process memory for the current app session and the UI warns that reuse after restart is unavailable; there is no plaintext fallback on disk.
 
-SSH passwords, sudo passwords, key passphrases, and private-key bytes are not persisted. They exist only in the active form/operation and are passed to the main process when needed. `electron-store` persists the server card and connection preferences, the subscription URL, and the fetched VLESS links (bearer/client credentials), as well as the username, authentication method, privilege mode, selected key path, and the SHA-256 SSH host-key pin. Protect the local application data; if the subscription URL or VLESS links leak, revoke the subscription through the terminal workflow. A later fingerprint mismatch fails closed before commands are executed; an intentional server reinstall requires an explicit host-key reset in Server settings.
-
-`keytar` is present in `package.json`, but the active Electron GUI does not use it to store SSH passwords or passphrases in an operating-system keychain.
+The SSH login password is persisted to the operating-system keychain after the first successful authentication and reused across later operations and app restarts; the server card stores only its non-secret credential id. A distinct sudo password and an encrypted-key passphrase are never persisted — they are asked again when needed. Private-key bytes and password values never cross the preload boundary: the renderer receives only credential ids and display names. `electron-store` persists the server card and connection preferences, the subscription URL, and the fetched VLESS links (bearer/client credentials), as well as the username, authentication method, privilege mode, credential ids, display key name, installation diagnostics, and the SHA-256 SSH host-key pin. Protect the local application data; if the subscription URL or VLESS links leak, revoke the subscription through the terminal workflow. A later fingerprint mismatch fails closed before commands are executed; an intentional server reinstall requires an explicit host-key reset in Server settings. Removing the last card that references a credential deletes the matching keychain entry; shared references are preserved.
 
 The Electron boundary includes the following protections:
 
@@ -88,6 +92,13 @@ Deployment additionally invokes:
 
 ```text
 xrayebator quickstart --email EMAIL
+xrayebator quickstart --without-email
+```
+
+Import invokes exactly one read-only command:
+
+```text
+xrayebator inspect --json
 ```
 
 The result consumed by the GUI uses `subscription_url`; the GUI then fetches that URL to obtain the VLESS keys. Server Settings also invokes the update operation (`xrayebator update <branch>`) and can upload and run `uninstall.sh` for removal. These are controlled operations, not an interactive shell.
@@ -119,8 +130,10 @@ SSH connect + host-key verification
         ├─ SFTP upload: install.sh, xrayebator
         ├─ elevated `bash install.sh`
         ├─ elevated install → /usr/local/bin/xrayebator
-        ├─ elevated `xrayebator quickstart --email EMAIL`
+        ├─ elevated `xrayebator quickstart --email EMAIL` or `--without-email`
         └─ parse `subscription_url` → fetch subscription → persist the server card, connection preferences, subscription URL, and fetched VLESS links
+
+For an existing installation, the import flow instead runs the read-only `xrayebator inspect --json`, fetches the subscription only when a public HTTPS endpoint is reported, and saves the detected state without repairing or updating the VPS.
 ```
 
 Remote commands are assembled with shell-safe argument quoting. For sudo access, the secret is supplied via stdin while the command itself is kept separate. The GUI closes the SSH client after each operation and clears the in-memory private-key buffer when the client closes.

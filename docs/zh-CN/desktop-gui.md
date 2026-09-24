@@ -19,29 +19,36 @@ renderer 只能通过精简的 preload `contextBridge` API 访问特权操作。
 
 ### Dashboard
 
-Dashboard 显示已保存的服务器卡片、可达性状态点、位置/OS 与线路元数据，以及密钥、设置和删除本地服务器卡片的操作。可达性检查由 Electron main process 执行，是有时间限制的 TCP 检查；它不是服务端的 `probe-test` 命令。语言选择器可以切换 `RU`、`EN` 和 `中文`。
+Dashboard 显示已保存的服务器卡片。每张卡片包含：标题及其下方的位置、状态行（“已配置”为绿色、“配置不完整”为黄色、“已导入”为灰色），以及三个信息块——操作系统、活跃线路和 SSH 访问（`user@host:port` 以及凭据存放位置：密码或密钥保存在系统钥匙串中，或仅在本次会话中）。信息块的取值来自服务器卡片和只读诊断，因此操作系统、线路数量和 SSH 用户都是服务器实际报告的值。访问信息块中的三点菜单可打开该卡片的访问表单。密钥、设置和删除卡片位于底部。空 Dashboard 提供两个并列场景：**部署新服务器**（在干净 VPS 上安装 Xrayebator）和 **连接现有服务器**（通过 SSH 查找已安装的 Xrayebator 并打开面板，不改动现有安装）。已有服务器时，`Add` 会打开同样的场景选择。可达性检查由 Electron main process 执行，是有时间限制的 TCP 检查；它不是服务端的 `probe-test` 命令。语言选择器可以切换 `RU`、`EN` 和 `中文`。
 
 ### Add server
 
-Add server 接收 VPS host 和 SSH 端口、SSH 访问参数以及用于 `quickstart` 的邮箱。部署进度按以下步骤显示：
+Add server 接收 VPS host 和 SSH 端口、SSH 访问参数，并要求明确选择 `quickstart` 的 email 模式：**填写邮箱**（默认，显示输入框）或 **不使用邮箱继续**。选择不使用邮箱时，界面会提醒用户：Let's Encrypt 不会发送续期通知，也无法通过邮箱恢复 ACME 账户。该模式运行 `xrayebator quickstart --without-email`，向 Certbot 传递 `--register-unsafely-without-email`，不会使用虚构邮箱地址。
+
+部署进度按以下步骤显示：
 
 1. 通过 SSH 连接并验证提升后的权限；
 2. 读取 `/etc/os-release`；
 3. 创建临时目录 `/tmp/xrayebator-<token>`，上传 `install.sh` 和 `xrayebator`；
 4. 使用所选权限运行 `bash install.sh`；
 5. 将上传的管理器二进制安装到 `/usr/local/bin/xrayebator`；
-6. 运行 `xrayebator quickstart --email <email>`；
+6. 运行 `xrayebator quickstart --email <email>` 或 `xrayebator quickstart --without-email`；
 7. 解析包含 `subscription_url` 的 JSON 结果，获取订阅，并在本地保存服务器元数据与密钥。
 
 GUI 会显示部署日志和步骤状态，但进行中的部署没有 IPC 取消通道。
 
+### 连接现有服务器（导入）
+
+导入向导接收 host、SSH 端口和用户名，并提供与部署新服务器页面相同的 SSH 访问方式：密码或私钥（私钥通过 `keytar` 保存在系统钥匙串中并可复用）。GUI 通过 SSH 执行只读命令 `xrayebator inspect --json`，仅识别 Xrayebator 安装；不会自动运行安装程序、`quickstart`、`happ-setup`、迁移、更新、服务重启、防火墙修改或配置变更。部分配置的安装仍会导入，并分别显示 manager、Xray、配置档和订阅状态；仅本地或不可达的订阅不会被标记为可用。再次导入相同的 `host + port` 会更新原卡片，不会产生重复项，并保留 server id 和 host-key pin。成功导入后会直接打开 Server settings。
+
+向导显示步骤索引和实际执行工作的实时控制台：SSH 连接、`xrayebator inspect --json` 调用、返回的组件状态、订阅探测和最终结果。订阅 URL 是 bearer credential，因此其令牌在进入控制台前会被遮蔽（`…`）；密码和密钥字节完全不会出现在其中。
 ### Server keys
 
 Server keys 会从保存的 `subscription_url` 刷新订阅，并显示返回的 VLESS 线路。每条 VLESS 链接都可以复制或生成二维码；订阅 URL 也可以复制，页面还提供复制全部内容的操作。此页面不会在服务器上创建独立订阅，也不会轮换订阅令牌。
 
 ### Server settings
 
-Server settings 先通过 SSH 认证，然后可以：
+Server settings 先通过 SSH 认证。如果卡片中已有系统钥匙串保存的 SSH 密码或持久化私钥，页面会自动连接并只显示配置档面板；仅当没有已保存的凭据或连接失败时才显示访问表单。访问摘要与“更改访问方式”操作位于 Dashboard 的服务器卡片上，而不在配置档页面内。连接后可以：
 
 - 列出已有配置档；
 - 创建一个或多个配置档并删除配置档；
@@ -56,11 +63,9 @@ SNI 和端口属于 inbound 级别的设置：修改它们可能影响共享该 
 
 ## SSH 与安全
 
-GUI 支持 SSH 密码认证或私钥认证，并支持直接以 `root` 执行或通过 `sudo` 提升权限。私钥通过 Electron 原生文件对话框选择；main process 会拒绝未经该对话框批准的任意路径。
+GUI 支持 SSH 密码认证或私钥认证，并支持直接以 `root` 执行或通过 `sudo` 提升权限。私钥通过 Electron 原生文件对话框选择；main process 读取字节并通过 `keytar` 保存到操作系统钥匙串（Windows Credential Manager、macOS Keychain 或 Linux Secret Service），renderer 只收到非敏感 credential id 和显示文件名。之后的 SSH 操作以及应用重启后都可以复用该密钥。
 
-SSH 密码、sudo 密码、私钥口令和私钥字节都不会持久化。它们只存在于当前表单/操作中，并在需要时传给 main process。`electron-store` 会保存服务器卡片和连接偏好、订阅 URL、已获取的 VLESS 链接（bearer/client credentials）、用户名、认证方式、权限模式、所选密钥路径，以及首次成功连接后保存的 SSH host-key SHA-256 pin（TOFU）。请保护本地应用数据；如果订阅 URL 或 VLESS 链接泄露，请通过终端 workflow 吊销订阅。之后 fingerprint 不匹配时，会在执行命令前失败；有意重装服务器时，必须在 Server settings 中明确重置 host-key pin。
-
-`keytar` 存在于 `package.json` 依赖中，但当前 Electron GUI 尚未使用它把 SSH 密码或私钥口令存入操作系统钥匙串。
+如果系统钥匙串不可用，应用不会在磁盘上创建明文回退副本：密钥只保留在 main process 内存中，直到应用退出；界面会提示重启后需要重新选择。SSH 登录密码在首次成功认证后保存到系统钥匙串，之后的操作和应用重启均可复用；服务器卡片只保存非敏感 credential id。单独的 sudo 密码和加密私钥口令不会持久化，需要时重新输入。私钥字节和密码值都不会越过 preload boundary：renderer 只收到 credential id 和显示名。`electron-store` 会保存服务器卡片、连接偏好、credential id、显示文件名、安装诊断、订阅 URL、已获取的 VLESS 链接（bearer/client credentials）和 SSH host-key SHA-256 pin（TOFU）。请保护本地应用数据；若订阅 URL 或 VLESS 链接泄露，请通过终端 workflow 吊销订阅。删除引用某个 credential 的最后一张服务器卡片时会删除对应钥匙串记录；其他卡片仍引用时会保留。
 
 Electron 边界包含以下保护措施：
 
@@ -84,10 +89,17 @@ xrayebator sni-list
 xrayebator port-change --name NAME [--route R] --port PORT|random
 ```
 
-部署流程还会调用：
+部署流程会调用以下命令之一：
 
 ```text
 xrayebator quickstart --email EMAIL
+xrayebator quickstart --without-email
+```
+
+导入流程只调用只读诊断命令：
+
+```text
+xrayebator inspect --json
 ```
 
 GUI 使用结果中的 `subscription_url`，随后通过该 URL 获取 VLESS 密钥。Server settings 还会调用更新操作（`xrayebator update <branch>`），卸载时可以上传并运行 `uninstall.sh`。这些都是受控操作，不是交互式 shell 会话。
@@ -119,8 +131,10 @@ SSH connect + host-key verification
         ├─ SFTP upload: install.sh, xrayebator
         ├─ elevated `bash install.sh`
         ├─ elevated install → /usr/local/bin/xrayebator
-        ├─ elevated `xrayebator quickstart --email EMAIL`
+        ├─ elevated `xrayebator quickstart --email EMAIL` 或 `--without-email`
         └─ parse `subscription_url` → fetch subscription → 保存服务器卡片、连接偏好、订阅 URL 和已获取的 VLESS 链接
+
+导入现有安装时，流程改为只读执行 `xrayebator inspect --json`；仅当检测到公网 HTTPS endpoint 时才检查订阅，并保存检测到的状态，不会自动修复或更新 VPS。
 ```
 
 远程命令使用安全的 shell 参数 quoting 构造。使用 sudo 时，机密通过 stdin 与命令分开传递。每次操作结束后 GUI 都会关闭 SSH 客户端，并在关闭时清理内存中的私钥缓冲区。

@@ -102,9 +102,10 @@ http://127.0.0.1:8080/sub/<token>         # local-only запасной
 ```
 
 Интерактивная настройка HAPP может выбрать публичный порт, а `_subscription_base_url` сохраняет этот
-выбор. Нон-интерактивный IP-TLS flow `quickstart --email <address>` сейчас создаёт nginx, сертификат и
-маркеры на `8443`, затем возвращает JSON с `subscription_url` для этого endpoint. Токен хранится в
-профиле как `sub_token`; revoke меняет токен и аннулирует предыдущий URL.
+выбор. Нон-интерактивные IP-TLS пути `quickstart --email <address>` и `quickstart --without-email`
+создают nginx, сертификат и маркеры на `8443`, затем возвращают JSON с `subscription_url` для endpoint.
+Без email Certbot регистрирует ACME-аккаунт без контактного адреса: уведомления о продлении и восстановление
+по email недоступны. Токен хранится в профиле как `sub_token`; revoke меняет его и аннулирует старый URL.
 
 Новый стандартный managed HAPP-профиль — schema-v3 профиль из семи маршрутов, включая `xhttp-legacy`
 и post-quantum XHTTP route. Публикуемый список HAPP содержит шесть VLESS-маршрутов, потому что

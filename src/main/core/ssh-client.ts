@@ -14,7 +14,7 @@ export interface SshCredentials {
   sudoPassword?: string
   expectedHostKeyFingerprint?: string
   onHostKeyTrusted?: (fingerprint: string) => void
-  onAuthenticated?: () => void
+  onAuthenticated?: () => void | Promise<void>
 }
 
 export interface ExecResult {
@@ -98,7 +98,7 @@ export class SshClient {
         client.end()
         reject(hostKeyError ?? error)
       }
-      client.on('ready', () => {
+      client.on('ready', async () => {
         if (settled) return
         try {
           if (!presentedFingerprint) {
@@ -107,7 +107,7 @@ export class SshClient {
           if (!this.creds.expectedHostKeyFingerprint) {
             this.creds.onHostKeyTrusted?.(presentedFingerprint)
           }
-          this.creds.onAuthenticated?.()
+          await this.creds.onAuthenticated?.()
           settled = true
           this.client = client
           resolve()

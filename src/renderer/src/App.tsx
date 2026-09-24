@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Dashboard } from './pages/Dashboard'
 import { AddServer } from './pages/AddServer'
+import { ImportServer } from './pages/ImportServer'
 import { ServerKeys } from './pages/ServerKeys'
 import { ServerSettings } from './pages/ServerSettings'
 import type { Server } from '@shared/types'
@@ -8,8 +9,9 @@ import type { Server } from '@shared/types'
 type View =
   | { name: 'dashboard' }
   | { name: 'add' }
+  | { name: 'import' }
   | { name: 'keys'; server: Server }
-  | { name: 'settings'; server: Server }
+  | { name: 'settings'; server: Server; editingAccess?: boolean }
 
 export default function App(): React.JSX.Element {
   const [view, setView] = useState<View>({ name: 'dashboard' })
@@ -19,12 +21,31 @@ export default function App(): React.JSX.Element {
     window.api.servers.list().then(setServers)
   }, [])
 
+  const upsertServer = (server: Server): void => {
+    setServers((prev) => {
+      const others = prev.filter((s) => s.id !== server.id)
+      return [...others, server]
+    })
+  }
+
   if (view.name === 'add') {
     return (
       <AddServer
         onDone={(server) => {
-          setServers((prev) => [...prev, server])
+          upsertServer(server)
           setView({ name: 'keys', server })
+        }}
+        onBack={() => setView({ name: 'dashboard' })}
+      />
+    )
+  }
+
+  if (view.name === 'import') {
+    return (
+      <ImportServer
+        onDone={(server) => {
+          upsertServer(server)
+          setView({ name: 'settings', server })
         }}
         onBack={() => setView({ name: 'dashboard' })}
       />
@@ -44,6 +65,7 @@ export default function App(): React.JSX.Element {
     return (
       <ServerSettings
         server={view.server}
+        editingAccess={view.editingAccess ?? false}
         onBack={() => setView({ name: 'dashboard' })}
       />
     )
@@ -53,8 +75,10 @@ export default function App(): React.JSX.Element {
     <Dashboard
       servers={servers}
       onAdd={() => setView({ name: 'add' })}
+      onImport={() => setView({ name: 'import' })}
       onOpen={(server) => setView({ name: 'keys', server })}
       onSettings={(server) => setView({ name: 'settings', server })}
+      onEditAccess={(server) => setView({ name: 'settings', server, editingAccess: true })}
       onRemove={async (id) => {
         await window.api.servers.remove(id)
         setServers((prev) => prev.filter((s) => s.id !== id))

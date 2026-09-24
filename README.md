@@ -290,17 +290,13 @@ What the GUI can do:
 
 | Page | Operations |
 |---|---|
-| Dashboard | Server cards with reachability status, open, settings, delete; language switch |
-| Add server | Deploy a new VPS: upload `install.sh` + `xrayebator`, run the install, place the binary, run `quickstart --email`, save the server and the `subscription_url` |
-| Server keys | Refresh the subscription, copy the URL, show `vless://` links and QR codes |
+| Dashboard | Server cards with reachability and installation status; an empty screen offers “Deploy a new server” or “Connect an existing server”; language switch |
+| Add server | Deploy a new VPS with an explicit email choice: `quickstart --email` or `quickstart --without-email`; save the server and public subscription |
+| Connect existing | Import a recognized Xrayebator installation over SSH (password or key) using read-only `xrayebator inspect --json`; partial installs are saved with diagnostics, without automatic repair |
+| Server keys | Refresh the public subscription, copy the URL, show `vless://` links and QR codes |
 | Server settings | SSH access by password or private key, direct root or sudo; list/create/delete profiles, change fingerprint, SNI and port, plus update or uninstall Xrayebator on the server |
 
-Root + password is the one-click default; key authentication and sudo are optional. SSH passwords,
-sudo passwords, key passphrases and private-key contents stay only in renderer memory for the active
-form/session and are sent to the main process per operation. The app persists the server card,
-connection preferences, `subscription_url`, fetched `vless://` links and the pinned SSH host-key
-fingerprint. The subscription URL and VLESS links are bearer/client credentials: protect local app data
-and revoke the subscription through the terminal workflow after a leak.
+Root + password is the one-click default; key authentication and sudo are optional. A selected private key and a successfully used SSH login password are stored in the operating-system keychain via `keytar` and reused across later SSH operations and app restarts; the server card keeps only their non-secret credential ids and display name. A distinct sudo password and an encrypted-key passphrase are never persisted and are requested again when needed. If the OS keychain is unavailable, there is no plaintext fallback: the secret remains in main-process memory for the current app session and the UI warns that it must be entered again after restart. The app also persists the `subscription_url`, fetched `vless://` links and pinned SSH host-key fingerprint. The subscription URL and VLESS links are bearer/client credentials: protect local app data and revoke the subscription through the terminal workflow after a leak.
 
 The GUI exposes only a subset of the terminal menu. Bypass, `probe-test`, subscription revoke,
 `happ-setup`, cascade, self-steal and service logs/status remain terminal-only. See
@@ -314,8 +310,9 @@ npm run dev          # Electron + Vite dev server
 npm run build        # compile the renderer and the main process
 ```
 
-Electron checks: `npm test` runs the 9 unit files in `tests/`; `npm run typecheck` checks the
-TypeScript surface. `npm run build` produces the app bundle. On native Windows, the POSIX-only
+Electron checks: `npm test` runs the 14 unit files in `tests/`; `npm run typecheck` checks the
+TypeScript surface, including the strict onboarding contracts in `tests/type-contracts/`.
+`npm run build` produces the app bundle. On native Windows, the POSIX-only
 `tests/unit/shell-command.test.ts` may fail because `/bin/sh` is absent; Linux CI is the source of truth.
 See [Testing](docs/testing.md#desktop-gui) and [Electron Desktop GUI](docs/desktop-gui.md).
 

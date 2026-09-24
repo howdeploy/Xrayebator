@@ -1,7 +1,11 @@
-import { ipcMain, BrowserWindow, dialog } from 'electron'
+import { app, ipcMain, BrowserWindow, dialog } from 'electron'
 import net from 'node:net'
 import { basename, resolve } from 'node:path'
+import { randomUUID } from 'node:crypto'
+import { readFileSync, statSync } from 'node:fs'
 import type {
+  ImportServerPayload,
+  ImportStep,
   ProfileCreateInput,
   ProfileFingerprintInput,
   ProfilePortInput,
@@ -10,13 +14,23 @@ import type {
   ServerMaintenanceResult,
   SshAccessInput
 } from '@shared/types'
-import type { ServerStore } from './core/servers'
+import type { ServerConnectionMetadata, ServerStore } from './core/servers'
 import { Deployer } from './core/deployer'
 import { fetchSubscription } from './core/subscription'
 import { ProfileManager } from './core/profiles'
 import { ServerManager } from './core/server-manager'
+import { ServerInspector } from './core/server-inspector'
 import { probePortsFor } from './core/probe-ports'
-import { createSshCredentials, normalizeSshAccess } from './core/ssh-access'
+import {
+  createSshCredentials,
+  resolvePrivateKey,
+  resolveStoredSshPassword
+} from './core/ssh-access'
+import {
+  createSshKeychain,
+  createSshPasswordStore,
+  MAX_PRIVATE_KEY_BYTES
+} from './core/ssh-keychain'
 import type { SshCredentials } from './core/ssh-client'
 
 interface IpcContext {
@@ -29,55 +43,160 @@ export function registerIpcHandlers({ store }: IpcContext): void {
     if (server.privateKeyPath) approvedPrivateKeyPaths.add(resolve(server.privateKeyPath))
   }
 
+  const keychain = createSshKeychain()
+  const passwordStore = createSshPasswordStore()
+  const transientKeys = new Map<string, Buffer>()
+  const credentialStore = {
+    save: keychain.save,
+    load: async (credentialId: string): Promise<Buffer | null> => {
+      // Fallback key (OS keychain unavailable): one in-memory copy for the whole
+      // app session, issued as a fresh copy per SSH operation. The original is
+      // never returned to the renderer and is dropped at app exit.
+      const transient = transientKeys.get(credentialId)
+      if (transient) return Buffer.from(transient)
+      return keychain.load(credentialId)
+    },
+    remove: keychain.remove
+  }
+  app.on('before-quit', () => {
+    for (const key of transientKeys.values()) key.fill(0)
+    transientKeys.clear()
+  })
+
   ipcMain.handle('ssh:selectPrivateKey', async () => {
     const selection = await dialog.showOpenDialog({
       title: 'Выберите приватный SSH-ключ',
       properties: ['openFile', 'dontAddToRecent']
     })
     if (selection.canceled || selection.filePaths.length === 0) return null
+
     const path = resolve(selection.filePaths[0])
-    approvedPrivateKeyPaths.add(path)
-    return { path, name: basename(path) }
+    const stat = statSync(path)
+    if (!stat.isFile() || stat.size < 1 || stat.size > MAX_PRIVATE_KEY_BYTES) {
+      throw new Error('Файл приватного SSH-ключа пустой или слишком большой')
+    }
+
+    const temporaryKey = readFileSync(path)
+    const credentialId = randomUUID().replace(/-/g, '')
+    try {
+      await keychain.save(credentialId, temporaryKey)
+      return { credentialId, name: basename(path), persisted: true }
+    } catch {
+      // Keychain unavailable: keep a session-only in-memory copy (never returned to
+      // the renderer, never written to disk); the UI is told reuse is unavailable.
+      const temporaryCredentialId = randomUUID().replace(/-/g, '')
+      transientKeys.set(temporaryCredentialId, Buffer.from(temporaryKey))
+      return { credentialId: temporaryCredentialId, name: basename(path), persisted: false }
+    } finally {
+      temporaryKey.fill(0)
+    }
   })
 
-  const credentialsFor = (
-    server: Pick<Server, 'id' | 'host' | 'port' | 'privateKeyPath' | 'hostKeyFingerprint'> | null,
+  const persistSshPassword = async (
+    access: SshAccessInput,
+    existingCredentialId?: string | null
+  ): Promise<void> => {
+    if (access.authMethod !== 'password' || !access.password || access.passwordPersisted === true) {
+      return
+    }
+    const credentialId = existingCredentialId ?? access.passwordCredentialId ?? randomUUID().replace(/-/g, '')
+    try {
+      await passwordStore.save(credentialId, access.password)
+      access.passwordCredentialId = credentialId
+      access.passwordPersisted = true
+    } catch {
+      // OS keychain failure is non-fatal to the current authenticated session; no file fallback.
+      access.passwordCredentialId = undefined
+      access.passwordPersisted = false
+    }
+  }
+
+  const credentialsFor = async (
+    server: Pick<
+      Server,
+      | 'id'
+      | 'host'
+      | 'port'
+      | 'privateKeyPath'
+      | 'privateKeyCredentialId'
+      | 'privateKeyName'
+       | 'passwordCredentialId'
+       | 'passwordPersisted'
+      | 'hostKeyFingerprint'
+    > | null,
     target: { host: string; port: number },
     accessInput: SshAccessInput
-  ): { credentials: SshCredentials; access: SshAccessInput } => {
+  ): Promise<{ credentials: SshCredentials; access: SshAccessInput }> => {
     if (!accessInput || typeof accessInput !== 'object') {
       throw new Error('Не указаны параметры SSH-доступа')
     }
-    const access = normalizeSshAccess(accessInput, server?.privateKeyPath)
+    const resolved = await resolvePrivateKey(accessInput, server, approvedPrivateKeyPaths, credentialStore)
+    const privateKey = resolved.privateKey
+    const resolvedAccess = await resolveStoredSshPassword(resolved.access, server, passwordStore)
     const expectedHostKey =
       store.getHostKey(target.host, target.port) ?? server?.hostKeyFingerprint ?? undefined
-    const credentials = createSshCredentials(target, access, {
+    const credentials = createSshCredentials(target, resolvedAccess, {
       approvedPrivateKeyPaths,
       expectedHostKeyFingerprint: expectedHostKey,
       fallbackPrivateKeyPath: server?.privateKeyPath,
+      privateKey,
       onHostKeyTrusted: (fingerprint) => {
         store.trustHostKey(target.host, target.port, fingerprint)
       },
       onAuthenticated: server
-        ? () => {
+        ? async () => {
             if (expectedHostKey) store.trustHostKey(target.host, target.port, expectedHostKey)
+            await persistSshPassword(resolvedAccess, server.passwordCredentialId)
             store.updateConnection(server.id, {
-              username: access.username,
-              authMethod: access.authMethod,
-              privilegeMode: access.privilegeMode,
-              privateKeyPath: access.privateKeyPath ?? null
+              username: resolvedAccess.username,
+              authMethod: resolvedAccess.authMethod,
+              privilegeMode: resolvedAccess.privilegeMode,
+              privateKeyPath: resolvedAccess.privateKeyPersisted ? null : resolvedAccess.privateKeyPath ?? null,
+              privateKeyCredentialId: resolvedAccess.privateKeyCredentialId ?? null,
+              privateKeyName: resolvedAccess.privateKeyName ?? null,
+              privateKeyPersisted: resolvedAccess.privateKeyPersisted ?? null,
+              passwordCredentialId: resolvedAccess.passwordCredentialId ?? null,
+              passwordPersisted: resolvedAccess.passwordPersisted ?? null
             })
           }
         : undefined
     })
-    return { credentials, access }
+    return { credentials, access: resolvedAccess }
   }
 
   ipcMain.handle('servers:list', (): Server[] => store.list())
   ipcMain.handle('servers:get', (_e, id: string): Server | null => store.get(id) ?? null)
-  ipcMain.handle('servers:remove', (_e, id: string): void => {
+  ipcMain.handle('servers:remove', async (_e, id: string): Promise<void> => {
     const server = store.get(id)
     if (!server || !store.remove(id)) return
+    const credentialId = server.privateKeyCredentialId
+    if (credentialId) {
+      // Ключ удаляем из keychain только когда на него не ссылается другая карточка.
+      if (store.countCredentialReferences(credentialId) === 0) {
+        const transient = transientKeys.get(credentialId)
+        if (transient) {
+          transient.fill(0)
+          transientKeys.delete(credentialId)
+        } else {
+          try {
+            await keychain.remove(credentialId)
+          } catch {
+            // Ключ уже отсутствует или хранилище недоступно — карточка всё равно удалена.
+          }
+        }
+      }
+    }
+    const passwordCredentialId = server.passwordCredentialId
+    if (
+      passwordCredentialId &&
+      store.countPasswordCredentialReferences(passwordCredentialId) === 0
+    ) {
+      try {
+        await passwordStore.remove(passwordCredentialId)
+      } catch {
+        // Ключница недоступна или запись уже удалена; карточка всё равно удалена.
+      }
+    }
     const sameEndpointRemains = store
       .list()
       .some(
@@ -119,11 +238,13 @@ export function registerIpcHandlers({ store }: IpcContext): void {
     ;(async () => {
       try {
         const target = { host: payload.host, port: payload.port }
-        const { credentials, access } = credentialsFor(null, target, payload.access)
+        const { credentials, access } = await credentialsFor(null, target, payload.access)
         const result = await deployer.deploy({
+          emailMode: payload.emailMode === 'without' ? 'without' : 'provided',
           email: payload.email,
           credentials
         })
+        await persistSshPassword(access)
 
         const server = store.add({
           name: payload.host,
@@ -139,7 +260,12 @@ export function registerIpcHandlers({ store }: IpcContext): void {
           keys: result.keys,
           authMethod: access.authMethod,
           privilegeMode: access.privilegeMode,
-          privateKeyPath: access.privateKeyPath ?? null,
+          privateKeyPath: access.privateKeyPersisted ? null : access.privateKeyPath ?? null,
+          privateKeyCredentialId: access.privateKeyCredentialId ?? null,
+          privateKeyName: access.privateKeyName ?? null,
+          privateKeyPersisted: access.privateKeyPersisted ?? null,
+          passwordCredentialId: access.passwordCredentialId ?? null,
+          passwordPersisted: access.passwordPersisted ?? null,
           hostKeyFingerprint: store.getHostKey(payload.host, payload.port) ?? null
         })
 
@@ -168,15 +294,85 @@ export function registerIpcHandlers({ store }: IpcContext): void {
     return { serverId, subscriptionUrl: server.subscriptionUrl, keys }
   })
 
-  const profileManagerFor = (serverId: string, access: SshAccessInput): ProfileManager => {
+  ipcMain.handle('servers:import', async (event, payload: ImportServerPayload) => {
+    if (!payload || typeof payload !== 'object') throw new Error('Некорректный запрос импорта')
+    if (!payload.access) {
+      throw new Error('Не указаны параметры SSH-доступа')
+    }
+    const emitStep = (step: ImportStep): void => {
+      if (!event.sender.isDestroyed()) {
+        event.sender.send('servers:importEvent', { step })
+      }
+    }
+    const emitLog = (text: string): void => {
+      if (!event.sender.isDestroyed()) {
+        event.sender.send('servers:importEvent', { log: text })
+      }
+    }
+    emitStep('ssh')
+    const target = { host: payload.host, port: payload.port }
+    const { credentials, access } = await credentialsFor(null, target, payload.access)
+    emitStep('inspect')
+    const inspector = new ServerInspector(
+      credentials,
+      async (url) => {
+        emitStep('subscription')
+        return fetchSubscription(url)
+      },
+      emitLog
+    )
+    const result = await inspector.inspect()
+    await persistSshPassword(access)
+    emitStep('save')
+    emitLog('card: сервер сохранён в списке, открываю панель настроек')
+
+    const connection: ServerConnectionMetadata = {
+      username: access.username,
+      authMethod: access.authMethod,
+      privilegeMode: access.privilegeMode,
+      privateKeyPath: access.privateKeyPersisted ? null : access.privateKeyPath ?? null,
+      privateKeyCredentialId: access.privateKeyCredentialId ?? null,
+      privateKeyName: access.privateKeyName ?? null,
+      privateKeyPersisted: access.privateKeyPersisted ?? null,
+      passwordCredentialId: access.passwordCredentialId ?? null,
+      passwordPersisted: access.passwordPersisted ?? null
+    }
+
+    const server = store.upsertImported(
+      {
+        name: payload.host,
+        host: payload.host,
+        port: payload.port,
+        username: access.username,
+        os: result.os,
+        country: result.country,
+        city: result.city,
+        flag: result.flag,
+        routesCount: result.routesCount,
+        subscriptionUrl: result.subscriptionUrl,
+        keys: result.keys,
+        setupStatus: result.setupStatus,
+        diagnostics: result.diagnostics,
+        hostKeyFingerprint: store.getHostKey(payload.host, payload.port) ?? null
+      },
+      connection
+    )
+
+    return { serverId: server.id, diagnostics: result.diagnostics, keys: result.keys }
+  })
+
+  const profileManagerFor = async (
+    serverId: string,
+    access: SshAccessInput
+  ): Promise<ProfileManager> => {
     const server = store.get(serverId)
     if (!server) throw new Error('Сервер не найден')
-    const { credentials } = credentialsFor(server, server, access)
+    const { credentials } = await credentialsFor(server, server, access)
     return new ProfileManager(credentials)
   }
 
   ipcMain.handle('profiles:list', async (_e, serverId: string, access: SshAccessInput) => {
-    const manager = profileManagerFor(serverId, access)
+    const manager = await profileManagerFor(serverId, access)
     const result = await manager.list()
     if (!result.ok) throw new Error(result.error ?? 'Не удалось получить список профилей')
     return result
@@ -190,7 +386,7 @@ export function registerIpcHandlers({ store }: IpcContext): void {
       access: SshAccessInput,
       input: ProfileCreateInput
     ) => {
-      const manager = profileManagerFor(serverId, access)
+      const manager = await profileManagerFor(serverId, access)
       return manager.create(input)
     }
   )
@@ -198,7 +394,7 @@ export function registerIpcHandlers({ store }: IpcContext): void {
   ipcMain.handle(
     'profiles:remove',
     async (_e, serverId: string, access: SshAccessInput, name: string) => {
-      const manager = profileManagerFor(serverId, access)
+      const manager = await profileManagerFor(serverId, access)
       return manager.remove(name)
     }
   )
@@ -211,7 +407,7 @@ export function registerIpcHandlers({ store }: IpcContext): void {
       access: SshAccessInput,
       input: ProfileFingerprintInput
     ) => {
-      const manager = profileManagerFor(serverId, access)
+      const manager = await profileManagerFor(serverId, access)
       return manager.changeFingerprint(input)
     }
   )
@@ -224,13 +420,13 @@ export function registerIpcHandlers({ store }: IpcContext): void {
       access: SshAccessInput,
       input: ProfileSniInput
     ) => {
-      const manager = profileManagerFor(serverId, access)
+      const manager = await profileManagerFor(serverId, access)
       return manager.changeSni(input)
     }
   )
 
   ipcMain.handle('profiles:sniList', async (_e, serverId: string, access: SshAccessInput) => {
-    const manager = profileManagerFor(serverId, access)
+    const manager = await profileManagerFor(serverId, access)
     return manager.sniList()
   })
 
@@ -242,29 +438,32 @@ export function registerIpcHandlers({ store }: IpcContext): void {
       access: SshAccessInput,
       input: ProfilePortInput
     ) => {
-      const manager = profileManagerFor(serverId, access)
+      const manager = await profileManagerFor(serverId, access)
       return manager.changePort(input)
     }
   )
 
-  const serverManagerFor = (serverId: string, access: SshAccessInput): ServerManager => {
+  const serverManagerFor = async (
+    serverId: string,
+    access: SshAccessInput
+  ): Promise<ServerManager> => {
     const server = store.get(serverId)
     if (!server) throw new Error('Сервер не найден')
-    const { credentials } = credentialsFor(server, server, access)
+    const { credentials } = await credentialsFor(server, server, access)
     return new ServerManager(credentials)
   }
 
   ipcMain.handle(
     'server:update',
     async (_e, serverId: string, access: SshAccessInput): Promise<ServerMaintenanceResult> => {
-      return serverManagerFor(serverId, access).update()
+      return (await serverManagerFor(serverId, access)).update()
     }
   )
 
   ipcMain.handle(
     'server:uninstall',
     async (_e, serverId: string, access: SshAccessInput): Promise<ServerMaintenanceResult> => {
-      return serverManagerFor(serverId, access).uninstall()
+      return (await serverManagerFor(serverId, access)).uninstall()
     }
   )
 }

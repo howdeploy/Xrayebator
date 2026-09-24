@@ -1,17 +1,31 @@
 import { useEffect, useState } from 'react'
-import { Button, Chip, AlertDialog, Dropdown, DropdownItem } from '@heroui/react'
+import {
+  Button,
+  AlertDialog,
+  Dropdown,
+  DropdownItem
+} from '@heroui/react'
 import {
   Settings2,
   Trash2,
   TriangleAlert,
   KeyRound,
   ChevronDown,
-  Check
+  Check,
+  Rocket,
+  Link2,
+  Lock,
+  MapPin,
+  MonitorCog,
+  Route,
+  User,
+  EllipsisVertical
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { setLanguage, supportedLngs, type SupportedLng } from '../i18n'
 import type { Server } from '@shared/types'
 import { CountryFlag } from '../components/CountryFlag'
+import { accessSummary, type AccessSecretState } from './server-access'
 import styles from './Dashboard.module.css'
 
 const LANG_LABELS: Record<SupportedLng, string> = {
@@ -20,19 +34,37 @@ const LANG_LABELS: Record<SupportedLng, string> = {
   zh: '中文'
 }
 
+// Где лежит секрет доступа — ключ i18n; предупреждающий тон для не-персистентных случаев.
+const SECRET_I18N: Record<AccessSecretState, string> = {
+  passwordSaved: 'dashboard.secretPasswordSaved',
+  keySaved: 'dashboard.secretKeySaved',
+  sessionOnly: 'dashboard.secretSessionOnly',
+  notSaved: 'dashboard.secretNotSaved'
+}
+const SECRET_WARN: Record<AccessSecretState, boolean> = {
+  passwordSaved: false,
+  keySaved: false,
+  sessionOnly: true,
+  notSaved: true
+}
+
 interface DashboardProps {
   servers: Server[]
   onAdd: () => void
+  onImport: () => void
   onOpen: (server: Server) => void
   onSettings: (server: Server) => void
+  onEditAccess: (server: Server) => void
   onRemove: (id: string) => void
 }
 
 export function Dashboard({
   servers,
   onAdd,
+  onImport,
   onOpen,
   onSettings,
+  onEditAccess,
   onRemove
 }: DashboardProps): React.JSX.Element {
   const { t, i18n } = useTranslation()
@@ -95,72 +127,160 @@ export function Dashboard({
             </Dropdown.Popover>
           </Dropdown>
           {servers.length > 0 && (
-            <Button variant="primary" size="md" onPress={onAdd}>
-              + {t('dashboard.add')}
-            </Button>
+            <Dropdown>
+              <Dropdown.Trigger className={styles.langSelect} aria-label={t('dashboard.add')}>
+                <span className={styles.langSelectValue}>{t('dashboard.add')}</span>
+                <ChevronDown size={14} className={styles.langSelectChevron} />
+              </Dropdown.Trigger>
+              <Dropdown.Popover placement="bottom end" className={styles.langPopup}>
+                <Dropdown.Menu>
+                  <DropdownItem key="deploy" className={styles.langItem} onAction={onAdd}>
+                    <Rocket size={14} />
+                    <span className={styles.langItemLabel}>{t('dashboard.addDeploy')}</span>
+                  </DropdownItem>
+                  <DropdownItem key="import" className={styles.langItem} onAction={onImport}>
+                    <Link2 size={14} />
+                    <span className={styles.langItemLabel}>{t('dashboard.addImport')}</span>
+                  </DropdownItem>
+                </Dropdown.Menu>
+              </Dropdown.Popover>
+            </Dropdown>
           )}
         </div>
       </header>
 
       <div className={styles.list}>
-        {servers.map((server) => (
-          <div key={server.id} className={styles.card}>
-            <div className={styles.cardHeader}>
-              <span
-                className={`${styles.statusDot} ${
-                  online[server.id] ? styles.statusDotOnline : styles.statusDotOffline
-                }`}
-              />
-              <div className={styles.cardInfo}>
-                <div className={styles.cardTitle}>
-                  <CountryFlag flag={server.flag} className={styles.flag} />
-                  {server.name}
+        {servers.map((server) => {
+          const summary = accessSummary(server)
+          return (
+            <div key={server.id} className={styles.card}>
+              <div className={styles.cardHead}>
+                <div className={styles.cardHeader}>
+                  <span
+                    className={`${styles.statusDot} ${
+                      online[server.id] ? styles.statusDotOnline : styles.statusDotOffline
+                    }`}
+                  />
+                  <div className={styles.cardTitle}>
+                    <CountryFlag flag={server.flag} className={styles.flag} />
+                    {server.name}
+                  </div>
+                  <MapPin size={13} className={styles.cardLocationIcon} />
+                  <div className={styles.cardLocation}>
+                    {[server.country, server.city].filter(Boolean).join(' · ') || '—'}
+                  </div>
                 </div>
-                <div className={styles.cardMeta}>
-                  <Chip size="sm" color="default">
-                    {server.country || '—'}
-                  </Chip>
-                  {server.city && <span>{server.city}</span>}
-                  <Chip size="sm" color="default">
-                    {server.os ?? '—'}
-                  </Chip>
-                  <span>
-                    {t('dashboard.routes', { count: server.routesCount ?? 0 })}
-                  </span>
+                <span
+                  className={`${styles.setupBadge} ${
+                    server.setupStatus === 'ready'
+                      ? styles.setupBadgeReady
+                      : server.setupStatus === 'partial'
+                        ? styles.setupBadgePartial
+                        : styles.setupBadgeDefault
+                  }`}
+                >
+                  {t(`dashboard.setup.${server.setupStatus ?? 'unknown'}`)}
+                </span>
+              </div>
+
+              <div className={styles.cardStats}>
+                <div className={styles.statCard}>
+                  <MonitorCog size={27} className={styles.statIcon} />
+                  <div className={styles.statText}>
+                    <span className={styles.statValue}>{server.os ?? '—'}</span>
+                    <span className={styles.statLabel}>{t('dashboard.statOs')}</span>
+                  </div>
+                </div>
+                <div className={`${styles.statCard} ${styles.statCardInline}`}>
+                  <Route size={27} className={styles.statIcon} />
+                  <span className={styles.statValue}>{server.routesCount ?? 0}</span>
+                  <span className={styles.statLabel}>{t('dashboard.statRoutes')}</span>
+                </div>
+                <div className={styles.statCard}>
+                  <User size={27} className={styles.statIcon} />
+                  <div className={styles.statText}>
+                    <span className={styles.statValue}>{summary.endpoint}</span>
+                    <span
+                      className={`${styles.statLabel} ${
+                        SECRET_WARN[summary.secret] ? styles.accessSecretWarn : ''
+                      }`}
+                    >
+                      <Lock size={11} className={styles.accessSecretIcon} />
+                      {t(SECRET_I18N[summary.secret])}
+                    </span>
+                  </div>
+                  <Dropdown>
+                    <Dropdown.Trigger
+                      className={styles.statMenuBtn}
+                      aria-label={t('dashboard.changeAccess')}
+                    >
+                      <EllipsisVertical size={16} />
+                    </Dropdown.Trigger>
+                    <Dropdown.Popover placement="bottom end" className={styles.langPopup}>
+                      <Dropdown.Menu>
+                        <DropdownItem
+                          key="access"
+                          className={styles.langItem}
+                          onAction={() => onEditAccess(server)}
+                        >
+                          <Lock size={14} />
+                          <span className={styles.langItemLabel}>
+                            {t('dashboard.changeAccess')}
+                          </span>
+                        </DropdownItem>
+                      </Dropdown.Menu>
+                    </Dropdown.Popover>
+                  </Dropdown>
                 </div>
               </div>
+
+              <div className={styles.cardActions}>
+                <Button size="sm" variant="secondary" onPress={() => onOpen(server)}>
+                  <KeyRound size={16} />
+                  {t('dashboard.keys')}
+                </Button>
+                <Button size="sm" variant="secondary" onPress={() => onSettings(server)}>
+                  <Settings2 size={16} />
+                  {t('dashboard.settings')}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="danger-soft"
+                  onPress={() => setPendingRemove(server)}
+                >
+                  <Trash2 size={16} />
+                  {t('dashboard.delete')}
+                </Button>
+              </div>
             </div>
-            <div className={styles.cardActions}>
-              <Button size="sm" variant="secondary" onPress={() => onOpen(server)}>
-                <KeyRound size={16} />
-                {t('dashboard.keys')}
-              </Button>
-              <Button size="sm" variant="secondary" onPress={() => onSettings(server)}>
-                <Settings2 size={16} />
-                {t('dashboard.settings')}
-              </Button>
-              <Button
-                size="sm"
-                variant="danger-soft"
-                onPress={() => setPendingRemove(server)}
-              >
-                <Trash2 size={16} />
-                {t('dashboard.delete')}
-              </Button>
-            </div>
-          </div>
-        ))}
+          )
+        })}
 
         {servers.length === 0 && (
-          <Button
-            className={styles.emptyCard}
-            variant="ghost"
-            size="lg"
-            onPress={onAdd}
-          >
-            <span className={styles.emptyPlus}>+</span>
-            <span className={styles.emptyText}>{t('dashboard.empty')}</span>
-          </Button>
+          <div className={styles.onboardingGrid}>
+            <button type="button" className={styles.onboardingCard} onClick={onAdd}>
+              <span className={styles.onboardingIcon}>
+                <Rocket size={26} />
+              </span>
+              <span className={styles.onboardingBody}>
+                <strong>{t('dashboard.onboardDeployTitle')}</strong>
+                <small>{t('dashboard.onboardDeployHint')}</small>
+              </span>
+            </button>
+            <button
+              type="button"
+              className={`${styles.onboardingCard} ${styles.onboardingCardSecondary}`}
+              onClick={onImport}
+            >
+              <span className={styles.onboardingIcon}>
+                <Link2 size={26} />
+              </span>
+              <span className={styles.onboardingBody}>
+                <strong>{t('dashboard.onboardImportTitle')}</strong>
+                <small>{t('dashboard.onboardImportHint')}</small>
+              </span>
+            </button>
+          </div>
         )}
       </div>
 

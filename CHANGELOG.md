@@ -2,6 +2,26 @@
 
 User-facing Xrayebator changes. The server manager and Electron application are published from the canonical `howdeploy/Xrayebator` repository.
 
+## [Unreleased]
+
+### Added
+
+- Optional email during deployment: `quickstart --without-email` registers Certbot with `--register-unsafely-without-email` instead of substituting a fake address; the GUI offers both modes and explains that renewal notices and ACME account recovery are unavailable without an email.
+- Separate "deploy a new server" and "connect an existing server" flows. Import is strictly read-only (`xrayebator inspect --json`), recognizes Xrayebator installations only, and imports a partially configured server with honest component statuses.
+- SSH login password is stored in the operating-system keychain after the first successful authentication and reused across restarts; the server card keeps only its non-secret credential id.
+- Server card shows a summary of the saved access (`user@host:port`, where the secret lives) with a three-dot menu to change it, plus the reported OS, active route count and SSH user as icon tiles.
+- The import wizard shows a live console of the work performed, alongside the step index.
+
+### Changed
+
+- Server Settings auto-connects with saved credentials and shows the profile panel directly; the access form appears only when there is no saved secret or a connection failed. The installation-status table was removed as a duplicate of the deployment and import consoles.
+- The subscription token is masked in the deployment log and import console, because it is a bearer credential.
+
+### Fixed
+
+- `quickstart` no longer fails with `apt-get install nginx failed` when `unattended-upgrades` holds the apt/dpkg lock: every install waits for an active `unattended-upgrade` worker within a 12-minute budget and passes `-o DPkg::Lock::Timeout=180`.
+- Bash validation scripts no longer die with `tr: write error: Broken pipe` on Ubuntu (`pipefail` plus an early-exiting reader).
+
 ## [0.5.0] - 2026-09-22
 
 The first combined release of the updated server manager and **Xrayebator Desktop GUI**.

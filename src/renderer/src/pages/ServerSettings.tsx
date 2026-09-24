@@ -1,10 +1,9 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button, TextField, Label, Input, Chip, Spinner, AlertDialog } from '@heroui/react'
 import {
   Settings2,
   Play,
   Trash2,
-  Power,
   Lock,
   CloudDownload,
   CloudOff,
@@ -18,10 +17,13 @@ import {
 import { useTranslation } from 'react-i18next'
 import type { Server, ServerProfile, SniEntry, SshAccessInput } from '@shared/types'
 import { isSshAccessReady, SshAccessForm } from '../components/SshAccessForm'
+import { shouldAutoConnectServer } from './server-access'
 import styles from './ServerSettings.module.css'
 
 interface ServerSettingsProps {
   server: Server
+  /** Открыт по «Изменить доступ» с карточки сервера: показать форму, не автоподключаясь. */
+  editingAccess?: boolean
   onBack: () => void
 }
 
@@ -52,18 +54,28 @@ export const SNI_CATEGORIES = [
 
 export const PORT_PRESETS = [443, 8443, 2053, 2083, 2087, 2096, 9443, 8080] as const
 
-export function ServerSettings({ server, onBack }: ServerSettingsProps): React.JSX.Element {
+export function ServerSettings({
+  server,
+  editingAccess = false,
+  onBack
+}: ServerSettingsProps): React.JSX.Element {
   const { t } = useTranslation()
   const [access, setAccess] = useState<SshAccessInput>({
     username: server.username || 'root',
     authMethod: server.authMethod ?? 'password',
     password: '',
+    passwordCredentialId: server.passwordCredentialId ?? undefined,
+    passwordPersisted: server.passwordPersisted ?? undefined,
     privateKeyPath: server.privateKeyPath ?? undefined,
+    privateKeyCredentialId: server.privateKeyCredentialId ?? undefined,
+    privateKeyName: server.privateKeyName ?? undefined,
+    privateKeyPersisted: server.privateKeyPersisted ?? undefined,
     passphrase: '',
     privilegeMode: server.privilegeMode ?? 'root',
     sudoPassword: ''
   })
   const [busy, setBusy] = useState(false)
+  const autoConnectStarted = useRef(false)
   const [profiles, setProfiles] = useState<ServerProfile[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [toast, setToast] = useState<string | null>(null)
@@ -131,10 +143,16 @@ export function ServerSettings({ server, onBack }: ServerSettingsProps): React.J
     try {
       const result = await window.api.profiles.list(server.id, access)
       setProfiles(result.profiles ?? [])
-      void window.api.servers
-        .get(server.id)
-        .then((refreshed) => setHostKeyFingerprint(refreshed?.hostKeyFingerprint ?? null))
-        .catch(() => {})
+      const refreshed = await window.api.servers.get(server.id)
+      setHostKeyFingerprint(refreshed?.hostKeyFingerprint ?? null)
+      if (refreshed) {
+        setAccess((current) => ({
+          ...current,
+          passwordCredentialId: refreshed.passwordCredentialId ?? current.passwordCredentialId,
+          passwordPersisted: refreshed.passwordPersisted ?? current.passwordPersisted,
+          password: refreshed.passwordPersisted ? '' : current.password
+        }))
+      }
     } catch (err) {
       setProfiles(null)
       setError(err instanceof Error ? err.message : String(err))
@@ -142,6 +160,13 @@ export function ServerSettings({ server, onBack }: ServerSettingsProps): React.J
       setBusy(false)
     }
   }
+
+  useEffect(() => {
+    if (autoConnectStarted.current) return
+    autoConnectStarted.current = true
+    if (editingAccess) return
+    if (shouldAutoConnectServer(server)) void load()
+  }, [server.id])
 
   const create = async (): Promise<void> => {
     if (!accessReady) {
@@ -388,17 +413,6 @@ export function ServerSettings({ server, onBack }: ServerSettingsProps): React.J
   const transportLabel = (profile: ServerProfile): string =>
     profile.multi_route ? `${profile.transport} · ${profile.routes} ${t('settings.routes')}` : profile.transport
 
-  const reset = (): void => {
-    setProfiles(null)
-    setError(null)
-    setAccess((current) => ({
-      ...current,
-      password: '',
-      passphrase: '',
-      sudoPassword: ''
-    }))
-  }
-
   return (
     <div className={styles.root}>
       <header className={styles.header}>
@@ -444,19 +458,19 @@ export function ServerSettings({ server, onBack }: ServerSettingsProps): React.J
       </header>
 
       <div className={styles.body}>
-        <section className={styles.connectCard}>
-          <p className={styles.hint}>
-            {t('settings.hint')}
-          </p>
-          <SshAccessForm
-            value={access}
-            onChange={setAccess}
-            disabled={busy}
-            hostKeyFingerprint={hostKeyFingerprint}
-            onForgetHostKey={() => setConfirmHostKeyReset(true)}
-          />
-          <div className={styles.accessActions}>
-            {!connected ? (
+        {!connected && (
+          <section className={styles.connectCard}>
+            <p className={styles.hint}>
+              {t('settings.hint')}
+            </p>
+            <SshAccessForm
+              value={access}
+              onChange={setAccess}
+              disabled={busy}
+              hostKeyFingerprint={hostKeyFingerprint}
+              onForgetHostKey={() => setConfirmHostKeyReset(true)}
+            />
+            <div className={styles.accessActions}>
               <Button
                 variant="primary"
                 size="lg"
@@ -467,15 +481,10 @@ export function ServerSettings({ server, onBack }: ServerSettingsProps): React.J
                 <Play size={16} />
                 {busy ? t('settings.connecting') : t('settings.connect')}
               </Button>
-            ) : (
-              <Button variant="secondary" size="lg" isDisabled={busy} onPress={reset}>
-                <Power size={16} />
-                {t('settings.changePassword')}
-              </Button>
-            )}
-          </div>
-          <p className={styles.passwordNote}>{t('settings.passwordNote')}</p>
-        </section>
+            </div>
+            <p className={styles.passwordNote}>{t('settings.passwordNote')}</p>
+          </section>
+        )}
 
         {error && <div className={styles.error}>{t('settings.error')}: {error}</div>}
         {toast && <div className={styles.toast}>{toast}</div>}

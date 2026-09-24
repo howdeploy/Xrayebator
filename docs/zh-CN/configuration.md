@@ -101,6 +101,8 @@ Xrayebator 不会更改主机的 TCP 拥塞控制算法，也不会写入或应�
 | `sudo xrayebator update <branch>` | 从规范 raw 仓库分支 self-update 管理器，继续使用新脚本，然后更新 Xray-core |
 | `sudo xrayebator probe-test` | 更换 SNI 前，从 VPS 检查其可达性 |
 | `sudo xrayebator quickstart --email <邮箱>` | 桌面 GUI 使用的一次性部署路径：执行广泛设置/迁移，在 `8443` 配置 IP-TLS endpoint，创建带 `schema_version: 3` 和 7 条线路的标准 HAPP 配置档；输出带 `subscription_url` 的 JSON。非交互迁移是 best-effort，请检查最终配置档与服务 |
+| `sudo xrayebator quickstart --without-email` | 相同的一次性部署路径，但不提供 ACME 联系邮箱；Certbot 使用 `--register-unsafely-without-email`，因此没有续期通知或邮箱恢复 |
+| `sudo xrayebator inspect --json` | GUI 导入时使用的只读安装检查：返回 Xray、配置档和订阅标记状态；不会安装、迁移或修改配置 |
 | `sudo xrayebator happ-setup` | 已有安装的精简 HAPP 路径：确保订阅服务和可用的多线路配置档；缺少订阅域或端口标记时，会先验证 `8443` 的产品 IP-TLS endpoint，否则失败 |
 | `sudo xrayebator profiles` | 以 JSON 数组输出服务器全部配置档（供桌面 GUI「服务器设置」页使用） |
 | `sudo xrayebator profile-create --name 名称 [--transport tcp\|tcp-utls\|tcp-xudp\|tcp-mux\|grpc\|xhttp] [--port P] [--count N]` | 非交互式创建单个或多个配置档，打印 `{"ok":true,"names":[...],"errors":[...]}` |

@@ -224,10 +224,24 @@ if [[ "$XRAYEBATOR_SOURCED" -eq 0 ]]; then
   fi
 fi
 
-# Ждёт освобождения apt/dpkg lock (apt-daily, unattended-upgrades и т.п.).
-# На свежих Ubuntu после первого входа фоновые сервисы держат lock до ~10 минут,
-# из-за чего `apt-get install` молча висит и падает по timeout (GUI: «quickstart код 1»).
-# Возвращает 0, когда lock свободен, или 1 по истечении timeout (сек).
+# Встроенное в apt ожидание dpkg lock. На Ubuntu 22.04 apt уже ставит дефолт
+# DPkg::Lock::Timeout=120 (видно в apt-config dump) — поднятием до 180 мы лишь
+# страхуем системы без дефолта. Это НЕ основной механизм ожидания: entire
+# очередь unattended-upgrades занимает lock ~10 минут (замер на живом VPS
+# 2026-09-23), а apt с опцией ждёт только её окно. Основной механизм —
+# _apt_wait_lock по процессу-воркеру.
+APT_LOCK_OPTS=(-o "DPkg::Lock::Timeout=180")
+
+# Ждёт освобождения apt/dpkg lock (apt-daily, unattended-upgrades и т.п.)
+# до запуска собственной apt-команды. Возвращает 0, когда можно ставить пакеты,
+# или 1 по истечении timeout (сек).
+# Критично: на свежеподнятых Ubuntu unattended-upgrades прогоняет полный
+# security-апгрейд (~90 пакетов, ~10 минут — dpkg вызывается отдельно на
+# каждый). Между пакетами flock свободен секунды, голый flock проскакивает в
+# такой зазор, apt стартует и умирает по своему lock-timeout или внешнему kill
+# (зафиксировано на живом VPS 2026-09-23: quickstart падал с «apt-get install
+# nginx failed» при формально «свободном» lock).
+# Поэтому занятым считаем и активный рабочий процесс unattended-upgrade.
 _apt_wait_lock() {
   local max_sec="${1:-300}"
   local deadline=$(( $(date +%s) + max_sec ))
@@ -240,14 +254,24 @@ _apt_wait_lock() {
   while (( $(date +%s) < deadline )); do
     local held=0
     local lock
-    for lock in "${locks[@]}"; do
-      # flock не создаёт файл — touch обязателен для несуществующих lock-путей.
-      touch "$lock" 2>/dev/null || true
-      if ! flock -n "$lock" true 2>/dev/null; then
-        held=1
-        break
-      fi
-    done
+    # Активный рабочий процесс unattended-upgrade = очередь пакетов ещё идёт.
+    # По comm не различить (ядро обрезает до 15 символов «unattended-upgr» и у
+    # воркера, и у резидентного shutdown-helper'а с самого бутa) — проверяем
+    # cmdline: путь скрипта ровно «/usr/bin/unattended-upgrade» (helper'овский
+    # «/usr/share/unattended-upgrades/unattended-upgrade-shutdown» не совпадает).
+    if command -v pgrep >/dev/null 2>&1 && pgrep -f '/usr/bin/unattended-upgrade( |$)' >/dev/null 2>&1; then
+      held=1
+    fi
+    if [[ "$held" -eq 0 ]]; then
+      for lock in "${locks[@]}"; do
+        # flock не создаёт файл — touch обязателен для несуществующих lock-путей.
+        touch "$lock" 2>/dev/null || true
+        if ! flock -n "$lock" true 2>/dev/null; then
+          held=1
+          break
+        fi
+      done
+    fi
     if [[ "$held" -eq 0 ]]; then
       return 0
     fi
@@ -1251,7 +1275,7 @@ _ensure_certbot_ip_tls() {
   done
 
   echo -e "${YELLOW}  → Системный certbot не поддерживает IP certificates; ставлю актуальный certbot через snap...${NC}"
-  if ! apt-get install -y snapd >/dev/null 2>&1; then
+  if ! apt-get "${APT_LOCK_OPTS[@]}" install -y snapd >/dev/null 2>&1; then
     echo -e "${RED}✗ Не удалось установить snapd для Certbot 5.4+${NC}"
     return 1
   fi
@@ -4661,7 +4685,7 @@ install_selfsteal_stub_menu() {
   fi
 
   echo -e "${CYAN}  → Установка nginx + certbot...${NC}"
-  if ! apt-get install -y nginx certbot >/dev/null 2>&1; then
+  if ! apt-get "${APT_LOCK_OPTS[@]}" install -y nginx certbot >/dev/null 2>&1; then
     echo -e "${RED}✗ apt-get install nginx certbot не удалось${NC}"
     return 1
   fi
@@ -5384,10 +5408,10 @@ install_subscription_server() {
   if ! command -v socat &>/dev/null; then
     echo -e "${CYAN}  → Установка socat...${NC}"
     _apt_wait_lock 300 || true
-    if ! timeout 180 apt-get install -y socat >/dev/null 2>&1; then
+    if ! timeout 240 apt-get "${APT_LOCK_OPTS[@]}" install -y socat >/dev/null 2>&1; then
       _apt_wait_lock 300 || true
       timeout 180 apt-get update >/dev/null 2>&1 || true
-      if ! timeout 180 apt-get install -y socat >/dev/null 2>&1; then
+      if ! timeout 240 apt-get "${APT_LOCK_OPTS[@]}" install -y socat >/dev/null 2>&1; then
         echo -e "${RED}✗ Не удалось установить socat${NC}"
         echo -e "${YELLOW}Установите вручную: apt-get install -y socat${NC}"
         return 1
@@ -6112,7 +6136,7 @@ install_subscription_ip_tls() {
   echo -e "${CYAN}  → HTTPS порт подписки: $pub_port${NC}"
 
   echo -e "${CYAN}  → Установка nginx...${NC}"
-  if ! apt-get install -y nginx >/dev/null 2>&1; then
+  if ! apt-get "${APT_LOCK_OPTS[@]}" install -y nginx >/dev/null 2>&1; then
     echo -e "${RED}✗ apt-get install nginx не удалось${NC}"
     return 1
   fi
@@ -6345,7 +6369,7 @@ install_subscription_public_tls() {
   echo -e "${CYAN}  → Публичный порт: $pub_port${NC}"
 
   echo -e "${CYAN}  → Установка nginx + certbot...${NC}"
-  if ! apt-get install -y nginx certbot >/dev/null 2>&1; then
+  if ! apt-get "${APT_LOCK_OPTS[@]}" install -y nginx certbot >/dev/null 2>&1; then
     echo -e "${RED}✗ apt-get install nginx certbot не удалось${NC}"
     return 1
   fi
@@ -10099,16 +10123,118 @@ uninstall_adguard_home() {
 }
 
 # CLI dispatch (Phase 5, REQ-B02). Subcommand-style.
+
+# xrayebator inspect --json — read-only диагностика установки для GUI-импорта.
+# Никаких изменений состояния: только чтение маркеров, профилей и статуса сервисов.
+inspect_command() {
+  export TERM=dumb
+  export XRAYEBATOR_NONINTERACTIVE=1
+
+  local state_dir="/usr/local/etc/xray"
+  local manager_binary="/usr/local/bin/xrayebator"
+
+  if [[ ! -d "$state_dir" ]]; then
+    jq -n --arg error "Установка Xrayebator не распознана: каталог состояния отсутствует" \
+      '{ok:false, recognized:false, error:$error}'
+    return 1
+  fi
+
+  local manager="missing"
+  [[ -x "$manager_binary" ]] && manager="detected"
+
+  local os=""
+  os=$(awk -F'"' '/^PRETTY_NAME=/{print $2; exit}' /etc/os-release 2>/dev/null)
+
+  local xray="missing"
+  if command -v /usr/local/bin/xray &>/dev/null || command -v xray &>/dev/null; then
+    if systemctl is-active --quiet xray.service 2>/dev/null; then
+      xray="running"
+    else
+      xray="stopped"
+    fi
+  fi
+
+  local profile_count=0 route_count=0 rc
+  local profile_file
+  for profile_file in "$PROFILES_DIR"/*.json; do
+    [[ -f "$profile_file" ]] || continue
+    profile_count=$((profile_count + 1))
+    rc=$(jq -r '((.routes // []) | length)' "$profile_file" 2>/dev/null || echo 0)
+    [[ "$rc" =~ ^[0-9]+$ ]] || rc=0
+    route_count=$((route_count + rc))
+  done
+
+  local profiles="missing"
+  if [[ -d "$PROFILES_DIR" ]]; then
+    if [[ "$profile_count" -gt 0 ]]; then profiles="available"; else profiles="empty"; fi
+  fi
+
+  local sub_installed=false
+  [[ -f "$state_dir/.subscription_installed" ]] && sub_installed=true
+  local sub_mode="" sub_domain="" sub_port=""
+  [[ -f "$state_dir/.subscription_mode" ]] && sub_mode=$(tr -d '\r\n' < "$state_dir/.subscription_mode" 2>/dev/null)
+  [[ -f "$state_dir/.subscription_domain" ]] && sub_domain=$(tr -d '\r\n' < "$state_dir/.subscription_domain" 2>/dev/null)
+  [[ -f "$state_dir/.subscription_port" ]] && sub_port=$(tr -d '\r\n' < "$state_dir/.subscription_port" 2>/dev/null)
+
+  local sub_service="stopped"
+  systemctl is-active --quiet xrayebator-sub.service 2>/dev/null && sub_service="running"
+
+  local sub_token="" t
+  if [[ "$sub_installed" == true ]]; then
+    for profile_file in "$PROFILES_DIR"/*.json; do
+      [[ -f "$profile_file" ]] || continue
+      t=$(jq -r '.sub_token // empty' "$profile_file" 2>/dev/null)
+      if [[ "$t" =~ ^[a-f0-9]{32}$ ]]; then sub_token="$t"; break; fi
+    done
+  fi
+  local sub_url=""
+  [[ -n "$sub_token" ]] && sub_url=$(_profile_cli_subscription_url "$sub_token" 2>/dev/null || true)
+
+  local sub_port_json="null"
+  [[ "$sub_port" =~ ^[0-9]+$ ]] && sub_port_json="$sub_port"
+
+  local geo_country="" geo_city="" flag=""
+  if [[ -f "$SERVER_COUNTRY_FILE" ]]; then
+    geo_country=$(_geo_country_name)
+    geo_city=$(_geo_city)
+    flag=$(_geo_flag_emoji "$(_geo_country_code)")
+  fi
+
+  jq -n \
+    --argjson ok true --argjson recognized true \
+    --arg os "$os" --arg manager "$manager" --arg xray "$xray" \
+    --arg profiles "$profiles" \
+    --argjson profile_count "$profile_count" --argjson route_count "$route_count" \
+    --argjson subscription_installed "$sub_installed" \
+    --arg subscription_mode "${sub_mode:-unknown}" \
+    --arg subscription_domain "$sub_domain" \
+    --argjson subscription_port "$sub_port_json" \
+    --arg subscription_service "$sub_service" \
+    --arg subscription_url "$sub_url" \
+    --arg country "$geo_country" --arg city "$geo_city" --arg flag "$flag" \
+    '{ok:$ok, recognized:$recognized, os:$os, manager:$manager, xray:$xray,
+      profiles:$profiles, profile_count:$profile_count, route_count:$route_count,
+      subscription_installed:$subscription_installed, subscription_mode:$subscription_mode,
+      subscription_domain:$subscription_domain, subscription_port:$subscription_port,
+      subscription_service:$subscription_service, subscription_url:$subscription_url,
+      country:$country, city:$city, flag:$flag}'
+  return 0
+}
+
 quickstart_command() {
-  local email=""
+  local email="" email_mode="provided"
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --email) email="$2"; shift 2 ;;
+      --email) email="$2"; email_mode="provided"; shift 2 ;;
+      --without-email) email=""; email_mode="without"; shift ;;
       *) shift ;;
     esac
   done
 
-  if [[ -z "$email" ]] || ! [[ "$email" =~ ^[^@]+@[^@]+\.[^@]+$ ]]; then
+  # email нужен только Certbot (ACME-контакт для уведомлений/восстановления).
+  # В режиме without передаём --register-unsafely-without-email вместо
+  # подстановки фиктивного адреса.
+  if [[ "$email_mode" == "provided" ]] && { [[ -z "$email" ]] || ! [[ "$email" =~ ^[^@]+@[^@]+\.[^@]+$ ]]; }; then
     echo '{"ok":false,"error":"Некорректный email (нужен для Let'\''s Encrypt)"}'
     return 1
   fi
@@ -10201,19 +10327,26 @@ quickstart_command() {
   # Установить nginx если нет
   if ! command -v nginx &>/dev/null; then
     echo "  -> Установка nginx..." >&2
-    # FIX: фоновые apt-daily/unattended-upgrades держат lock на свежих Ubuntu —
-    # без ожидания apt-get висит и quickstart падает с кодом 1 (GUI).
-    if ! _apt_wait_lock 300; then
-      echo '{"ok":false,"error":"apt lock не освободился за 5 минут (apt-daily/unattended-upgrades)"}'
+    # FIX (11.08): фоновые apt-daily/unattended-upgrades держат lock на свежих
+    # Ubuntu — без ожидания apt-get висит и quickstart падает с кодом 1 (GUI).
+    # FIX (23.09): прогон unattended-upgrades на свежеподнятом VPS занимает
+    # ~10 минут (замер: 21:10:39→21:20:23, ~90 пакетов); flock между пакетами
+    # свободен секунды и проскакивает гонку, поэтому бюджет ожидания — 12 минут
+    # и учёт самого процесса-воркера внутри _apt_wait_lock.
+    if ! _apt_wait_lock 720; then
+      echo '{"ok":false,"error":"apt занят обновлениями дольше 12 минут (unattended-upgrades). Повторите quickstart чуть позже"}'
       return 1
     fi
-    if ! timeout 180 apt-get install -y nginx >/dev/null 2>&1; then
+    # ВНИМАНИЕ: timeout обязан превышать DPkg::Lock::Timeout=180 внутри apt,
+    # иначе внешний kill обрывает ожидание lock раньше времени и воспроизводит
+    # исходный баг.
+    if ! timeout 300 apt-get "${APT_LOCK_OPTS[@]}" install -y nginx >/dev/null 2>&1; then
       # При пропущенном install.sh (повторный деплой) apt-индексы могут быть
       # устаревшими — обновляем и пробуем ещё раз, прежде чем сдаться.
       echo "  -> apt-get install nginx не удался, обновляю индексы и повторяю..." >&2
-      _apt_wait_lock 300 || true
+      _apt_wait_lock 720 || true
       timeout 180 apt-get update >/dev/null 2>&1 || true
-      if ! timeout 180 apt-get install -y nginx >/dev/null 2>&1; then
+      if ! timeout 300 apt-get "${APT_LOCK_OPTS[@]}" install -y nginx >/dev/null 2>&1; then
         echo '{"ok":false,"error":"apt-get install nginx failed"}'
         return 1
       fi
@@ -10230,7 +10363,7 @@ quickstart_command() {
   if [[ -z "$certbot_bin" ]]; then
     echo "  -> Установка certbot через snap..." >&2
     _apt_wait_lock 300 || true
-    timeout 180 apt-get install -y snapd >/dev/null 2>&1 || true
+    timeout 240 apt-get "${APT_LOCK_OPTS[@]}" install -y snapd >/dev/null 2>&1 || true
     systemctl enable --now snapd.socket >/dev/null 2>&1 || true
     export PATH="/snap/bin:$PATH"
     if command -v snap &>/dev/null; then
@@ -10370,13 +10503,21 @@ NGINXHTTP
   if [[ "$cert_expiry_ok" -eq 0 ]]; then
     # Получить TLS сертификат
     echo "  -> Получение TLS сертификата..." >&2
+    # ACME-контакт: с email — -m, без — явный unsafely-without-email (без фиктивного адреса).
+    local certbot_email_args=()
+    if [[ "$email_mode" == "provided" ]]; then
+      certbot_email_args=(-m "$email")
+    else
+      certbot_email_args=(--register-unsafely-without-email)
+      echo "  -> Email не указан: регистрация ACME без контактного адреса (уведомлений не будет)" >&2
+    fi
     if ! "$certbot_bin" certonly \
         --cert-name "$server_ip" \
         --preferred-profile shortlived \
         --webroot --webroot-path "$webroot" \
         --ip-address "$server_ip" \
         --non-interactive --agree-tos \
-        -m "$email" \
+        "${certbot_email_args[@]}" \
         --deploy-hook "systemctl reload nginx" \
         >/tmp/certbot-ip.log 2>&1; then
       local certbot_reason
@@ -11759,6 +11900,10 @@ if [[ "$XRAYEBATOR_SOURCED" -eq 0 ]]; then
       shift
       quickstart_command "$@"
       ;;
+    inspect)
+      shift
+      inspect_command "$@"
+      ;;
     happ-setup)
       shift
       happ_setup_command "$@"
@@ -11809,6 +11954,8 @@ if [[ "$XRAYEBATOR_SOURCED" -eq 0 ]]; then
       echo -e "  ${CYAN}sudo xrayebator${NC}                  — открыть интерактивное меню"
       echo -e "  ${CYAN}sudo xrayebator update [branch]${NC}  — обновить Xray-core (main/dev/experimental)"
       echo -e "  ${CYAN}sudo xrayebator quickstart --email EMAIL${NC}  — авторазвёртывание: подписка+IP-TLS+HAPP profile"
+      echo -e "  ${CYAN}sudo xrayebator quickstart --without-email${NC}  — то же, но ACME-регистрация без email (без уведомлений)"
+      echo -e "  ${CYAN}sudo xrayebator inspect --json${NC}          — read-only диагностика установки (для GUI-импорта)"
       echo -e "  ${CYAN}sudo xrayebator happ-setup${NC}       — создать/переиспользовать HAPP multi-route профиль"
       echo -e "  ${CYAN}sudo xrayebator probe-test${NC}       — проверить доступность SNI с VPS"
       echo -e "  ${CYAN}sudo xrayebator profiles${NC}          — JSON-список профилей"
