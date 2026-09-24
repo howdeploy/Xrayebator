@@ -4,6 +4,7 @@ import { app } from 'electron'
 import { SshClient, SshCredentials } from './ssh-client'
 import { shellCommand, shellQuote } from './shell-command'
 import { fetchSubscription } from './subscription'
+import { maskSubscriptionUrl } from './server-inspector'
 import type { DeployStep, EmailMode, VlessLink } from '@shared/types'
 
 export type DeployStepListener = (step: DeployStep, message: string) => void
@@ -185,7 +186,9 @@ export class Deployer {
       if (!keys.length && subUrl) {
         throw new Error('Subscription вернул пустой список ключей')
       }
-      this.onLog(`Подписка: ${subUrl}; маршрутов получено: ${keys.length}`)
+      this.onLog(
+        `Подписка: ${subUrl ? maskSubscriptionUrl(subUrl) : '—'}; маршрутов получено: ${keys.length}`
+      )
 
       return {
         subscriptionUrl: subUrl ?? '',
