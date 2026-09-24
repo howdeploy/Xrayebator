@@ -4,7 +4,6 @@ import {
   Settings2,
   Play,
   Trash2,
-  Power,
   Lock,
   CloudDownload,
   CloudOff,
@@ -23,6 +22,8 @@ import styles from './ServerSettings.module.css'
 
 interface ServerSettingsProps {
   server: Server
+  /** Открыт по «Изменить доступ» с карточки сервера: показать форму, не автоподключаясь. */
+  editingAccess?: boolean
   onBack: () => void
 }
 
@@ -53,7 +54,11 @@ export const SNI_CATEGORIES = [
 
 export const PORT_PRESETS = [443, 8443, 2053, 2083, 2087, 2096, 9443, 8080] as const
 
-export function ServerSettings({ server, onBack }: ServerSettingsProps): React.JSX.Element {
+export function ServerSettings({
+  server,
+  editingAccess = false,
+  onBack
+}: ServerSettingsProps): React.JSX.Element {
   const { t } = useTranslation()
   const [access, setAccess] = useState<SshAccessInput>({
     username: server.username || 'root',
@@ -112,18 +117,6 @@ export function ServerSettings({ server, onBack }: ServerSettingsProps): React.J
 
   const connected = profiles !== null
   const accessReady = isSshAccessReady(access)
-  const accessSecretKey =
-    access.authMethod === 'password'
-      ? access.passwordPersisted === false
-        ? 'settings.passwordNotPersisted'
-        : access.passwordPersisted === true
-          ? 'settings.accessSecretPassword'
-          : 'settings.accessSecretNone'
-      : access.privateKeyCredentialId
-        ? access.privateKeyPersisted === false
-          ? 'settings.accessSecretSessionKey'
-          : 'settings.accessSecretKey'
-        : 'settings.accessSecretNone'
 
   const futureNames = useMemo(() => {
     const base = name.trim() || 'phone-1'
@@ -171,6 +164,7 @@ export function ServerSettings({ server, onBack }: ServerSettingsProps): React.J
   useEffect(() => {
     if (autoConnectStarted.current) return
     autoConnectStarted.current = true
+    if (editingAccess) return
     if (shouldAutoConnectServer(server)) void load()
   }, [server.id])
 
@@ -419,17 +413,6 @@ export function ServerSettings({ server, onBack }: ServerSettingsProps): React.J
   const transportLabel = (profile: ServerProfile): string =>
     profile.multi_route ? `${profile.transport} · ${profile.routes} ${t('settings.routes')}` : profile.transport
 
-  const reset = (): void => {
-    setProfiles(null)
-    setError(null)
-    setAccess((current) => ({
-      ...current,
-      password: '',
-      passphrase: '',
-      sudoPassword: ''
-    }))
-  }
-
   return (
     <div className={styles.root}>
       <header className={styles.header}>
@@ -475,47 +458,7 @@ export function ServerSettings({ server, onBack }: ServerSettingsProps): React.J
       </header>
 
       <div className={styles.body}>
-        {server.diagnostics && (
-          <section className={styles.diagnosticsCard}>
-            <h2 className={styles.sectionTitle}>{t('settings.diagnostics.title')}</h2>
-            <div className={styles.diagnosticsGrid}>
-              <span>{t('settings.diagnostics.manager')}</span>
-              <span>{t(`settings.diagnostics.${server.diagnostics.manager}`)}</span>
-              <span>{t('settings.diagnostics.xray')}</span>
-              <span>{t(`settings.diagnostics.${server.diagnostics.xray}`)}</span>
-              <span>{t('settings.diagnostics.profiles')}</span>
-              <span>{t(`settings.diagnostics.${server.diagnostics.profiles}`)}</span>
-              <span>{t('settings.diagnostics.subscription')}</span>
-              <span>{t(`settings.diagnostics.${server.diagnostics.subscription}`)}</span>
-            </div>
-          </section>
-        )}
-        {connected ? (
-          <section className={styles.accessStatusCard}>
-            <div className={styles.accessStatusRow}>
-              <Check size={16} className={styles.accessStatusIcon} />
-              <div className={styles.accessStatusText}>
-                <strong>
-                  {t('settings.accessConnected')}: {access.username}@{server.host}:{server.port}
-                </strong>
-                <small
-                  className={
-                    accessSecretKey === 'settings.passwordNotPersisted' ||
-                    accessSecretKey === 'settings.accessSecretSessionKey'
-                      ? styles.accessStatusWarning
-                      : styles.accessStatusMeta
-                  }
-                >
-                  {t(accessSecretKey)}
-                </small>
-              </div>
-              <Button variant="secondary" size="sm" isDisabled={busy} onPress={reset}>
-                <Power size={16} />
-                {t('settings.changeAccess')}
-              </Button>
-            </div>
-          </section>
-        ) : (
+        {!connected && (
           <section className={styles.connectCard}>
             <p className={styles.hint}>
               {t('settings.hint')}
