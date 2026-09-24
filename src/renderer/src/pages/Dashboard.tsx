@@ -161,15 +161,13 @@ export function Dashboard({
                       online[server.id] ? styles.statusDotOnline : styles.statusDotOffline
                     }`}
                   />
-                  <div className={styles.cardInfo}>
-                    <div className={styles.cardTitle}>
-                      <CountryFlag flag={server.flag} className={styles.flag} />
-                      {server.name}
-                    </div>
-                    <div className={styles.cardLocation}>
-                      <MapPin size={13} className={styles.cardLocationIcon} />
-                      {[server.country, server.city].filter(Boolean).join(' · ') || '—'}
-                    </div>
+                  <div className={styles.cardTitle}>
+                    <CountryFlag flag={server.flag} className={styles.flag} />
+                    {server.name}
+                  </div>
+                  <MapPin size={13} className={styles.cardLocationIcon} />
+                  <div className={styles.cardLocation}>
+                    {[server.country, server.city].filter(Boolean).join(' · ') || '—'}
                   </div>
                 </div>
                 <span
@@ -187,21 +185,19 @@ export function Dashboard({
 
               <div className={styles.cardStats}>
                 <div className={styles.statCard}>
-                  <MonitorCog size={18} className={styles.statIcon} />
+                  <MonitorCog size={27} className={styles.statIcon} />
                   <div className={styles.statText}>
                     <span className={styles.statValue}>{server.os ?? '—'}</span>
                     <span className={styles.statLabel}>{t('dashboard.statOs')}</span>
                   </div>
                 </div>
-                <div className={styles.statCard}>
-                  <Route size={18} className={styles.statIcon} />
-                  <div className={styles.statText}>
-                    <span className={styles.statValue}>{server.routesCount ?? 0}</span>
-                    <span className={styles.statLabel}>{t('dashboard.statRoutes')}</span>
-                  </div>
+                <div className={`${styles.statCard} ${styles.statCardInline}`}>
+                  <Route size={27} className={styles.statIcon} />
+                  <span className={styles.statValue}>{server.routesCount ?? 0}</span>
+                  <span className={styles.statLabel}>{t('dashboard.statRoutes')}</span>
                 </div>
                 <div className={styles.statCard}>
-                  <User size={18} className={styles.statIcon} />
+                  <User size={27} className={styles.statIcon} />
                   <div className={styles.statText}>
                     <span className={styles.statValue}>{summary.endpoint}</span>
                     <span

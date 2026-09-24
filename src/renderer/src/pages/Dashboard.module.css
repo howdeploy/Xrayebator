@@ -137,24 +137,56 @@
   gap: 16px;
 }
 
+/* Две колонки: жёлоб для точки активности и пина + содержимое.
+   Точка стоит в строке флага (то есть на его середине), пин переехал в тот же
+   жёлоб ниже, а подпись локации начинается под флагом. */
 .cardHeader {
-  display: flex;
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
   align-items: center;
-  gap: 14px;
+  column-gap: 10px;
+  row-gap: 3px;
   min-width: 0;
 }
 
-.cardLocation {
-  display: inline-flex;
+.cardHeader > .statusDot {
+  grid-column: 1;
+  grid-row: 1;
+  justify-self: center;
+}
+
+.cardTitle {
+  grid-column: 2;
+  grid-row: 1;
+  font-size: 16px;
+  font-weight: 600;
+  display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  color: var(--text-2);
+  gap: 8px;
+  min-width: 0;
+}
+
+.flag {
+  font-size: 20px;
+  line-height: 1;
+  border-radius: 3px;
+  overflow: hidden;
+  flex-shrink: 0;
 }
 
 .cardLocationIcon {
-  flex-shrink: 0;
+  grid-column: 1;
+  grid-row: 2;
+  justify-self: center;
   color: var(--accent);
+}
+
+.cardLocation {
+  grid-column: 2;
+  grid-row: 2;
+  font-size: 13px;
+  color: var(--text-2);
+  min-width: 0;
 }
 
 .cardStats {
@@ -177,6 +209,12 @@
 .statIcon {
   flex-shrink: 0;
   color: var(--accent);
+}
+
+/* Маршруты — числовое значение: держим в одну строку, но прижимаем влево,
+   как содержимое соседних плиток (ОС и SSH-доступ). */
+.statCardInline {
+  gap: 10px;
 }
 
 .statText {
@@ -242,37 +280,6 @@
 }
 
 .setupBadgeDefault {
-  color: var(--text-2);
-}
-
-.cardInfo {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding-left: 2px;
-}
-
-.cardTitle {
-  font-size: 16px;
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.flag {
-  font-size: 20px;
-  line-height: 1;
-  border-radius: 3px;
-  overflow: hidden;
-  flex-shrink: 0;
-}
-
-.cardMeta {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 13px;
   color: var(--text-2);
 }
 
