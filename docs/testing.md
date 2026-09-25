@@ -152,11 +152,12 @@ The workflows have separate responsibilities:
 - `.github/workflows/release.yml` is the active Electron release path for `v*` tags or manual runs.
   A `preflight` job first checks that the release notes file `docs/releases/<tag>.en.md` exists and
   that the `AP3X0` repository secret (if set) can actually create releases — it probes with a draft
-  release that is deleted in the same step, so an unusable token fails in seconds instead of after
-  three platform builds. Then it runs `npm run typecheck` and `npm test` on Ubuntu and builds/packages
-  Windows, macOS and Linux artifacts. The `release` job publishes as the owner of the `AP3X0` token
-  when that secret grants Contents: write, otherwise as `github-actions[bot]` via the built-in
-  `GITHUB_TOKEN`: a GitHub release author is fixed at creation time and cannot be reassigned later.
+  release that is deleted in the same step, so surprises surface in seconds instead of after three
+  platform builds. Both checks are warnings only: the release always gets published. Then it runs
+  `npm run typecheck` and `npm test` on Ubuntu and builds/packages Windows, macOS and Linux
+  artifacts. The `release` job publishes as the owner of the `AP3X0` token when `preflight` proved
+  that token works, otherwise as `github-actions[bot]` via the built-in `GITHUB_TOKEN`: a GitHub
+  release author is fixed at creation time and cannot be reassigned later.
 - `.github/workflows/gui-release.yml` is the legacy PySide6 workflow. It runs Python `ruff` and
   `pytest gui-legacy/tests`, builds legacy native bundles, and runs only a small Bash smoke subset;
   it is not the Electron unit-test workflow.

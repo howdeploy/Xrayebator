@@ -10,44 +10,55 @@ permissions:
   contents: write
 
 jobs:
-  # Проверяет всё, что может обвалить релиз, ДО того как потратить ~15 минут на
-  # три платформы: наличие текста релиза и способность токена публиковать
-  # релизы от имени владельца. Иначе ошибка всплывает в самом последнем job.
+  # Проверяет всё, что может испортить релиз, ДО того как потратить ~15 минут на
+  # три платформы: наличие текста релиза и способность токена публикации быть
+  # человеком. Обе проверки — предупреждающие: релиз выйдет в любом случае,
+  # но при отсутствии прав автором станет github-actions[bot].
   preflight:
     runs-on: ubuntu-24.04
+    outputs:
+      publish_as_user: ${{ steps.token_probe.outputs.as_user }}
     steps:
       - uses: actions/checkout@v4
       - name: Check release notes exist
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          set -euo pipefail
+          set -uo pipefail
           f="docs/releases/${GITHUB_REF_NAME}.en.md"
           if [[ ! -s "$f" ]]; then
-            echo "::error::Нет текста релиза $f — создайте его до установки тега ${GITHUB_REF_NAME}."
-            echo "Без файла релиз всё равно опубликуется, но с авто-сгенерированными notes вместо описания для пользователя."
-            exit 1
+            echo "::warning::Нет текста релиза $f — GitHub опубликует релиз с авто-сгенерированными notes вместо описания для пользователя."
+            exit 0
           fi
           echo "Текст релиза: $(wc -c < "$f") байт"
       - name: Check publishing identity
+        id: token_probe
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ secrets.AP3X0 }}
           CANDIDATE_SET: ${{ secrets.AP3X0 != '' }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          # Пробный черновик релиза — единственный дешёвый способ проверить права
+          # токена публикации, пока не потрачены ~15 минут на три платформы. Из-за
+          # прав релиз падать не должен (он выйдет и от бота), поэтому только
+          # предупреждаем и прокидываем вывод в job release.
           if [[ "$CANDIDATE_SET" != "true" ]]; then
-            echo "::warning::Секрет AP3X0 не задан — релиз опубликует github-actions[bot], а не владелец аккаунта."
+            echo "::warning::Секрет AP3X0 не задан — релиз опубликует github-actions[bot]."
+            echo "as_user=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           probe="preflight-probe-${GITHUB_RUN_ID}"
-          if ! gh release create "$probe" --repo "$GITHUB_REPOSITORY" --title "preflight probe" --draft --notes "проверка прав, черновик немедленно удалён" 2>/tmp/probe.err; then
-            echo "::error::Токен AP3X0 не может создавать релизы: $(cat /tmp/probe.err)"
-            echo "Выдайте PAT аккаунта Ap3x0s право Contents: Read and Write в howdeploy/Xrayebator (Settings → Secrets and variables → Actions → AP3X0), затем повторите тег."
-            exit 1
+          if gh release create "$probe" --repo "$GITHUB_REPOSITORY" --title "preflight probe" --draft --notes "проверка прав публикации" 2>/tmp/probe.err; then
+            gh release delete "$probe" --repo "$GITHUB_REPOSITORY" --yes >/dev/null 2>&1 \
+              || echo "::warning::Пробный черновик $probe не удалён — снесите вручную."
+            echo "Токен AP3X0 активен ($(gh api user --jq .login)) — релиз пойдёт от этого аккаунта."
+            echo "as_user=true" >> "$GITHUB_OUTPUT"
+          else
+            gh release delete "$probe" --repo "$GITHUB_REPOSITORY" --yes >/dev/null 2>&1 || true
+            echo "::warning::Токен AP3X0 не может создавать релизы: $(tr -d '\n' < /tmp/probe.err | head -c 200)"
+            echo "::warning::Чтобы релиз шёл от вашего аккаунта: fine-grained PAT → Repository permissions → Contents: Read and write, затем пересохраните секрет AP3X0 в Settings → Secrets and variables → Actions."
+            echo "as_user=false" >> "$GITHUB_OUTPUT"
           fi
-          gh release delete "$probe" --repo "$GITHUB_REPOSITORY" --yes >/dev/null 2>&1 \
-            || echo "::warning::Пробный черновик $probe не удалён — снесите вручную."
-          echo "Логин токена: $(gh api user --jq .login) — релиз будет опубликован от этого аккаунта."
 
   typecheck:
     runs-on: ubuntu-24.04
@@ -148,7 +159,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [preflight, build]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -158,12 +169,11 @@ jobs:
           merge-multiple: true
       - name: Publish GitHub release
         # Автор релиза = владелец токена публикации: поле author в GitHub
-        # неизменяемо, заданного ботом «переключить» на человека нельзя. Если в
-        # репозитории есть секрет AP3X0 (PAT аккаунта Ap3x0s с Contents: write),
-        # релиз выходит от его имени и preflight выше это уже проверил; без
-        # секретов остаётся встроенный GITHUB_TOKEN и автор github-actions[bot].
+        # неизменяемо, заданного ботом «переключить» на человека нельзя. Берём
+        # AP3X0 только если preflight подтвердил его боеспособность — иначе
+        # публикация упала бы в самом конце, после трёх сборок, и без отката.
         env:
-          GH_TOKEN: ${{ secrets.AP3X0 != '' && secrets.AP3X0 || github.token }}
+          GH_TOKEN: ${{ needs.preflight.outputs.as_user == 'true' && secrets.AP3X0 || github.token }}
         run: |
           notes_file="docs/releases/${GITHUB_REF_NAME}.en.md"
           if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
