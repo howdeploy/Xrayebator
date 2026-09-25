@@ -102,7 +102,11 @@ npm test              # Vitest 单元测试
 
 - **ci-linux.yml** — Bash validation：在 ubuntu-24.04 上对所有脚本执行 `bash -n`，并运行全部 26 个
   `validation/test-*.sh`；在 push 到 `main`、`dev`、`experimental` 以及 pull request 时运行。
-- **release.yml** — Electron 构建（Windows/macOS/Linux）。只在 `v*` tag 和手动触发时运行；先在
-  Ubuntu 上执行 `npm run typecheck`、`npm test`、`npm run build`，再在三种平台执行
-  `electron-builder --publish never`。
+- **release.yml** — Electron 构建（Windows/macOS/Linux）。只在 `v*` tag 和手动触发时运行；先由
+  `preflight` 检查发布说明 `docs/releases/<tag>.en.md` 是否存在，以及仓库密钥 `AP3X0`（若已设置）
+  是否真的能创建 release——用随即删除的草稿探测，使不可用的 token 在几秒内失败，而不是三次构建之后。
+  然后在 Ubuntu 上执行 `npm run typecheck`、`npm test`、`npm run build`，再在三种平台执行
+  `electron-builder --publish never`。若 `AP3X0` 具备 Contents: write 权限，release 以该 token
+  所有者名义发布，否则以 `github-actions[bot]` 通过内置 `GITHUB_TOKEN` 发布：GitHub release 的
+  作者在创建时即固定，事后无法改换。
 - **gui-release.yml** — legacy PySide6 GUI：ruff、pytest 和 wheel 构建；在 PR 与 `gui-v*` tag 上运行。
