@@ -106,7 +106,12 @@ npm test              # Vitest unit-тесты
 - **ci-linux.yml** — Bash validation: `bash -n` всех скриптов + все 26 `validation/test-*.sh` на
   ubuntu-24.04. Запускается на push в `main`, `dev`, `experimental` и на pull request.
 - **release.yml** — Electron сборка (Windows/macOS/Linux). Запускается только на теги `v*` и manual
-  dispatch. Выполняет `npm run typecheck`, `npm test`, `npm run build` на ubuntu, затем
-  `electron-builder --publish never` на всех трёх платформах.
+  dispatch. Сначала `preflight`: проверяет наличие текста релиза `docs/releases/<tag>.en.md` и
+  способность секрета `AP3X0` создавать релизы (пробным черновиком, который сразу удаляется), — чтобы
+  непригодный токен падал за секунды, а не после трёх сборок. Затем `npm run typecheck`, `npm test`,
+  `npm run build` на ubuntu и `electron-builder --publish never` на всех трёх платформах. Релиз
+  публикуется от владельца `AP3X0`, если секрет даёт право Contents: write, иначе — от
+  `github-actions[bot]` через встроенный `GITHUB_TOKEN`: автор релиза фиксируется при создании и
+  назад не переключается.
 - **gui-release.yml** — legacy PySide6 GUI: ruff + pytest + wheel build. Запускается на PR и теги
   `gui-v*`.
