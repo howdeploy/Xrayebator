@@ -108,9 +108,10 @@ npm test              # Vitest unit-тесты
 - **release.yml** — Electron сборка (Windows/macOS/Linux). Запускается только на теги `v*` и manual
   dispatch. Сначала `preflight`: проверяет наличие текста релиза `docs/releases/<tag>.en.md` и
   способность секрета `AP3X0` создавать релизы (пробным черновиком, который сразу удаляется), — чтобы
-  непригодный токен падал за секунды, а не после трёх сборок. Затем `npm run typecheck`, `npm test`,
-  `npm run build` на ubuntu и `electron-builder --publish never` на всех трёх платформах. Релиз
-  публикуется от владельца `AP3X0`, если секрет даёт право Contents: write, иначе — от
+  неприятность всплыла за секунды, а не после трёх сборок. Обе проверки предупреждающие: релиз выйдет
+  в любом случае. Затем `npm run typecheck`, `npm test`, `npm run build` на ubuntu и
+  `electron-builder --publish never` на всех трёх платформах. Если `preflight` подтвердил, что
+  `AP3X0` может публиковать, релиз выходит от владельца этого токена; иначе — от
   `github-actions[bot]` через встроенный `GITHUB_TOKEN`: автор релиза фиксируется при создании и
   назад не переключается.
 - **gui-release.yml** — legacy PySide6 GUI: ruff + pytest + wheel build. Запускается на PR и теги
