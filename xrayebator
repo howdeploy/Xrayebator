@@ -5682,8 +5682,22 @@ routing_uri=""
 routing_json=""
 if [[ "${HAPP_ROUTING_ENABLED,,}" == "true" ]]; then
   if [[ -s "$HAPP_ROUTING_JSON_FILE" ]]; then
-    if _happ_validate_routing_json_file "$HAPP_ROUTING_JSON_FILE"; then
-      routing_json=$(jq -c . "$HAPP_ROUTING_JSON_FILE" 2>/dev/null) || routing_json=""
+    # Geo database URLs are per-subscriber, so an operator-wide override cannot
+    # hardcode them without leaking one subscriber's token to everyone else.
+    # {{GEOIP_URL}}, {{GEOSITE_URL}} and {{LAST_UPDATED}} are filled in per
+    # request; substitution runs before validation so a leftover placeholder
+    # fails the https_url check and falls back to the managed default.
+    routing_custom=$(cat "$HAPP_ROUTING_JSON_FILE" 2>/dev/null) || routing_custom=""
+    if [[ "$routing_custom" == *"{{"* ]]; then
+      routing_base_url=$(_subscription_base_url 2>/dev/null)
+      routing_placeholder_lu=$(_happ_routing_last_updated \
+        /usr/local/bin/xrayebator "$HAPP_GEOIP_FILE" "$HAPP_GEOSITE_FILE" 2>/dev/null)
+      routing_custom=${routing_custom//\{\{GEOIP_URL\}\}/${routing_base_url}/sub/${token}/geoip.dat}
+      routing_custom=${routing_custom//\{\{GEOSITE_URL\}\}/${routing_base_url}/sub/${token}/geosite.dat}
+      routing_custom=${routing_custom//\{\{LAST_UPDATED\}\}/${routing_placeholder_lu}}
+    fi
+    if printf '%s' "$routing_custom" | _happ_validate_routing_json; then
+      routing_json=$(printf '%s' "$routing_custom" | jq -c . 2>/dev/null) || routing_json=""
     else
       printf 'xrayebator-sub: invalid HAPP routing profile ignored: %s\n' \
         "$HAPP_ROUTING_JSON_FILE" >&2
