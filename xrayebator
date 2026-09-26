@@ -26,6 +26,7 @@ XRAY_BIN="/usr/local/bin/xray"
 PRIVATE_KEY_FILE="/usr/local/etc/xray/.private_key"
 PUBLIC_KEY_FILE="/usr/local/etc/xray/.public_key"
 VLESS_DECRYPTION_FILE="/usr/local/etc/xray/.vless_decryption"
+HAPP_ROUTING_FILE="/usr/local/etc/xray/.happ_routing.json"
 VLESS_ENCRYPTION_FILE="/usr/local/etc/xray/.vless_encryption"
 CASCADE_ACTIVE_FILE="/usr/local/etc/xray/.cascade_active"
 SELFSTEAL_DOMAIN_FILE="/usr/local/etc/xray/.selfsteal_domain"
@@ -5682,8 +5683,22 @@ routing_uri=""
 routing_json=""
 if [[ "${HAPP_ROUTING_ENABLED,,}" == "true" ]]; then
   if [[ -s "$HAPP_ROUTING_JSON_FILE" ]]; then
-    if _happ_validate_routing_json_file "$HAPP_ROUTING_JSON_FILE"; then
-      routing_json=$(jq -c . "$HAPP_ROUTING_JSON_FILE" 2>/dev/null) || routing_json=""
+    # Geo database URLs are per-subscriber, so an operator-wide override cannot
+    # hardcode them without leaking one subscriber's token to everyone else.
+    # {{GEOIP_URL}}, {{GEOSITE_URL}} and {{LAST_UPDATED}} are filled in per
+    # request; substitution runs before validation so a leftover placeholder
+    # fails the https_url check and falls back to the managed default.
+    routing_custom=$(cat "$HAPP_ROUTING_JSON_FILE" 2>/dev/null) || routing_custom=""
+    if [[ "$routing_custom" == *"{{"* ]]; then
+      routing_base_url=$(_subscription_base_url 2>/dev/null)
+      routing_placeholder_lu=$(_happ_routing_last_updated \
+        /usr/local/bin/xrayebator "$HAPP_GEOIP_FILE" "$HAPP_GEOSITE_FILE" 2>/dev/null)
+      routing_custom=${routing_custom//\{\{GEOIP_URL\}\}/${routing_base_url}/sub/${token}/geoip.dat}
+      routing_custom=${routing_custom//\{\{GEOSITE_URL\}\}/${routing_base_url}/sub/${token}/geosite.dat}
+      routing_custom=${routing_custom//\{\{LAST_UPDATED\}\}/${routing_placeholder_lu}}
+    fi
+    if printf '%s' "$routing_custom" | _happ_validate_routing_json; then
+      routing_json=$(printf '%s' "$routing_custom" | jq -c . 2>/dev/null) || routing_json=""
     else
       printf 'xrayebator-sub: invalid HAPP routing profile ignored: %s\n' \
         "$HAPP_ROUTING_JSON_FILE" >&2
@@ -6255,6 +6270,12 @@ server {
         limit_req zone=xrayebator_sub burst=10 nodelay;
         add_header Cache-Control "no-store" always;
         add_header X-Robots-Tag "noindex, nofollow, nosnippet" always;
+        # HAPP routing-профиль уезжает клиенту в заголовке ответа и легко
+        # перерастает дефолтные 4k: nginx тогда отвечает 502 и пишет в лог
+        # "upstream sent too big header".
+        proxy_buffer_size 32k;
+        proxy_buffers 8 32k;
+        proxy_busy_buffers_size 64k;
         proxy_pass http://127.0.0.1:8080;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
@@ -6489,6 +6510,12 @@ server {
         limit_req zone=xrayebator_sub burst=10 nodelay;
         add_header Cache-Control "no-store" always;
         add_header X-Robots-Tag "noindex, nofollow, nosnippet" always;
+        # HAPP routing-профиль уезжает клиенту в заголовке ответа и легко
+        # перерастает дефолтные 4k: nginx тогда отвечает 502 и пишет в лог
+        # "upstream sent too big header".
+        proxy_buffer_size 32k;
+        proxy_buffers 8 32k;
+        proxy_busy_buffers_size 64k;
         proxy_pass http://127.0.0.1:8080;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
@@ -7014,6 +7041,7 @@ happ_subscription_menu() {
     echo -e "${CYAN} 4)${NC} Управление существующими подписками (URL / QR / revoke)"
     echo -e "${CYAN} 5)${NC} Настройки HAPP (.happ_defaults.env)"
     echo -e "${CYAN} 6)${NC} Настроить announcement (HAPP)"
+    echo -e "${CYAN} 7)${NC} Маршрутизация клиента (split для российских сервисов)"
     echo -e "${CYAN} 0)${NC} Назад в главное меню"
     echo ""
     echo -n -e "${YELLOW}Выбор: ${NC}"
@@ -7026,6 +7054,7 @@ happ_subscription_menu() {
       4) manage_subscription_menu ;;
       5) happ_settings_menu ;;
       6) edit_happ_announce_menu ;;
+      7) happ_client_routing_menu ;;
       0) return ;;
     esac
   done
@@ -9425,6 +9454,150 @@ manage_profile_advanced_menu() {
   echo -e "${GREEN}Vision Seed применен. testpre=${testpre_val}, testseed=${testseed_json}${NC}"
   echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
   read -r _
+}
+
+# Клиентский split-профиль для HAPP.
+#
+# Серверный bypass (_apply_bypass_rule) меняет только то, куда VPS отправляет
+# запрос. Клиент всё равно заворачивает трафик в туннель, поэтому российский
+# сайт видит адрес VPS. На ноде без каскада общий outbound и так direct, и
+# bypass там ничего не решает. Не пускать домашний трафик в туннель может
+# только профиль на стороне клиента — его и генерирует эта функция, переиспользуя
+# те же группы доменов, что и серверный bypass.
+_happ_client_split_routing_json() {
+  local gid gname doms_csv dom
+  local -a direct_sites=()
+
+  while IFS='|' read -r gid gname doms_csv; do
+    [[ -z "$gid" ]] && continue
+    while IFS= read -r dom; do
+      [[ -n "$dom" ]] && direct_sites+=("domain:${dom}")
+    done < <(tr ',' '\n' <<< "$doms_csv")
+  done < <(_bypass_bundle_groups)
+
+  [[ ${#direct_sites[@]} -gt 0 ]] || return 1
+
+  printf '%s\n' "${direct_sites[@]}" | jq -R . | jq -s '
+    {
+      Name: "xrayebator-split",
+      GlobalProxy: "true",
+      RemoteDNSType: "DoH",
+      RemoteDNSDomain: "https://cloudflare-dns.com/dns-query",
+      RemoteDNSIP: "1.1.1.1",
+      DomesticDNSType: "DoH",
+      DomesticDNSDomain: "https://cloudflare-dns.com/dns-query",
+      DomesticDNSIP: "1.1.1.1",
+      Geoipurl: "{{GEOIP_URL}}",
+      Geositeurl: "{{GEOSITE_URL}}",
+      LastUpdated: "{{LAST_UPDATED}}",
+      DnsHosts: { "cloudflare-dns.com": "1.1.1.1" },
+      DirectSites: (. | unique),
+      DirectIp: [
+        "geoip:ru",
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "169.254.0.0/16",
+        "224.0.0.0/4",
+        "255.255.255.255"
+      ],
+      ProxySites: [],
+      ProxyIp: [],
+      BlockSites: [],
+      BlockIp: [],
+      DomainStrategy: "IPIfNonMatch",
+      FakeDNS: "false"
+    }'
+}
+
+happ_client_routing_menu() {
+  while true; do
+    show_ascii
+    echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
+    echo -e "${BLUE}    МАРШРУТИЗАЦИЯ КЛИЕНТА (HAPP)              ${NC}"
+    echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
+    echo ""
+    echo -e "${CYAN}По умолчанию HAPP заворачивает в туннель всё, кроме локальных сетей.${NC}"
+    echo -e "${CYAN}Split-профиль оставляет туннель по умолчанию, но выпускает напрямую${NC}"
+    echo -e "${CYAN}российские сервисы (те же группы, что и серверный bypass) и geoip:ru.${NC}"
+    echo -e "${CYAN}Иначе Ozon, банки и Госуслуги видят зарубежный адрес VPS.${NC}"
+    echo ""
+
+    local current="не задан (управляемый профиль по умолчанию)"
+    if [[ -s "$HAPP_ROUTING_FILE" ]]; then
+      current=$(jq -r '.Name // "без имени"' "$HAPP_ROUTING_FILE" 2>/dev/null) || current="повреждён"
+      local n_direct
+      n_direct=$(jq -r '.DirectSites | length' "$HAPP_ROUTING_FILE" 2>/dev/null || echo "?")
+      current="${current} (${n_direct} доменов напрямую)"
+    fi
+    echo -e "${YELLOW}Текущий профиль:${NC} ${current}"
+    echo ""
+    echo -e "${CYAN} 1)${NC} Включить split-профиль для российских сервисов"
+    echo -e "${CYAN} 2)${NC} Вернуть профиль по умолчанию (удалить переопределение)"
+    echo -e "${CYAN} 0)${NC} Назад"
+    echo ""
+    echo -n -e "${YELLOW}Выберите действие: ${NC}"
+    local c
+    read -r c
+
+    case "$c" in
+      1)
+        local generated
+        if ! generated=$(_happ_client_split_routing_json); then
+          echo -e "${RED}✗ Не удалось собрать профиль${NC}"
+          sleep 2
+          continue
+        fi
+        local n_direct
+        n_direct=$(jq -r '.DirectSites | length' <<< "$generated")
+        echo ""
+        echo -e "${CYAN}Напрямую пойдут ${n_direct} доменов и весь geoip:ru.${NC}"
+        echo -e "${CYAN}Всё остальное продолжит идти через VPN.${NC}"
+        echo -n -e "${YELLOW}Записать в ${HAPP_ROUTING_FILE}? [y/N]: ${NC}"
+        local confirm
+        read -r confirm
+        if [[ ! "$confirm" =~ ^[yYдД]$ ]]; then
+          echo -e "${CYAN}✓ Отменено${NC}"
+          sleep 1
+          continue
+        fi
+        if [[ -s "$HAPP_ROUTING_FILE" ]]; then
+          cp -a "$HAPP_ROUTING_FILE" "${HAPP_ROUTING_FILE}.bak-$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
+        fi
+        printf '%s\n' "$generated" > "$HAPP_ROUTING_FILE" || {
+          echo -e "${RED}✗ Не удалось записать файл${NC}"
+          sleep 2
+          continue
+        }
+        chmod 644 "$HAPP_ROUTING_FILE" 2>/dev/null || true
+        echo -e "${GREEN}✓ Split-профиль записан${NC}"
+        echo -e "${CYAN}  Клиенты получат его при следующем обновлении подписки.${NC}"
+        echo -e "${CYAN}  Перезапуск xrayebator-sub.service не нужен: файл читается на каждый запрос.${NC}"
+        echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
+        read -r _
+        ;;
+      2)
+        if [[ ! -e "$HAPP_ROUTING_FILE" ]]; then
+          echo -e "${CYAN}✓ Переопределения и так нет${NC}"
+          sleep 1
+          continue
+        fi
+        echo -n -e "${YELLOW}Удалить ${HAPP_ROUTING_FILE}? [y/N]: ${NC}"
+        local confirm
+        read -r confirm
+        if [[ "$confirm" =~ ^[yYдД]$ ]]; then
+          mv "$HAPP_ROUTING_FILE" "${HAPP_ROUTING_FILE}.bak-$(date +%Y%m%d-%H%M%S)" 2>/dev/null \
+            && echo -e "${GREEN}✓ Возвращён профиль по умолчанию${NC}" \
+            || echo -e "${RED}✗ Не удалось удалить файл${NC}"
+        else
+          echo -e "${CYAN}✓ Отменено${NC}"
+        fi
+        sleep 2
+        ;;
+      0) return ;;
+      *) echo -e "${RED}Неверный выбор${NC}"; sleep 1 ;;
+    esac
+  done
 }
 
 _bypass_add_single_domain() {

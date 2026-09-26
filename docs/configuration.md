@@ -211,6 +211,109 @@ Default bundle groups:
 
 The menu is interactive: arrows move the selection, space toggles a group, Enter applies.
 
+## HAPP client routing profile
+
+The subscription endpoint returns a client-side routing profile to HAPP in the `routing:` response
+header. The managed default, `xrayebator-default`, sets `GlobalProxy: "true"`, so every destination
+except private IPv4 ranges is tunnelled.
+
+That is a different knob from [Bypass routing](#bypass-routing). Bypass changes where **the server**
+sends a request; the client still tunnels it, so the destination sees the VPS address. On a node
+without a cascade the catch-all outbound is already `direct`, so bypass cannot change what a Russian
+site sees. Keeping domestic traffic out of the tunnel is only possible in the client profile.
+
+The profile travels to the client in a response header, so a large `DirectSites` list can outgrow
+nginx's default 4k proxy buffer. The generated `location /sub/` raises it; if you run your own
+reverse proxy in front of the subscription, set `proxy_buffer_size` there too, otherwise nginx
+answers 502 and logs `upstream sent too big header`.
+
+### Generating it from the menu
+
+`HAPP subscription -> 7) Маршрутизация клиента` writes a ready split profile built from the same
+bundles the server-side bypass uses. It keeps `GlobalProxy: "true"`, so anything unknown still
+tunnels, and moves the Russian bundles plus `geoip:ru` into `DirectSites` and `DirectIp`. The
+previous override is backed up next to the file, and removing the override restores the managed
+default.
+
+### Override file
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `HAPP_ROUTING_ENABLED` | `true` | Set to `false` to stop sending the `routing:` header |
+| `HAPP_ROUTING_JSON_FILE` | `/usr/local/etc/xray/.happ_routing.json` | Operator override |
+
+If the override file exists and passes HAPP schema validation, it replaces the managed default for
+every subscriber. Malformed JSON is ignored in favour of the default rather than broadcast. Restart
+`xrayebator-sub.service` is not required: the file is read per request.
+
+Verdicts are evaluated per destination. `GlobalProxy: "false"` makes `direct` the default and sends
+only `ProxySites` and `ProxyIp` through the tunnel; `GlobalProxy: "true"` inverts that and treats
+`DirectSites` and `DirectIp` as the exceptions.
+
+### Split-tunnel example
+
+Domestic traffic stays on the mobile carrier, blocked services go through the VPS:
+
+```json
+{
+  "Name": "xrayebator-split",
+  "GlobalProxy": "false",
+  "RemoteDNSType": "DoH",
+  "RemoteDNSDomain": "https://cloudflare-dns.com/dns-query",
+  "RemoteDNSIP": "1.1.1.1",
+  "DomesticDNSType": "DoU",
+  "DomesticDNSDomain": "",
+  "DomesticDNSIP": "77.88.8.8",
+  "Geoipurl": "https://example.com/geo/geoip.dat",
+  "Geositeurl": "https://example.com/geo/geosite.dat",
+  "LastUpdated": "1788700000",
+  "DnsHosts": { "cloudflare-dns.com": "1.1.1.1" },
+  "DirectSites": ["domain:ru", "domain:xn--p1ai"],
+  "DirectIp": ["geoip:private", "geoip:ru"],
+  "ProxySites": ["domain:google.com", "domain:youtube.com", "domain:instagram.com"],
+  "ProxyIp": ["149.154.160.0/20", "91.108.4.0/22", "91.105.192.0/23"],
+  "BlockSites": [],
+  "BlockIp": [],
+  "DomainStrategy": "IPIfNonMatch",
+  "FakeDNS": "false"
+}
+```
+
+Three things are easy to get wrong:
+
+- **Telegram travels to IP addresses, not domains.** Domain rules never match it. Take the ranges
+  from <https://core.telegram.org/resources/cidr.txt> instead of writing them from memory; the list
+  changes, and a missing range silently degrades media downloads while chat still works.
+- **`LastUpdated` must grow.** HAPP re-imports a profile only when the value is higher than the one
+  it already stored.
+- **Geo databases must be reachable by the client.** The managed default points at
+  `/sub/<token>/geoip.dat`, which is per-subscriber. An operator-wide override cannot embed one
+  subscriber's token, so either host the databases somewhere every client can fetch them, or use
+  the placeholders below.
+
+### Placeholders
+
+The override is read per request, so three values can be left for the server to fill in:
+
+| Placeholder | Replaced with |
+|---|---|
+| `{{GEOIP_URL}}` | `<base url>/sub/<token>/geoip.dat` for the requesting subscriber |
+| `{{GEOSITE_URL}}` | `<base url>/sub/<token>/geosite.dat` for the requesting subscriber |
+| `{{LAST_UPDATED}}` | newest mtime among `xrayebator` and the two geo databases |
+
+```json
+  "Geoipurl": "{{GEOIP_URL}}",
+  "Geositeurl": "{{GEOSITE_URL}}",
+  "LastUpdated": "{{LAST_UPDATED}}",
+```
+
+Substitution runs before schema validation, so an unresolved placeholder fails the `https://` check
+and the managed default is served instead of a broken profile. `{{LAST_UPDATED}}` also removes the
+need to bump the value by hand after editing the geo databases.
+
+While a client downloads new geo databases the previous profile keeps running, so a failed download
+leaves routing unchanged rather than broken.
+
 ## Cascade and upstream nodes
 
 The cascade is a server-side outbound and routing mode, not a new client profile. The client keeps
