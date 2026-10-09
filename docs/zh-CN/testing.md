@@ -15,7 +15,7 @@ for test_file in validation/*.sh; do bash "$test_file" || exit; done
 
 ## 测试覆盖范围
 
-`validation/` 中有 28 个静态与本地回归测试：
+`validation/` 中有 34 个静态与本地回归测试：
 
 | 测试 | 检查内容 |
 |---|---|
@@ -23,7 +23,9 @@ for test_file in validation/*.sh; do bash "$test_file" || exit; done
 | `test-project-update-rollback.sh` | 项目更新失败后的回滚 |
 | `test-xhttp-route-path-repair.sh` | 迁移过程中 XHTTP 路径的修复 |
 | `test-multiroute-argument-preservation.sh` | 多线路配置档传输参数的保留 |
-| `test-happ-subscription-static.sh` | HAPP 订阅处理器 |
+| `test-happ-subscription-static.sh` | HAPP 订阅处理器（routing 占位符、校验顺序） |
+| `test-happ-client-routing.sh` | HAPP 客户端分流配置：基于 bypass 集合的生成器（258 个域名、占位符、`geoip:ru`）、nginx 缓冲区、菜单接线 |
+| `test-legacy-profile-port-sync.sh` | 无 `routes` 的旧版配置档仍能收到 SNI/端口同步 |
 | `test-subscription-server-name.sh` | 客户端中显示的订阅服务器名 |
 | `test-fingerprint-subscription-sync.sh` | 更换指纹时线路与订阅的同步 |
 | `test-dead-stealth-route-pruning.sh` | 失效 stealth 线路的清理 |
@@ -35,7 +37,10 @@ for test_file in validation/*.sh; do bash "$test_file" || exit; done
 | `test-installer-network-fallbacks.sh` | 安装脚本网络回退 |
 | `test-bbr-removal-migration.sh` | 已删除 BBR/TCP 调优在所有路径上的安全清理 |
 | `test-legacy-udp443-migration.sh` | 一次性清理旧版 UDP/443 阻断规则 |
-| `test-main-menu-numbering.sh` | 主菜单条目编号连续并与处理函数一致 |
+| `test-main-menu-numbering.sh` | 主菜单条目编号连续并与处理函数一致（含后端的 1..13） |
+| `test-backend-registry.sh` | 后端注册表（多协议阶段）：source-mode 下的注册表 CRUD（经 `safe_jq_write`）、installed/field 读取、生命周期入口的安全 no-op、`backend-status` JSON 结构 |
+| `test-hysteria2-lifecycle.sh` | Hysteria 2 后端：`server.yaml` 渲染（userpass 映射、占位回退）、systemd 单元安全模型、架构映射、TLS 探测、授权/吊销/过期-恢复事件、预删除配置档后的 deleted 重生成、created 为无操作（不自动签发）、纯函数 `hysteria2://` 构造器、CLI 分发与订阅接线 |
+| `test-awg-lifecycle.sh` | AmneziaWG 后端：Amnezia 默认 junk 方言（Jc=5、Jmin=10、Jmax=50、H1–H4=1..4、S1–S4 互不相同）、密钥生成、服务端配置渲染（PostUp MASQUERADE、安装时无 peer）、peer 地址分配、客户端 `.conf` 内容、revoke/expire/restore 事件、预删除配置档后的 deleted 重生成、created 为无操作（不自动签发）、CLI 分发 |
 | `test-main-readiness-regressions.sh` | 审计后的 readiness 回归：certbot manifest、UFW manifest、nginx 回滚、权限与 SSH 端口 |
 | `test-sni-change-cli.sh` | `sni-change` CLI：JSON 输出、Reality、XHTTP host、配置档同步与回滚 |
 | `test-bypass-cli.sh` | `bypass` CLI：JSON 输出、路由规则更新、带 SNI 探测的 add |
@@ -45,6 +50,7 @@ for test_file in validation/*.sh; do bash "$test_file" || exit; done
 | `test-quickstart-email-and-inspect.sh` | `quickstart` 的显式 email 模式（`--without-email` 不使用虚假地址）以及 `inspect --json` 的只读不变量 |
 | `test-quickstart-migration-parity.sh` | `quickstart` 执行与 `main_menu` 相同的关键迁移 |
 | `test-quickstart-subscription-port.sh` | 确认 `quickstart` 使用规范的订阅基础地址 helper，不回退到无关的硬编码 URL |
+| `test-quickstart-tls-fallback.sh` | `http_tls` 优雅降级分支：SUB_TLS_MODE 切换、HTTP-only vhost（无 ssl/无 proxy）、按模式写入标记、仅 ip_tls 设置续期定时器以及 JSON 的 degraded 元数据 |
 | `test-audit-functional.sh` | HowDeploy 审计（P0/P1）的功能回归检查 |
 | `test-audit-privilege-regressions.sh` | 权限边界回归 |
 
@@ -102,7 +108,7 @@ npm test              # Vitest 单元测试
 
 三个独立 workflow：
 
-- **ci-linux.yml** — Bash validation：在 ubuntu-24.04 上对所有脚本执行 `bash -n`，并运行全部 28 个
+- **ci-linux.yml** — Bash validation：在 ubuntu-24.04 上对所有脚本执行 `bash -n`，并运行全部 34 个
   `validation/test-*.sh`；在 push 到 `main`、`dev`、`experimental` 以及 pull request 时运行。
 - **release.yml** — Electron 构建（Windows/macOS/Linux）。只在 `v*` tag 和手动触发时运行；先由
   `preflight` 检查发布说明 `docs/releases/<tag>.en.md` 是否存在，以及仓库密钥 `AP3X0`（若已设置）

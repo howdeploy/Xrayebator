@@ -18,7 +18,9 @@ NC='\033[0m'
 
 # Пути
 CONFIG_FILE="/usr/local/etc/xray/config.json"
-PROFILES_DIR="/usr/local/etc/xray/profiles"
+# PROFILES_DIR переопределяем для функциональных тестов (P2-fix паттерн);
+# в проде и subhttp (systemd, чистый env) — дефолт.
+PROFILES_DIR="${PROFILES_DIR:-/usr/local/etc/xray/profiles}"
 DATA_DIR="/usr/local/etc/xray/data"
 UPSTREAMS_DIR="/usr/local/etc/xray/upstreams"
 XRAY_BACKUPS_DIR="/usr/local/etc/xray/backups"
@@ -42,6 +44,12 @@ TCP_CC_AVAILABLE_FILE="/proc/sys/net/ipv4/tcp_available_congestion_control"
 HOST_TUNING_MIGRATION_MARKER="/usr/local/etc/xray/.host_tcp_tuning_removed_v3"
 SYSCTL_SCAN_PATHS="/etc/sysctl.conf:/etc/sysctl.d:/usr/lib/sysctl.d:/lib/sysctl.d"
 LOCK_FILE="${LOCK_FILE:-/usr/local/etc/xray/.xrayebator.lock}"
+# Мультипротокольные бэкенды (этап 1): нейтральный корень ВНЕ /usr/local/etc/xray.
+# Решение 2026-10-04: hysteria2/awg не притворяются Xray-путями; реестр один —
+# backends.json. BACKENDS_ROOT переопределяем для функциональных тестов (P2-fix паттерн).
+BACKENDS_ROOT="${BACKENDS_ROOT:-/usr/local/etc/xrayebator}"
+BACKENDS_DIR="$BACKENDS_ROOT/backends"
+BACKENDS_REGISTRY_FILE="$BACKENDS_ROOT/backends.json"
 # P2-fix: пути nginx-сайтов переопределяемы для тестов реальной последовательности
 # (quickstart rollback). В проде — системные каталоги; в функциональном тесте —
 # временная ФС. Совпадает с существующим паттерном CONFIG_FILE/PROFILES_DIR override.
@@ -469,8 +477,21 @@ find_profile_file_by_uuid() {
 }
 
 find_available_random_port() {
+  # Нижняя граница 30000 — как была: часть мобильных операторов режет
+  # исходящие TCP на низкие порты, инбаунд там у таких абонентов недостижим.
+  # Потолок уводим ПОД эфемерный диапазон ядра (ip_local_port_range): порт
+  # оттуда может быть занят исходящим сокетом — в `ss -l` его не видно,
+  # проверка проходит, но xray падает на bind() уже после рестарта и профиль
+  # откатывается. Если ядро отдало ephemeral выше 60000 — окно не сужаем.
+  # (Идея из PR #19, Inhibit0r.)
   local min_port=30000
   local max_port=60000
+  local eph_min
+  eph_min=$(awk '{print $1}' /proc/sys/net/ipv4/ip_local_port_range 2>/dev/null)
+  if [[ "$eph_min" =~ ^[0-9]+$ ]] && (( eph_min > min_port + 1000 )) \
+     && (( eph_min - 1 < max_port )); then
+    max_port=$((eph_min - 1))
+  fi
   local attempts=0
   local port
 
@@ -496,7 +517,7 @@ find_available_random_port() {
     ((attempts++))
   done
 
-  echo -e "${RED}✗ Не удалось подобрать свободный случайный порт 30000-60000${NC}" >&2
+  echo -e "${RED}✗ Не удалось подобрать свободный случайный порт ${min_port}-${max_port}${NC}" >&2
   return 1
 }
 
@@ -983,60 +1004,6 @@ _subscription_public_tls_endpoint_verified() {
   return 0
 }
 
-# Validate the documented HAPP routing-profile schema before broadcasting it to
-# every subscriber. Plain `jq -e .` is not enough: the legacy
-# {"name":"xrayebator-default","rules":[]} payload is valid JSON, but it is not
-# a HAPP routing profile and leaves the client with a broken, locked profile.
-_happ_validate_routing_json() {
-  local port=$1 domain=$2 addr=$3 mode=$4
-  printf '%s' "$port" > /usr/local/etc/xray/.subscription_port
-  printf '%s' "$domain" > /usr/local/etc/xray/.subscription_domain
-  printf '%s' "$addr" > /usr/local/etc/xray/.subscription_server_addr
-  printf '%s' "$mode" > /usr/local/etc/xray/.subscription_mode
-  chown root:root \
-    /usr/local/etc/xray/.subscription_port \
-    /usr/local/etc/xray/.subscription_domain \
-    /usr/local/etc/xray/.subscription_server_addr \
-    /usr/local/etc/xray/.subscription_mode 2>/dev/null || true
-}
-
-# Публичный TLS endpoint подписки реально подтверждён (P1-happ-fix)?
-# Проверяем, что наш nginx vhost xrayebator-sub слушает 8443 ssl И сертификат для
-# сервера выпущен и действует. Используется happ_setup_command вместо фабрикации
-# маркеров: если endpoint не подтверждён — happ-setup вернёт ошибку, а не мёртвый URL.
-# Args: $1=server_addr (IPv4/hostname)
-_subscription_public_tls_endpoint_verified() {
-  local server_addr="${1:-}"
-  [[ -z "$server_addr" ]] && return 1
-  # 1) Наш nginx vhost с TLS на 8443 существует.
-  local vhost="/etc/nginx/sites-available/xrayebator-sub"
-  if [[ ! -f "$vhost" ]] || ! grep -q "listen 8443 ssl" "$vhost" 2>/dev/null; then
-    return 1
-  fi
-  # 2) Сертификат для адреса выпущен и файлы на месте.
-  local cert_dir="/etc/letsencrypt/live/${server_addr}"
-  if [[ ! -f "$cert_dir/fullchain.pem" || ! -f "$cert_dir/privkey.pem" ]]; then
-    return 1
-  fi
-  # 3) nginx реально слушает 8443 (не просто конфиг).
-  if command -v ss >/dev/null 2>&1; then
-    if ! ss -ltn 2>/dev/null | grep -q ':8443'; then
-      return 1
-    fi
-  fi
-  # 4) Сертификат не истёк (openssl доступен).
-  if command -v openssl >/dev/null 2>&1; then
-    local end
-    end=$(openssl x509 -enddate -noout -in "$cert_dir/fullchain.pem" 2>/dev/null | sed 's/notAfter=//')
-    local now_epoch end_epoch
-    now_epoch=$(date -u +%s)
-    end_epoch=$(date -u -d "$end" +%s 2>/dev/null || echo 0)
-    if [[ -z "$end_epoch" || "$end_epoch" -eq 0 || "$end_epoch" -le "$now_epoch" ]]; then
-      return 1
-    fi
-  fi
-  return 0
-}
 # Validate the documented HAPP routing-profile schema before broadcasting it to
 # every subscriber. Plain `jq -e .` is not enough: the legacy
 # {"name":"xrayebator-default","rules":[]} payload is valid JSON, but it is not
@@ -1803,7 +1770,8 @@ _ufw_remove_owned_port() {
     rm -f -- "$manifest_tmp"
     return 1
   fi
-  ufw reload >/dev/null 2>&1 || true
+  # Без ufw reload: `ufw allow` уже применил правило к живому iptables.
+  # reload стоит ~2.3с и на время пересборки цепочек дёргает соединения.
 }
 
 _add_owned_firewall_rule() {
@@ -1824,7 +1792,8 @@ _add_owned_firewall_rule() {
     ufw delete "$action" "${port}/${protocol}" >/dev/null 2>&1 || true
     return 1
   fi
-  ufw reload >/dev/null 2>&1 || true
+  # Без ufw reload — см. комментарий в _apply_ufw_manifest: allow/delete
+  # применяется к живому iptables сразу, reload только тормозит и рвёт сессии.
 }
 
 # Open port in UFW firewall (idempotent and ownership-safe).
@@ -1887,6 +1856,1873 @@ close_firewall_port() {
 
   return 0
 }
+
+# ═══════════════════════════════════════════════════════════
+# MULTI-PROTOCOL BACKEND REGISTRY (этап 1)
+# ═══════════════════════════════════════════════════════════
+# Нейтральный слой для не-Xray бэкендов (Hysteria 2, AmneziaWG 2.0).
+# Дизайн: .superpowers/sdd/2026-10-04-multi-protocol-backends-design.md
+# Клиентские креденшелы бэкендов живут в профилях (.backends) — профиль
+# единственный источник правды; серверные конфиги бэкендов регенерируются
+# из профилей. Реестр — плоский JSON: {"<type>": {"installed": bool, ...}}.
+# Права: корень 755, реестр 644 root — БЕЗ секретов, его читает subhttp
+# (пользователь xray); секреты живут глубже, в 750-каталогах бэкендов.
+
+# Готовит корень/каталог бэкендов и пустой реестр. Идемпотентен.
+_backend_ensure_registry() {
+  if [[ ! -d "$BACKENDS_ROOT" ]]; then
+    mkdir -p "$BACKENDS_ROOT" || return 1
+    chmod 755 "$BACKENDS_ROOT" 2>/dev/null
+  fi
+  if [[ ! -d "$BACKENDS_DIR" ]]; then
+    mkdir -p "$BACKENDS_DIR" || return 1
+    chmod 755 "$BACKENDS_DIR" 2>/dev/null
+  fi
+  if [[ ! -s "$BACKENDS_REGISTRY_FILE" ]]; then
+    if ! jq -n '{}' > "${BACKENDS_REGISTRY_FILE}.tmp.$$" 2>/dev/null; then
+      rm -f "${BACKENDS_REGISTRY_FILE}.tmp.$$"
+      return 1
+    fi
+    if [[ ! -s "${BACKENDS_REGISTRY_FILE}.tmp.$$" ]]; then
+      rm -f "${BACKENDS_REGISTRY_FILE}.tmp.$$"
+      return 1
+    fi
+    mv "${BACKENDS_REGISTRY_FILE}.tmp.$$" "$BACKENDS_REGISTRY_FILE" || return 1
+    chmod 644 "$BACKENDS_REGISTRY_FILE" 2>/dev/null
+  fi
+  return 0
+}
+
+# Установлен ли бэкенд (по реестру). Аргументы: $1 = тип бэкенда.
+_backend_installed() {
+  local type=$1
+  [[ -s "$BACKENDS_REGISTRY_FILE" ]] || return 1
+  jq -e --arg t "$type" '.[$t].installed == true' "$BACKENDS_REGISTRY_FILE" >/dev/null 2>&1
+}
+
+# Значение поля реестра бэкенда (пусто, если поля/бэкенда нет).
+# ВАЖНО: не jq `// empty` — он проглатывает легитимный boolean false
+# (three_enabled/disable_cookies/sub_body), что ломает чтение флагов.
+_backend_field() {
+  local type=$1 field=$2
+  [[ -s "$BACKENDS_REGISTRY_FILE" ]] || { echo ""; return 0; }
+  jq -r --arg t "$type" --arg f "$field" \
+    '(.[$t][$f]) | if . == null then "" else tostring end' \
+    "$BACKENDS_REGISTRY_FILE" 2>/dev/null
+}
+
+# Мутация реестра через safe_jq_write (валидация + tmp+mv, in-place).
+# Usage: _backend_set hysteria2 '(.hysteria2.port) = $port' --argjson port 443
+# Контракт safe_jq_write: jq-опции ДО фильтра, файл — последний аргумент.
+_backend_set() {
+  local type=$1 expr=$2
+  shift 2
+  _backend_ensure_registry || return 1
+  # Гарантируем существование объекта бэкенда (if-форма: совместимость со старым jq).
+  safe_jq_write --arg t "$type" \
+    'if .[$t] == null then .[$t] = {} else . end' \
+    "$BACKENDS_REGISTRY_FILE" || return 1
+  if [[ $# -gt 0 ]]; then
+    safe_jq_write "$@" "$expr" "$BACKENDS_REGISTRY_FILE"
+  else
+    safe_jq_write "$expr" "$BACKENDS_REGISTRY_FILE"
+  fi
+}
+
+# Занят ли UDP-порт системными слушателями. Порты других бэкендов НЕ
+# вычитаются здесь — их вызывающий сверяет по реестру.
+_backend_port_busy_udp() {
+  local port=$1
+  ss -uln 2>/dev/null | grep -qE "[:.]${port}[[:space:]]"
+}
+
+# active|inactive для systemd-юнита бэкенда; unknown — если юнит не задан.
+_backend_unit_state() {
+  local unit=$1
+  [[ -n "$unit" ]] || { echo "unknown"; return 0; }
+  if systemctl is-active --quiet "$unit" 2>/dev/null; then
+    echo "active"
+  else
+    echo "inactive"
+  fi
+}
+
+# Машиночитаемый статус реестра бэкендов. ТОЛЬКО JSON на stdout
+# (JSON-гигиена CLI как у profile-*).
+_backend_status_json() {
+  if ! _backend_ensure_registry; then
+    echo '{"ok":false,"error":"registry_init_failed","backends":{}}'
+    return 1
+  fi
+  local out="{}"
+  local prev="$out"
+  local type installed unit state entry
+  for type in hysteria2 awg; do
+    prev="$out"
+    if _backend_installed "$type"; then installed="true"; else installed="false"; fi
+    unit=$(_backend_field "$type" "unit")
+    state=$(_backend_unit_state "$unit")
+    # Прокидываем ВСЮ запись реестра (version/tls_mode/...) — статус не должен
+    # терять поля, добавленные будущими срезами; state ставится живой проверкой.
+    entry=$(jq -c --arg t "$type" '.[$t] // {}' "$BACKENDS_REGISTRY_FILE" 2>/dev/null)
+    [[ -n "$entry" ]] || entry="{}"
+    out=$(jq -n \
+      --argjson base "$prev" \
+      --arg t "$type" \
+      --argjson entry "$entry" \
+      --argjson installed "$installed" \
+      --arg state "$state" \
+      '$base + {($t): ($entry + {installed: $installed, state: $state})}' 2>/dev/null)
+    [[ -n "$out" ]] || out="$prev"
+  done
+  echo "{\"ok\":true,\"backends\":$out}"
+}
+
+# Единая точка жизненного цикла профиля для всех бэкендов.
+# Вызывается ПОСЛЕ успешной Xray-части операции (create/delete/revoke/expire).
+# Идемпотентна; для неустановленных бэкендов — no-op. События:
+#   created | deleted | revoked | expired | restored
+# Обработчики добавляются срезами бэкендов: _hysteria2_on_profile_event и т.п.
+_backend_apply_profile_lifecycle() {
+  local name=$1 event=$2
+  local type handler
+  for type in hysteria2 awg; do
+    _backend_installed "$type" || continue
+    handler="_${type}_on_profile_event"
+    declare -F "$handler" >/dev/null 2>&1 || continue
+    "$handler" "$name" "$event" || \
+      echo -e "${YELLOW}  ⚠ backend ${type}: событие ${event} для профиля ${name} обработано с ошибкой${NC}" >&2
+  done
+  return 0
+}
+# ═══════════════════════════════════════════════════════════
+# END MULTI-PROTOCOL BACKEND REGISTRY
+# ═══════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════
+# BACKEND: HYSTERIA 2 (быстрый UDP) — срез 2
+# ═══════════════════════════════════════════════════════════
+# Поставка: GitHub releases HyNetworks/hysteria (тег вида app/v2.12.3),
+# sha256 из поля digest API-ответа (плюс asset hashes.txt).
+# Юнит свой (не get.hy2.sh): пользователь hysteria + CAP_NET_BIND_SERVICE,
+# зеркально модели xray.service. TLS адаптивный: LE-серт подписки (копия
+# + certbot deploy-hook) или self-signed. masquerade 404 — до живой
+# проверки proxy-маскарада в срезе 3. Гранты per-profile — срез 3.
+
+HYSTERIA2_BIN="/usr/local/bin/hysteria"
+HYSTERIA2_DIR="$BACKENDS_DIR/hysteria"
+HYSTERIA2_UNIT="hysteria-server.service"
+HYSTERIA2_UNIT_FILE="/etc/systemd/system/hysteria-server.service"
+HYSTERIA2_USER="hysteria"
+HYSTERIA2_SYSCTL_FILE="/etc/sysctl.d/99-xrayebator-hysteria.conf"
+HYSTERIA2_CERTBOT_HOOK="/etc/letsencrypt/renewal-hooks/deploy/xrayebator-hysteria.sh"
+HYSTERIA2_REPO="HyNetworks/hysteria"
+
+# Актив Hysteria для архитектуры текущего ядра.
+_hysteria2_asset_arch() {
+  case "$(uname -m)" in
+    x86_64|amd64)   echo "amd64" ;;
+    aarch64|arm64)  echo "arm64" ;;
+    armv7l|armv6l)  echo "arm" ;;
+    i686|i386)      echo "386" ;;
+    *) return 1 ;;
+  esac
+}
+
+# Последний стабильный релиз. stdout: "<tag> <sha256-digest|''>".
+# Паттерн _fetch_latest_tag (Xray): GitHub API → fallback 302 redirect.
+_hysteria2_fetch_release_info() {
+  local arch=${1:-amd64}
+  local api_json tag digest
+  api_json=$(curl -fsSL --connect-timeout 10 --max-time 20 \
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    "https://api.github.com/repos/${HYSTERIA2_REPO}/releases/latest" 2>/dev/null)
+  tag=$(echo "$api_json" | jq -r '.tag_name // ""' 2>/dev/null)
+  if [[ "$tag" =~ ^app/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    digest=$(echo "$api_json" | jq -r --arg n "hysteria-linux-${arch}" \
+      '.assets[]? | select(.name == $n) | .digest // ""' 2>/dev/null)
+    echo "${tag} ${digest#sha256:}"
+    return 0
+  fi
+
+  local redirect_url
+  redirect_url=$(curl -fso /dev/null -w '%{url_effective}' \
+    --connect-timeout 10 --max-time 15 -L --max-redirs 1 \
+    "https://github.com/${HYSTERIA2_REPO}/releases/latest" 2>/dev/null)
+  tag="${redirect_url##*/}"
+  if [[ "$tag" =~ ^app/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "${tag} "
+    return 0
+  fi
+  return 1
+}
+
+# Рендер серверного конфига (чистая функция — тестируется в CI).
+# $5 = users-карта компактным JSON ({"user":"pass"}), по умолчанию пустая.
+_hysteria2_render_server_yaml() {
+  local out_file=$1 port=$2 cert=$3 key=$4 users=${5:-'{}'}
+  cat > "$out_file" <<EOF
+# Generated by xrayebator — регенерируется при изменениях, руками не править.
+listen: :${port}
+
+tls:
+  cert: ${cert}
+  key: ${key}
+
+# Per-profile гранты: карта собрана из .backends.hysteria2 живых профилей.
+# ВАЖНО: поле называется userpass (не users!) — с "users" hysteria падает
+# с "empty auth userpass" (живой тест 2.26.125.147).
+auth:
+  type: userpass
+  userpass: ${users}
+
+masquerade:
+  type: 404
+EOF
+}
+
+# Рендер systemd-юнита (чистая функция — тестируется в CI).
+_hysteria2_render_unit() {
+  local out_file=$1
+  cat > "$out_file" <<'EOF'
+[Unit]
+Description=Hysteria 2 server (managed by xrayebator)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hysteria
+ExecStart=/usr/local/bin/hysteria server -c /usr/local/etc/xrayebator/backends/hysteria/server.yaml
+WorkingDirectory=/usr/local/etc/xrayebator/backends/hysteria
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+# TLS-режим: "le <domain>" при живом LE-серте подписки, иначе "selfsigned".
+_hysteria2_tls_mode_detect() {
+  local domain=""
+  [[ -f /usr/local/etc/xray/.subscription_domain ]] && \
+    domain=$(tr -d '\r\n' < /usr/local/etc/xray/.subscription_domain 2>/dev/null)
+  if [[ -n "$domain" && -d "/etc/letsencrypt/live/$domain" ]]; then
+    echo "le ${domain}"
+  else
+    echo "selfsigned"
+  fi
+}
+
+# Системный пользователь сервиса (зеркало ensure_xray_runtime_user).
+_hysteria2_ensure_user() {
+  id -u "$HYSTERIA2_USER" >/dev/null 2>&1 && return 0
+  local nologin
+  nologin=$(command -v nologin 2>/dev/null || echo "/bin/false")
+  useradd -r -s "$nologin" -M -d /nonexistent "$HYSTERIA2_USER" 2>/dev/null
+}
+
+# UDP-буферы для QUIC (рекомендация Hysteria; TCP-тюнинг Xrayebator не трогаем).
+_hysteria2_apply_sysctl() {
+  cat > "$HYSTERIA2_SYSCTL_FILE" <<'EOF'
+# Managed by xrayebator (Hysteria 2 QUIC buffers)
+net.core.rmem_max=16777216
+net.core.wmem_max=16777216
+EOF
+  chmod 644 "$HYSTERIA2_SYSCTL_FILE"
+  sysctl -w net.core.rmem_max=16777216 >/dev/null 2>&1 || true
+  sysctl -w net.core.wmem_max=16777216 >/dev/null 2>&1 || true
+}
+
+# ── Срез 3: гранты per-profile, события жизненного цикла, ссылки ──
+
+# Счётчик профилей с грантом hysteria2.
+_hysteria2_grants_count() {
+  local n
+  n=$(jq -s '[.[] | select(.backends.hysteria2.password != null)] | length' \
+    "$PROFILES_DIR"/*.json 2>/dev/null)
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  echo "$n"
+}
+
+# Placeholder-пользователь: Hysteria отвергает ПУСТУЮ userpass-карту
+# ("empty auth userpass", живой тест 2.26.125.147). Пока нет грантов —
+# в карте висит _xrayebator_placeholder со случайным паролем (0600 root).
+_hysteria2_ensure_placeholder() {
+  local pfile="$HYSTERIA2_DIR/.placeholder_pass"
+  if [[ -s "$pfile" ]]; then
+    tr -d '\r\n' < "$pfile"
+    return 0
+  fi
+  openssl rand -hex 16 > "$pfile" 2>/dev/null || return 1
+  chmod 600 "$pfile" 2>/dev/null
+  tr -d '\r\n' < "$pfile"
+}
+
+# Применение нового server.yaml с откатом при неудачном рестарте.
+# $1 = путь к готовому yaml; при неудаче на месте остаётся прежний.
+_hysteria2_apply_config() {
+  local new_file=$1
+  _backend_installed hysteria2 || return 1
+  [[ -s "$new_file" ]] || return 1
+  local had_old=false
+  [[ -f "$HYSTERIA2_DIR/server.yaml" ]] && had_old=true
+  local backup="$HYSTERIA2_DIR/server.yaml.bak.apply"
+  if [[ "$had_old" == true ]]; then
+    cp -f "$HYSTERIA2_DIR/server.yaml" "$backup" || return 1
+  fi
+  cp -f "$new_file" "$HYSTERIA2_DIR/server.yaml" || return 1
+  chown root:"$HYSTERIA2_USER" "$HYSTERIA2_DIR/server.yaml" 2>/dev/null
+  chmod 640 "$HYSTERIA2_DIR/server.yaml" 2>/dev/null
+  systemctl restart "$HYSTERIA2_UNIT" 2>/dev/null
+  sleep 1
+  if systemctl is-active --quiet "$HYSTERIA2_UNIT" 2>/dev/null; then
+    rm -f "$backup"
+    return 0
+  fi
+  echo -e "${YELLOW}  ⚠ Hysteria не поднялась с новым конфигом — откатываю...${NC}" >&2
+  if [[ "$had_old" == true ]]; then
+    cp -f "$backup" "$HYSTERIA2_DIR/server.yaml"
+    chown root:"$HYSTERIA2_USER" "$HYSTERIA2_DIR/server.yaml" 2>/dev/null
+    chmod 640 "$HYSTERIA2_DIR/server.yaml" 2>/dev/null
+    systemctl restart "$HYSTERIA2_UNIT" 2>/dev/null
+    sleep 1
+  fi
+  rm -f "$backup"
+  return 1
+}
+
+# Регенерация users-карты из профилей + безопасный рестарт.
+# Фильтр expire_disabled: истёкший/отключённый профиль не попадает в auth —
+# restored после продления вернёт его автоматически (ключи живут в профиле).
+_hysteria2_regen_config() {
+  _backend_installed hysteria2 || return 0
+  local port
+  port=$(_backend_field hysteria2 port)
+  [[ "$port" =~ ^[0-9]+$ ]] || return 1
+  local users
+  users=$(jq -sc '
+    map(select(.backends.hysteria2.password != null and (.expire_disabled // false) == false)) |
+    map({key: .backends.hysteria2.username, value: .backends.hysteria2.password}) |
+    from_entries
+  ' "$PROFILES_DIR"/*.json 2>/dev/null) || users="{}"
+  [[ -n "$users" ]] || users="{}"
+  if [[ "$users" == "{}" ]]; then
+    # Пустая userpass-карта невалидна для Hysteria — placeholder-пользователь.
+    local placeholder_pass
+    placeholder_pass=$(_hysteria2_ensure_placeholder) || return 1
+    users=$(jq -cn --arg p "$placeholder_pass" '{_xrayebator_placeholder: $p}')
+  fi
+  local tmp="$HYSTERIA2_DIR/.server.yaml.new"
+  _hysteria2_render_server_yaml "$tmp" "$port" \
+    "$HYSTERIA2_DIR/cert.pem" "$HYSTERIA2_DIR/key.pem" "$users" || return 1
+  _hysteria2_apply_config "$tmp"
+  local rc=$?
+  rm -f "$tmp"
+  return $rc
+}
+
+# Грант hysteria2 профилю: пароль в .backends.hysteria2 профиля.
+# $2 = "no_regen" — не рестартовать (массовая выдача регенит один раз).
+_hysteria2_grant_profile() {
+  local name=$1
+  local profile_file="$PROFILES_DIR/$name.json"
+  _backend_installed hysteria2 || return 0
+  [[ -f "$profile_file" ]] || return 1
+  local existing
+  existing=$(jq -r '.backends.hysteria2.password // empty' "$profile_file" 2>/dev/null)
+  [[ -n "$existing" ]] && return 0
+  local password
+  password=$(openssl rand -hex 16) || return 1
+  safe_jq_write --arg u "$name" --arg p "$password" \
+    --arg c "$(date +%Y-%m-%d\ %H:%M:%S)" \
+    '.backends = ((.backends // {}) + {hysteria2: {username: $u, password: $p, created: $c}})' \
+    "$profile_file" || return 1
+  [[ "${2:-}" == "no_regen" ]] && return 0
+  _hysteria2_regen_config
+}
+
+# Массовая выдача: пишем все профили, реген — один.
+_hysteria2_grant_all_profiles() {
+  _backend_installed hysteria2 || return 0
+  local pf name granted=0 failed=0
+  for pf in "$PROFILES_DIR"/*.json; do
+    [[ -f "$pf" ]] || continue
+    name=$(jq -r '.name // empty' "$pf" 2>/dev/null)
+    [[ -n "$name" ]] || continue
+    if _hysteria2_grant_profile "$name" no_regen; then
+      granted=$((granted+1))
+    else
+      failed=$((failed+1))
+    fi
+  done
+  _hysteria2_regen_config || return 1
+  echo -e "${GREEN}  ✓ Гранты Hysteria 2: выдано ${granted}, ошибок ${failed}${NC}" >&2
+  return 0
+}
+
+# Обработчик событий жизненного цикла (вызывается из
+# _backend_apply_profile_lifecycle). Все события сводятся к регену users-карты:
+# created — грант+реген; revoked — ротация пароля+реген;
+# deleted/expired/restored — реген (фильтр expire_disabled + отсутствие файла).
+_hysteria2_on_profile_event() {
+  local name=$1 event=$2
+  _backend_installed hysteria2 || return 0
+  local profile_file="$PROFILES_DIR/$name.json"
+  case "$event" in
+    created)
+      # Авто-выдача при создании отключена (см. _awg_on_profile_event):
+      # протокол ключа выбирает оператор, иначе новый профиль получал
+      # ключи всех установленных бэкендов сразу.
+      return 0
+      ;;
+    revoked)
+      [[ -f "$profile_file" ]] || return 0
+      jq -e '.backends.hysteria2.password' "$profile_file" >/dev/null 2>&1 || return 0
+      local password
+      password=$(openssl rand -hex 16) || return 1
+      safe_jq_write --arg p "$password" \
+        '.backends.hysteria2.password = $p' "$profile_file" || return 1
+      _hysteria2_regen_config || return 1
+      ;;
+    deleted)
+      # Аналогично AWG: файл профиля удалён вызывающим ДО lifecycle —
+      # реген users-карты обязан пройти без удалённого гранта, иначе
+      # осиротевший пароль остаётся в server.yaml и удалённый
+      # пользователь сохраняет доступ.
+      _hysteria2_regen_config || return 1
+      ;;
+    expired|restored)
+      [[ -f "$profile_file" ]] || return 0
+      _hysteria2_regen_config || return 1
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+  return 0
+}
+
+# Pure-построение hysteria2:// URI (без TUI/stdin/записей) — для подписки.
+# Вызывается subhttp.sh от пользователя xray: реестр 644, профиль читаем.
+_hysteria2_profile_link_pure() {
+  local profile_file=$1
+  [[ -f "$profile_file" ]] || return 1
+  _backend_installed hysteria2 || return 1
+  local user pass port tls_mode sni host insecure name
+  user=$(jq -r '.backends.hysteria2.username // empty' "$profile_file" 2>/dev/null)
+  pass=$(jq -r '.backends.hysteria2.password // empty' "$profile_file" 2>/dev/null)
+  [[ -n "$user" && -n "$pass" ]] || return 1
+  port=$(_backend_field hysteria2 port)
+  [[ "$port" =~ ^[0-9]+$ ]] || return 1
+  tls_mode=$(_backend_field hysteria2 tls_mode)
+  sni=$(_backend_field hysteria2 sni)
+  host=$(_connection_server_address 2>/dev/null) || return 1
+  [[ -n "$host" ]] || return 1
+  case "$tls_mode" in
+    le*) insecure=0 ;;
+    *)   insecure=1 ;;
+  esac
+  local uri="hysteria2://${user}:${pass}@${host}:${port}/?insecure=${insecure}"
+  [[ -n "$sni" ]] && uri="hysteria2://${user}:${pass}@${host}:${port}/?sni=${sni}&insecure=${insecure}"
+  name=$(jq -r '.name // empty' "$profile_file" 2>/dev/null)
+  if [[ -n "$name" ]]; then
+    # Флаг страны — как у VLESS-маршрутов: в HAPP ключи должны выглядеть
+    # единообразно (круглый флаг в начале имени). Нет geo-маркера — голое имя.
+    local geo_country geo_flag
+    geo_country=$(_geo_country_name)
+    geo_flag=$(_geo_flag_emoji "$(_geo_country_code)")
+    if [[ -n "$geo_country" ]]; then
+      if [[ -n "$geo_flag" ]]; then
+        name="${geo_flag} ${geo_country} · ${name}"
+      else
+        name="${geo_country} · ${name}"
+      fi
+    fi
+    # Фрагмент обязан быть URL-encoded (юникод флага/пробелы) — как в vless://.
+    name=$(jq -nr --arg n "$name" '$n|@uri')
+    uri="${uri}#${name}"
+  fi
+  echo "$uri"
+}
+
+# CLI: hysteria2-grant --name N. Только JSON на stdout.
+hysteria2_grant_command() {
+  local name=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --name) name="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  [[ -n "$name" ]] || { echo '{"ok":false,"error":"--name required"}'; return 1; }
+  local rc=0
+  exec 3>&1; exec 1>&2
+  _hysteria2_grant_profile "$name" || rc=$?
+  exec 1>&3
+  if [[ $rc == 0 ]]; then
+    jq -n --arg n "$name" '{ok: true, name: $n}'
+  else
+    jq -n --argjson code "$rc" '{ok: false, code: $code}'
+    rc=1
+  fi
+  return "$rc"
+}
+
+# Меню: ссылка hysteria2 для профиля с грантом (+QR при наличии qrencode).
+hysteria2_link_menu() {
+  local -a names=()
+  local pf name
+  for pf in "$PROFILES_DIR"/*.json; do
+    [[ -f "$pf" ]] || continue
+    name=$(jq -r '.backends.hysteria2.username // empty' "$pf" 2>/dev/null)
+    [[ -n "$name" ]] && names+=("$name")
+  done
+  if [[ ${#names[@]} == 0 ]]; then
+    echo -e "${YELLOW}Нет профилей с грантом Hysteria 2.${NC}"
+    return 0
+  fi
+  echo ""
+  echo -e "${CYAN}Профили с грантом:${NC}"
+  local i=1
+  for name in "${names[@]}"; do
+    echo -e " ${CYAN}${i})${NC} $name"
+    ((i++))
+  done
+  echo -n -e "${YELLOW}Номер профиля [1-${#names[@]}]: ${NC}"
+  local choice
+  read -r choice || return 0
+  [[ "$choice" =~ ^[0-9]+$ ]] || return 0
+  (( choice >= 1 && choice <= ${#names[@]} )) || return 0
+  local selected="${names[$((choice-1))]}"
+  local link
+  link=$(_hysteria2_profile_link_pure "$PROFILES_DIR/$selected.json" 2>/dev/null) || {
+    echo -e "${RED}✗ Не удалось построить ссылку hysteria2${NC}"
+    return 1
+  }
+  echo ""
+  echo -e "${GREEN}${link}${NC}"
+  echo ""
+  command -v qrencode >/dev/null 2>&1 && qrencode -t ANSIUTF8 "$link" 2>/dev/null
+  return 0
+}
+
+# Безопасный рестарт Hysteria: бэкап server.yaml → restart → при неудаче откат.
+_hysteria2_safe_restart() {
+  [[ -f "$HYSTERIA2_DIR/server.yaml" ]] || return 1
+  local backup="$HYSTERIA2_DIR/server.yaml.bak.$$"
+  cp -f "$HYSTERIA2_DIR/server.yaml" "$backup" || return 1
+  systemctl restart "$HYSTERIA2_UNIT" 2>/dev/null
+  sleep 1
+  if systemctl is-active --quiet "$HYSTERIA2_UNIT" 2>/dev/null; then
+    rm -f "$backup"
+    return 0
+  fi
+  echo -e "${YELLOW}  ⚠ Hysteria не поднялась — откатываю server.yaml...${NC}"
+  cp -f "$backup" "$HYSTERIA2_DIR/server.yaml"
+  chown root:"$HYSTERIA2_USER" "$HYSTERIA2_DIR/server.yaml" 2>/dev/null
+  chmod 640 "$HYSTERIA2_DIR/server.yaml" 2>/dev/null
+  systemctl restart "$HYSTERIA2_UNIT" 2>/dev/null
+  sleep 1
+  rm -f "$backup"
+  systemctl is-active --quiet "$HYSTERIA2_UNIT" 2>/dev/null && \
+    echo -e "${GREEN}  ✓ Hysteria восстановлена на прежнем конфиге${NC}"
+  return 1
+}
+
+# Установка Hysteria 2. Аргумент: $1 = UDP-порт (по умолчанию 443).
+# Человеческий вывод; для CLI JSON — hysteria2_install_command.
+# Возвращает: 0=ok, 1=ошибка, 2=уже установлена.
+_hysteria2_install() {
+  local port=${1:-443}
+  [[ "$port" =~ ^[0-9]+$ ]] && [[ $port -ge 1 ]] && [[ $port -le 65535 ]] || {
+    echo -e "${RED}✗ Некорректный порт: ${port}${NC}"
+    return 1
+  }
+  if _backend_installed hysteria2; then
+    echo -e "${YELLOW}ℹ Hysteria 2 уже установлена (версия $(_backend_field hysteria2 version)).${NC}"
+    echo -e "${YELLOW}  Для переустановки: сначала 'hysteria2-uninstall'.${NC}"
+    return 2
+  fi
+  if _backend_port_busy_udp "$port"; then
+    echo -e "${RED}✗ UDP-порт ${port} уже занят другим слушателем.${NC}"
+    echo -e "${YELLOW}  Выберите другой порт.${NC}"
+    return 1
+  fi
+
+  local arch
+  arch=$(_hysteria2_asset_arch) || {
+    echo -e "${RED}✗ Архитектура $(uname -m) не поддерживается Hysteria${NC}"
+    return 1
+  }
+
+  echo -e "${CYAN}  → Запрашиваю последний релиз Hysteria...${NC}"
+  local rel_info tag expect_sha
+  rel_info=$(_hysteria2_fetch_release_info "$arch") || {
+    echo -e "${RED}✗ Не удалось определить последний релиз Hysteria (GitHub недоступен?)${NC}"
+    return 1
+  }
+  tag=${rel_info%% *}
+  expect_sha=${rel_info#* }
+  local version=${tag#app/}
+  echo -e "${CYAN}  → Релиз: ${version} (hysteria-linux-${arch})${NC}"
+
+  # Скачивание во временный файл + sha256 из API digest.
+  local url tmp
+  url="https://github.com/${HYSTERIA2_REPO}/releases/download/${tag}/hysteria-linux-${arch}"
+  tmp=$(mktemp) || return 1
+  echo -e "${CYAN}  → Скачиваю бинарник...${NC}"
+  if ! curl -fL --retry 5 --retry-delay 2 --retry-all-errors \
+      --connect-timeout 30 --max-time 600 --http1.1 -o "$tmp" "$url" 2>/dev/null; then
+    echo -e "${RED}✗ Не удалось скачать ${url}${NC}"
+    rm -f "$tmp"
+    return 1
+  fi
+  if [[ -n "$expect_sha" ]]; then
+    local got_sha
+    got_sha=$(sha256sum "$tmp" 2>/dev/null | awk '{print $1}')
+    if [[ "$got_sha" != "$expect_sha" ]]; then
+      echo -e "${RED}✗ sha256 не совпал (ожидалось ${expect_sha}, получено ${got_sha})${NC}"
+      rm -f "$tmp"
+      return 1
+    fi
+    echo -e "${CYAN}  ✓ sha256 сверён${NC}"
+  else
+    echo -e "${YELLOW}  ⚠ sha256 недоступен из API — пропускаю проверку${NC}"
+  fi
+  chmod 755 "$tmp"
+  if ! "$tmp" version >/dev/null 2>&1; then
+    echo -e "${RED}✗ Бинарник не прошёл self-test (hysteria version)${NC}"
+    rm -f "$tmp"
+    return 1
+  fi
+
+  echo -e "${CYAN}  → Создаю пользователя/каталоги/серт...${NC}"
+  _hysteria2_ensure_user || {
+    echo -e "${RED}✗ Не удалось создать системного пользователя ${HYSTERIA2_USER}${NC}"
+    rm -f "$tmp"
+    return 1
+  }
+  mkdir -p "$HYSTERIA2_DIR"
+
+  local tls_mode sni domain=""
+  tls_mode=$(_hysteria2_tls_mode_detect)
+  [[ "$tls_mode" == le\ * ]] && domain=${tls_mode#le }
+  if [[ "$tls_mode" == "le "* ]]; then
+    cp -f "/etc/letsencrypt/live/${domain}/fullchain.pem" "$HYSTERIA2_DIR/cert.pem" &&
+      cp -f "/etc/letsencrypt/live/${domain}/privkey.pem" "$HYSTERIA2_DIR/key.pem" || {
+      echo -e "${RED}✗ Не удалось скопировать LE-серт из /etc/letsencrypt/live/${domain}${NC}"
+      rm -f "$tmp"
+      return 1
+    }
+    sni="$domain"
+    mkdir -p "$(dirname "$HYSTERIA2_CERTBOT_HOOK")"
+    cat > "$HYSTERIA2_CERTBOT_HOOK" <<'EOF'
+#!/usr/bin/env bash
+# Managed by xrayebator: обновление Hysteria 2 после продления certbot.
+set -u
+domain="${RENEWED_DOMAINS%% *}"
+[[ -n "$domain" ]] || exit 0
+dir="/usr/local/etc/xrayebator/backends/hysteria"
+live="/etc/letsencrypt/live/$domain"
+[[ -d "$dir" && -d "$live" ]] || exit 0
+cp -f "$live/fullchain.pem" "$dir/cert.pem" && cp -f "$live/privkey.pem" "$dir/key.pem" || exit 0
+chown root:hysteria "$dir/cert.pem" "$dir/key.pem" 2>/dev/null
+chmod 640 "$dir/cert.pem" "$dir/key.pem" 2>/dev/null
+systemctl restart hysteria-server
+EOF
+    chmod 755 "$HYSTERIA2_CERTBOT_HOOK"
+    echo -e "${CYAN}  ✓ TLS: LE-серт подписки (${domain}) + deploy-hook на продление${NC}"
+  else
+    openssl ecparam -genkey -name prime256v1 -out "$HYSTERIA2_DIR/key.pem" 2>/dev/null &&
+      openssl req -new -x509 -days 3650 -key "$HYSTERIA2_DIR/key.pem" \
+        -out "$HYSTERIA2_DIR/cert.pem" -subj "/CN=hysteria" 2>/dev/null || {
+      echo -e "${RED}✗ Не удалось сгенерировать self-signed сертификат (openssl?)${NC}"
+      rm -f "$tmp"
+      return 1
+    }
+    sni=""
+    echo -e "${CYAN}  ✓ TLS: self-signed (клиенты с insecure=1)${NC}"
+  fi
+
+  # Стартовый конфиг: Hysteria не принимает пустую userpass-карту —
+  # рендерим с placeholder-пользователем; реген при грантах его заменит.
+  local placeholder_pass
+  placeholder_pass=$(_hysteria2_ensure_placeholder) || {
+    echo -e "${RED}✗ Не удалось создать placeholder-пароль${NC}"
+    rm -f "$tmp"
+    return 1
+  }
+  _hysteria2_render_server_yaml "$HYSTERIA2_DIR/server.yaml" "$port" \
+    "$HYSTERIA2_DIR/cert.pem" "$HYSTERIA2_DIR/key.pem" \
+    "$(jq -cn --arg p "$placeholder_pass" '{_xrayebator_placeholder: $p}')"
+  _hysteria2_apply_sysctl
+
+  echo -e "${CYAN}  → Устанавливаю бинарник и юнит...${NC}"
+  [[ -f "$HYSTERIA2_BIN" ]] && cp -f "$HYSTERIA2_BIN" "${HYSTERIA2_BIN}.bak.$(date +%s)"
+  install -m 755 "$tmp" "$HYSTERIA2_BIN" || { rm -f "$tmp"; return 1; }
+  rm -f "$tmp"
+
+  _hysteria2_render_unit "$HYSTERIA2_UNIT_FILE"
+  chown root:"$HYSTERIA2_USER" "$HYSTERIA2_DIR/server.yaml" "$HYSTERIA2_DIR/cert.pem" "$HYSTERIA2_DIR/key.pem" 2>/dev/null
+  chmod 750 "$HYSTERIA2_DIR"
+  # Каталог должен быть читаем сервисом: без chown он остаётся root:root
+  # и CHDIR юнита падает с Permission denied (живой тест 2.26.125.147).
+  chown root:"$HYSTERIA2_USER" "$HYSTERIA2_DIR" 2>/dev/null
+  chmod 640 "$HYSTERIA2_DIR/server.yaml" "$HYSTERIA2_DIR/cert.pem" "$HYSTERIA2_DIR/key.pem" 2>/dev/null
+
+  systemctl daemon-reload
+  if ! systemctl enable --now "$HYSTERIA2_UNIT" 2>/dev/null; then
+    echo -e "${RED}✗ systemctl enable --now ${HYSTERIA2_UNIT} не удался${NC}"
+    _hysteria2_install_rollback
+    return 1
+  fi
+  sleep 1
+  if ! systemctl is-active --quiet "$HYSTERIA2_UNIT" 2>/dev/null; then
+    echo -e "${RED}✗ Hysteria не запустилась — journalctl -u ${HYSTERIA2_UNIT}${NC}"
+    _hysteria2_install_rollback
+    return 1
+  fi
+
+  open_firewall_port "$port" udp
+
+  # Реестр — последним шагом: записи появляются только у живого бэкенда.
+  _backend_set hysteria2 '(.hysteria2.installed) = true' &&
+    _backend_set hysteria2 '(.hysteria2.version) = $v' --arg v "$version" &&
+    _backend_set hysteria2 '(.hysteria2.port) = $port' --argjson port "$port" &&
+    _backend_set hysteria2 '(.hysteria2.unit) = $u' --arg u "$HYSTERIA2_UNIT" &&
+    _backend_set hysteria2 '(.hysteria2.tls_mode) = $m' --arg m "$tls_mode" &&
+    _backend_set hysteria2 '(.hysteria2.sni) = $s' --arg s "$sni" &&
+    _backend_set hysteria2 '(.hysteria2.masquerade) = "404"' &&
+    _backend_set hysteria2 '(.hysteria2.obfs) = false' &&
+    _backend_set hysteria2 '(.hysteria2.sub_body) = true' || {
+    echo -e "${RED}✗ Не удалось записать реестр бэкендов${NC}"
+    _hysteria2_install_rollback
+    return 1
+  }
+
+  # Гранты существующим профилям (срез 3). Режимы $2: prompt (интерактив),
+  # grant_all (CLI --grant-all), no_prompt (CLI по умолчанию).
+  local grant_mode=${2:-prompt}
+  if [[ "$grant_mode" == "grant_all" ]]; then
+    _hysteria2_grant_all_profiles
+  elif [[ "$grant_mode" != "no_prompt" ]]; then
+    echo ""
+    echo -n -e "${YELLOW}Выдать доступ Hysteria 2 всем существующим профилям? [y/N]: ${NC}"
+    local grant_ans
+    read -r grant_ans || grant_ans=N
+    [[ "$grant_ans" =~ ^[yYдД]$ ]] && _hysteria2_grant_all_profiles
+  fi
+
+  echo ""
+  echo -e "${GREEN}╔═══════════════════════════════════════════════╗${NC}"
+  echo -e "${GREEN}║      ✓ HYSTERIA 2 УСТАНОВЛЕНА                 ║${NC}"
+  echo -e "${GREEN}╚═══════════════════════════════════════════════╝${NC}"
+  echo ""
+  echo -e "${BLUE}Версия:${NC} $version"
+  echo -e "${BLUE}Порт:${NC} UDP $port"
+  echo -e "${BLUE}TLS:${NC} $tls_mode"
+  echo -e "${BLUE}Грантов выдано:${NC} $(_hysteria2_grants_count)"
+  return 0
+}
+
+# Откат артефактов установки при неудаче (registry-записи ещё не писались).
+_hysteria2_install_rollback() {
+  systemctl disable --now "$HYSTERIA2_UNIT" 2>/dev/null
+  rm -f "$HYSTERIA2_UNIT_FILE"
+  systemctl daemon-reload 2>/dev/null
+  rm -rf "$HYSTERIA2_DIR"
+  rm -f "$HYSTERIA2_SYSCTL_FILE" "$HYSTERIA2_CERTBOT_HOOK"
+}
+
+# Удаление Hysteria 2. Возвращает: 0=ok, 2=не установлена.
+_hysteria2_uninstall() {
+  if ! _backend_installed hysteria2 && [[ ! -f "$HYSTERIA2_UNIT_FILE" ]]; then
+    echo -e "${YELLOW}ℹ Hysteria 2 не установлена.${NC}"
+    return 2
+  fi
+  local port
+  port=$(_backend_field hysteria2 port)
+
+  echo -e "${CYAN}  → Останавливаю и удаляю сервис...${NC}"
+  systemctl disable --now "$HYSTERIA2_UNIT" 2>/dev/null
+  rm -f "$HYSTERIA2_UNIT_FILE"
+  systemctl daemon-reload 2>/dev/null
+
+  rm -f "$HYSTERIA2_SYSCTL_FILE" "$HYSTERIA2_CERTBOT_HOOK"
+  rm -rf "$HYSTERIA2_DIR"
+  rm -f "$HYSTERIA2_BIN" "$HYSTERIA2_BIN".bak.* 2>/dev/null
+
+  if [[ "$port" =~ ^[0-9]+$ ]]; then
+    close_firewall_port "$port" udp
+  fi
+
+  safe_jq_write --arg t hysteria2 'del(.[$t])' "$BACKENDS_REGISTRY_FILE" 2>/dev/null
+
+  echo -e "${GREEN}  ✓ Hysteria 2 удалена${NC}"
+  echo -e "${YELLOW}ℹ Гранты в профилях (.backends.hysteria2) чистятся срезом 3 lifecycle-хуком.${NC}"
+  return 0
+}
+
+# CLI: hysteria2-install [--port P]. Только JSON на stdout.
+hysteria2_install_command() {
+  local port=443 grant_mode="no_prompt"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --port)
+        [[ $# -ge 2 ]] || { echo '{"ok":false,"error":"--port requires value"}' >&2; return 1; }
+        port=$2; shift 2 ;;
+      --grant-all)
+        grant_mode="grant_all"; shift ;;
+      *)
+        echo "{\"ok\":false,\"error\":\"unknown argument: $1\"}" >&2
+        return 1 ;;
+    esac
+  done
+  local rc=0
+  exec 3>&1; exec 1>&2
+  _hysteria2_install "$port" "$grant_mode" || rc=$?
+  exec 1>&3
+  if [[ $rc == 0 ]]; then
+    jq -n '{ok: true}'
+  elif [[ $rc == 2 ]]; then
+    jq -n '{ok: true, already: true}'
+    rc=0
+  else
+    jq -n --argjson code "$rc" '{ok: false, code: $code}'
+  fi
+  return "$rc"
+}
+
+# CLI: hysteria2-uninstall. Только JSON на stdout.
+hysteria2_uninstall_command() {
+  local rc=0
+  exec 3>&1; exec 1>&2
+  _hysteria2_uninstall || rc=$?
+  exec 1>&3
+  if [[ $rc == 0 ]]; then
+    jq -n '{ok: true}'
+  elif [[ $rc == 2 ]]; then
+    jq -n '{ok: true, already: true}'
+    rc=0
+  else
+    jq -n --argjson code "$rc" '{ok: false, code: $code}'
+  fi
+  return "$rc"
+}
+
+# CLI: hysteria2-status. Только JSON на stdout.
+hysteria2_status_command() {
+  local full
+  full=$(_backend_status_json) || { echo '{"ok":false,"error":"registry"}'; return 1; }
+  local bin_state="absent"
+  [[ -x "$HYSTERIA2_BIN" ]] && bin_state="present"
+  echo "$full" | jq --arg bin "$bin_state" '{ok: .ok, binary: $bin, backend: .backends.hysteria2}'
+}
+
+# CLI: hysteria2-subbody --on|--off. Kill-switch строк hysteria2:// в телах
+# подписки (handler перечитывает реестр на каждый запрос — без рестартов).
+# Только JSON на stdout.
+hysteria2_subbody_command() {
+  local mode=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --on) mode="on"; shift ;;
+      --off) mode="off"; shift ;;
+      *) shift ;;
+    esac
+  done
+  [[ -n "$mode" ]] || { echo '{"ok":false,"error":"--on/--off required"}'; return 1; }
+  if ! _backend_installed hysteria2; then
+    echo '{"ok":false,"error":"Hysteria 2 не установлена"}'
+    return 1
+  fi
+  local v=true
+  [[ "$mode" == "off" ]] && v=false
+  _backend_set hysteria2 '(.hysteria2.sub_body) = $v' --argjson v "$v" || {
+    echo '{"ok":false,"error":"registry write failed"}'
+    return 1
+  }
+  jq -n --argjson v "$v" '{ok: true, sub_body: $v}'
+}
+
+# CLI: hysteria2-link --name N. Ссылка hysteria2:// для профиля с грантом
+# (именование с флагом страны — как у VLESS-маршрутов). Только JSON.
+hysteria2_link_command() {
+  local name=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --name) name="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  [[ -n "$name" ]] || { echo '{"ok":false,"error":"--name required"}'; return 1; }
+  local pf="$PROFILES_DIR/$name.json"
+  [[ -f "$pf" ]] || { echo '{"ok":false,"error":"Профиль не найден"}'; return 1; }
+  local link
+  link=$(_hysteria2_profile_link_pure "$pf" 2>/dev/null) || {
+    echo '{"ok":false,"error":"Нет гранта Hysteria 2 или бэкенд не установлен"}'
+    return 1
+  }
+  jq -n --arg n "$name" --arg l "$link" '{ok: true, name: $n, link: $l}'
+}
+
+# Меню 13: сводный статус всех бэкендов.
+backend_status_menu() {
+  while true; do
+    show_ascii
+    echo -e "${BLUE}╔═══════════════════════════════════════════════╗${NC}"
+    echo -e "${BLUE}║         СТАТУС МУЛЬТИПРОТОКОЛЬНЫХ БЭКЕНДОВ    ║${NC}"
+    echo -e "${BLUE}╚═══════════════════════════════════════════════╝${NC}"
+    echo ""
+    _backend_status_json | jq . 2>/dev/null
+    echo ""
+    echo -n -e "${YELLOW}Нажмите Enter для возврата...${NC}"
+    read -r || return 0
+    return 0
+  done
+}
+
+# Меню 12: AmneziaWG 2.0 (системный VPN).
+awg_menu() {
+  while true; do
+    show_ascii
+    echo -e "${BLUE}╔═══════════════════════════════════════════════╗${NC}"
+    echo -e "${BLUE}║         AMNEZIAWG 2.0 (СИСТЕМНЫЙ VPN)         ║${NC}"
+    echo -e "${BLUE}╚═══════════════════════════════════════════════╝${NC}"
+    echo ""
+    if _backend_installed awg; then
+      echo -e "${GREEN}Установлен:${NC} интерфейс $AWG_IFACE, порт UDP $(_backend_field awg port), подсеть $(_backend_field awg subnet)"
+      echo -e "${GREEN}Юнит:${NC} $AWG_UNIT — $(_backend_unit_state "$AWG_UNIT")"
+    else
+      echo -e "${YELLOW}Не установлен.${NC}"
+    fi
+    echo ""
+    echo -e "${CYAN} 1)${NC} Установить (kernel DKMS, случайный высокий UDP-порт)"
+    echo -e "${CYAN} 2)${NC} Статус"
+    echo -e "${CYAN} 3)${NC} Конфиг клиента (peer)"
+    local t31
+    t31=$(_backend_field awg three_enabled)
+    [[ "$t31" == "true" || "$t31" == "false" ]] || t31=true
+    if [[ "$t31" == "true" ]]; then
+      echo -e "${CYAN} 4)${NC} Режим AWG 3.1: ВКЛЮЧЁН (HeaderProtection+RandomTrailers) — выключить"
+    else
+      echo -e "${CYAN} 4)${NC} Режим AWG 3.1: выключен — включить (перевыпустить .conf клиентов)"
+    fi
+    echo -e "${CYAN} 5)${NC} Удалить"
+    echo -e "${RED} 0)${NC} Назад"
+    echo ""
+    echo -n -e "${YELLOW}Выберите действие: ${NC}"
+    local choice
+    read -r choice || return 0
+    case $choice in
+      1)
+        _awg_install
+        echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
+        read -r
+        ;;
+      2)
+        awg_status_command | jq .
+        echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
+        read -r
+        ;;
+      3)
+        awg_conf_menu
+        echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
+        read -r
+        ;;
+      4)
+        if [[ "$t31" == "true" ]]; then
+          _awg_31_toggle off ""
+        else
+          _awg_31_toggle on ""
+        fi
+        echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
+        read -r
+        ;;
+      5)
+        _awg_uninstall
+        echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
+        read -r
+        ;;
+      0) return 0 ;;
+      *) echo -e "${RED}Неверный выбор${NC}"; sleep 1 ;;
+    esac
+  done
+}
+
+# Меню 11: Hysteria 2 (быстрый UDP).
+hysteria2_menu() {
+  while true; do
+    show_ascii
+    echo -e "${BLUE}╔═══════════════════════════════════════════════╗${NC}"
+    echo -e "${BLUE}║         HYSTERIA 2 (БЫСТРЫЙ UDP)              ║${NC}"
+    echo -e "${BLUE}╚═══════════════════════════════════════════════╝${NC}"
+    echo ""
+    if _backend_installed hysteria2; then
+      echo -e "${GREEN}Установлена:${NC} $(_backend_field hysteria2 version), порт UDP $(_backend_field hysteria2 port), TLS $(_backend_field hysteria2 tls_mode)"
+      echo -e "${GREEN}Юнит:${NC} $HYSTERIA2_UNIT — $(_backend_unit_state "$HYSTERIA2_UNIT")"
+    else
+      echo -e "${YELLOW}Не установлена.${NC}"
+    fi
+    echo ""
+    echo -e "${CYAN} 1)${NC} Установить (UDP-порт, по умолчанию 443)"
+    echo -e "${CYAN} 2)${NC} Статус"
+    echo -e "${CYAN} 3)${NC} Ссылка hysteria2 для профиля"
+    echo -e "${CYAN} 4)${NC} Удалить"
+    echo -e "${RED} 0)${NC} Назад"
+    echo ""
+    echo -n -e "${YELLOW}Выберите действие: ${NC}"
+    local choice
+    read -r choice || return 0
+    case $choice in
+      1)
+        local port
+        echo -n -e "${YELLOW}UDP-порт [443]: ${NC}"
+        read -r port
+        port=${port:-443}
+        _hysteria2_install "$port"
+        echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
+        read -r
+        ;;
+      2)
+        hysteria2_status_command | jq .
+        echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
+        read -r
+        ;;
+      3)
+        hysteria2_link_menu
+        echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
+        read -r
+        ;;
+      4)
+        _hysteria2_uninstall
+        echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
+        read -r
+        ;;
+      0) return 0 ;;
+      *) echo -e "${RED}Неверный выбор${NC}"; sleep 1 ;;
+    esac
+  done
+}
+# ═══════════════════════════════════════════════════════════
+# END BACKEND: HYSTERIA 2
+# ═══════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════
+# BACKEND: AMNEZIAWG 2.0 (системный VPN) — срезы 4–5
+# ═══════════════════════════════════════════════════════════
+# Решение 2026-10-04: kernel-модуль DKMS, не userspace. Официальный путь —
+# PPA amnezia/ppa (README amneziawg-linux-kernel-module); фолбэк — сборка
+# из исходников (для ядра ≥5.6 нужен ПОЛНЫЙ linux-source, не только headers).
+# Junk-параметры по спецификации AWG 2.0: Jc 1..128, Jmin<Jmax≤1280,
+# S1/S2 15..150 (S1+56≠S2), H1-H4 уникальные 5..2147483647.
+# Правило: неудаляемо-половинных состояний нет — неудача = чистый откат.
+
+AWG_DIR="$BACKENDS_DIR/awg"
+AWG_IFACE="awg0"
+AWG_CONF_FILE="$AWG_DIR/awg0.conf"
+AWG_PARAMS_FILE="$AWG_DIR/server-params.json"
+AWG_UNIT="awg-quick@awg0.service"
+AWG_USER_NAME="hysteria"          # отдельного пользователя не заводим: awg-quick
+                                  # выполняется root-ом (сеть/маршруты), конфиг 0600 root
+AWG_SUBNET_PREFIX="10.8.1"
+AWG_SUBNET="${AWG_SUBNET_PREFIX}.0/24"
+AWG_MTU=1280
+AWG_SYSCTL_FILE="/etc/sysctl.d/99-xrayebator-awg.conf"
+AWG_REPO_MODULE="amnezia-vpn/amneziawg-linux-kernel-module"
+AWG_REPO_TOOLS="amnezia-vpn/amneziawg-tools"
+
+# Параметры AWG, включая 3.1 (HeaderProtectionKey, S3/S4).
+# Диалект по умолчанию = дефолты Amnezia (доказанная совместимость с их
+# мобильными клиентами: go-туннель применяет наш кастомный junk не целиком):
+# Jc=5, Jmin=10, Jmax=50, H1–H4=1..4 (WG-магия), S1/S2 12..150, S3/S4 12..64
+# (лимиты их валидатора), S1+56≠S2, S1..S4 уникальные. HPK — 32 байта base64.
+_awg_gen_junk() {
+  local jc jmin jmax s1 s2 s3 s4 h1 h2 h3 h4 hpk
+  jc=5                                                 # дефолт Amnezia
+  jmin=10
+  jmax=50
+  s1=$((RANDOM % 139 + 12))                            # 12..150
+  s2=$((RANDOM % 139 + 12))
+  while (( s2 == s1 + 56 )); do s2=$((RANDOM % 139 + 12)); done
+  s3=$((RANDOM % 53 + 12))                             # 12..64 (их лимит cookie)
+  while (( s3 == s1 || s3 == s2 )); do s3=$((RANDOM % 53 + 12)); done
+  s4=$((RANDOM % 53 + 12))
+  while (( s4 == s1 || s4 == s2 || s4 == s3 )); do s4=$((RANDOM % 53 + 12)); done
+  h1=1; h2=2; h3=3; h4=4                               # WG-магия, дефолт Amnezia
+  hpk=$(openssl rand -base64 32 2>/dev/null) || return 1
+  jq -n --argjson jc "$jc" --argjson jmin "$jmin" --argjson jmax "$jmax" \
+    --argjson s1 "$s1" --argjson s2 "$s2" --argjson s3 "$s3" --argjson s4 "$s4" \
+    --argjson h1 "$h1" --argjson h2 "$h2" --argjson h3 "$h3" --argjson h4 "$h4" \
+    --arg hpk "$hpk" \
+    '{Jc:$jc, Jmin:$jmin, Jmax:$jmax, S1:$s1, S2:$s2, S3:$s3, S4:$s4,
+      H1:$h1, H2:$h2, H3:$h3, H4:$h4, HeaderProtectionKey: $hpk}'
+}
+
+# Догенерация 3.1-полей в старом server-params.json (установки до 3.1-этапа):
+# добавляет S3/S4 (≥12, уникальные) и HeaderProtectionKey, если их нет.
+_awg_ensure_31_params() {
+  local junk=$1
+  if jq -e 'has("S3") and has("S4") and has("HeaderProtectionKey")' <<<"$junk" >/dev/null 2>&1; then
+    echo "$junk"
+    return 0
+  fi
+  local s3=$((RANDOM % 139 + 12)) s4=$((RANDOM % 139 + 12)) hpk
+  local s1=$(jq -r '.S1 // 15' <<<"$junk") s2=$(jq -r '.S2 // 16' <<<"$junk")
+  while (( s3 == s1 || s3 == s2 )); do s3=$((RANDOM % 139 + 12)); done
+  while (( s4 == s1 || s4 == s2 || s4 == s3 )); do s4=$((RANDOM % 139 + 12)); done
+  hpk=$(openssl rand -base64 32 2>/dev/null) || return 1
+  jq -n --argjson j "$junk" --argjson s3 "$s3" --argjson s4 "$s4" --arg hpk "$hpk" \
+    '$j + {S3: $s3, S4: $s4, HeaderProtectionKey: $hpk}'
+}
+
+# Свободный высокий UDP-порт под интерфейс (не как у hysteria).
+_awg_pick_port() {
+  local port
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    port=$((RANDOM % 40000 + 20000))                  # 20000..59999
+    if ! _backend_port_busy_udp "$port" && [[ "$port" != "$(_backend_field hysteria2 port)" ]]; then
+      echo "$port"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Ключевая тройка: stdout "priv pub psk" (base64).
+_awg_gen_keys() {
+  local priv pub psk
+  priv=$(awg genkey 2>/dev/null) || return 1
+  pub=$(printf '%s' "$priv" | awg pubkey 2>/dev/null) || return 1
+  psk=$(awg genpsk 2>/dev/null) || return 1
+  [[ -n "$priv" && -n "$pub" && -n "$psk" ]] || return 1
+  printf '%s %s %s\n' "$priv" "$pub" "$psk"
+}
+
+# Публичный интерфейс default-route (для MASQUERADE).
+_awg_public_iface() {
+  ip route show default 2>/dev/null | awk '{print $5; exit}'
+}
+
+# Рендер серверного интерфейсного конфига (чистая функция — тестируется в CI).
+# $1=out $2=port $3=privkey $4=params_json $5=pub_iface; [Peer] добавляет реген.
+# $6 = features JSON {hpk:bool, rt:bool, dc:bool} (AWG 3.1); пусто → без 3.x-ключей.
+_awg_render_server_conf() {
+  local out_file=$1 port=$2 privkey=$3 params=$4 iface=$5 features=${6:-'{}'}
+  local jc jmin jmax s1 s2 s3 s4 h1 h2 h3 h4 hpk
+  jc=$(jq -r '.Jc' <<<"$params");   jmin=$(jq -r '.Jmin' <<<"$params")
+  jmax=$(jq -r '.Jmax' <<<"$params"); s1=$(jq -r '.S1' <<<"$params")
+  s2=$(jq -r '.S2' <<<"$params")
+  s3=$(jq -r '.S3 // empty' <<<"$params"); s4=$(jq -r '.S4 // empty' <<<"$params")
+  h1=$(jq -r '.H1' <<<"$params");   h2=$(jq -r '.H2' <<<"$params")
+  h3=$(jq -r '.H3' <<<"$params");   h4=$(jq -r '.H4' <<<"$params")
+  hpk=$(jq -r '.HeaderProtectionKey // empty' <<<"$params")
+  local fe_hpk fe_rt fe_dc
+  fe_hpk=$(jq -r '.hpk // false' <<<"$features")
+  fe_rt=$(jq -r '.rt // false' <<<"$features")
+  fe_dc=$(jq -r '.dc // false' <<<"$features")
+  {
+    cat > "$out_file" <<EOF
+[Interface]
+Address = ${AWG_SUBNET_PREFIX}.1/24
+ListenPort = ${port}
+PrivateKey = ${privkey}
+MTU = ${AWG_MTU}
+Jc = ${jc}
+Jmin = ${jmin}
+Jmax = ${jmax}
+S1 = ${s1}
+S2 = ${s2}
+EOF
+    [[ -n "$s3" ]] && printf 'S3 = %s\n' "$s3" >> "$out_file"
+    [[ -n "$s4" ]] && printf 'S4 = %s\n' "$s4" >> "$out_file"
+    printf 'H1 = %s\nH2 = %s\nH3 = %s\nH4 = %s\n' "$h1" "$h2" "$h3" "$h4" >> "$out_file"
+    # AWG 3.1: HPK шифрует заголовок (общий секрет), RT — случайный хвост пакетов.
+    # Оба должны совпадать на сервере и клиенте; включение на живом сервере
+    # требует перевыпуска всех клиентских .conf.
+    [[ "$fe_hpk" == true && -n "$hpk" ]] && printf 'HeaderProtectionKey = %s\n' "$hpk" >> "$out_file"
+    # Формат булевых в парсере awg (kernel UAPI): on/off, НЕ true/false.
+    [[ "$fe_rt" == true ]] && printf 'RandomTrailers = on\n' >> "$out_file"
+    [[ "$fe_dc" == true ]] && printf 'DisableCookies = on\n' >> "$out_file"
+    cat >> "$out_file" <<EOF
+# Managed by xrayebator — peer-секции добавляет _awg_regen_config.
+PostUp = iptables -A FORWARD -i ${AWG_IFACE} -j ACCEPT; iptables -t nat -A POSTROUTING -o ${iface} -j MASQUERADE
+PostDown = iptables -D FORWARD -i ${AWG_IFACE} -j ACCEPT; iptables -t nat -D POSTROUTING -o ${iface} -j MASQUERADE
+EOF
+  } || return 1
+  return 0
+}
+
+# Установка модуля+tools: PPA (официальный путь) → apt amneziawg.
+# Возвращает 0 только если awg-бинарник на месте.
+_awg_install_packages() {
+  echo -e "${CYAN}  → Ставлю amneziawg из PPA amnezia/ppa (может занять несколько минут: DKMS)...${NC}"
+  _apt_wait_lock
+  if command -v add-apt-repository >/dev/null 2>&1; then
+    add-apt-repository -y ppa:amnezia/ppa >/dev/null 2>&1 || true
+  else
+    echo "deb https://ppa.launchpadcontent.net/amnezia/ppa/ubuntu focal main" > /etc/apt/sources.list.d/amneziawg.list
+  fi
+  apt-get update -qq >/dev/null 2>&1 || true
+  apt-get "${APT_LOCK_OPTS[@]}" install -y --no-install-recommends amneziawg >/dev/null 2>&1
+  command -v awg >/dev/null 2>&1
+}
+
+# Ручная сборка (фолбэк, когда PPA недоступен). Требует ПОЛНЫЙ linux-source
+# для ядер ≥5.6 — ставим linux-source текущей серии и линкуем в дерево модуля.
+_awg_install_packages_manual() {
+  echo -e "${CYAN}  → PPA недоступен — ручная сборка amneziawg из исходников...${NC}"
+  _apt_wait_lock
+  apt-get "${APT_LOCK_OPTS[@]}" install -y --no-install-recommends \
+    build-essential dkms git "linux-headers-$(uname -r)" linux-source >/dev/null 2>&1 || true
+  local work
+  work=$(mktemp -d) || return 1
+  git clone --depth 1 "https://github.com/${AWG_REPO_MODULE}.git" "$work/module" >/dev/null 2>&1 || { rm -rf "$work"; return 1; }
+  git clone --depth 1 "https://github.com/${AWG_REPO_TOOLS}.git" "$work/tools" >/dev/null 2>&1 || { rm -rf "$work"; return 1; }
+  # Полное дерево исходников ядра для ядер ≥5.6 (README: нужны именно sources).
+  local ks
+  ks=$(ls -d /usr/src/linux-source-* 2>/dev/null | head -1)
+  if [[ -n "$ks" ]]; then
+    ln -sfn "$(readlink -f "$ks")" "$work/module/src/kernel"
+  else
+    echo -e "${YELLOW}  ⚠ linux-source не найден — сборка модуля на ядре ≥5.6 может упасть${NC}"
+  fi
+  ( cd "$work/module/src" && make >/dev/null 2>&1 && make install >/dev/null 2>&1 ) || { rm -rf "$work"; return 1; }
+  ( cd "$work/tools/src" && WITH_WGQUICK=yes WITH_SYSTEMDUNITS=yes make >/dev/null 2>&1 && make install >/dev/null 2>&1 ) || { rm -rf "$work"; return 1; }
+  depmod -a >/dev/null 2>&1 || true
+  rm -rf "$work"
+  command -v awg >/dev/null 2>&1
+}
+
+# Проверка живого модуля: modprobe + lsmod. Без него backend не регистрируем.
+_awg_verify_module() {
+  modprobe amneziawg 2>/dev/null || true
+  lsmod 2>/dev/null | grep -q '^amneziawg '
+}
+
+# Установка AWG. Возвращает: 0=ok, 1=ошибка, 2=уже установлена.
+_awg_install() {
+  if _backend_installed awg; then
+    echo -e "${YELLOW}ℹ AmneziaWG уже установлен.${NC}"
+    echo -e "${YELLOW}  Для переустановки: сначала 'awg-uninstall'.${NC}"
+    return 2
+  fi
+  command -v iptables >/dev/null 2>&1 || {
+    echo -e "${RED}✗ iptables не найден (нужен для MASQUERADE)${NC}"
+    return 1
+  }
+
+  # 1) Пакеты: PPA → ручная сборка. Оба шага честно логируются.
+  if ! _awg_install_packages; then
+    if ! _awg_install_packages_manual; then
+      echo -e "${RED}✗ Не удалось установить amneziawg (PPA и ручная сборка)${NC}"
+      echo -e "${YELLOW}  Проверьте ядро/headers: uname -r; dpkg -l | grep linux-headers${NC}"
+      return 1
+    fi
+  fi
+  if ! _awg_verify_module; then
+    echo -e "${RED}✗ Модуль amneziawg не загрузился (modprobe/lsmod)${NC}"
+    echo -e "${YELLOW}  Ядро может быть новее поддерживаемого — см. троблшутинг README amneziawg.${NC}"
+    return 1
+  fi
+
+  # 2) Параметры сервера
+  local keys port iface junk
+  keys=$(_awg_gen_keys) || { echo -e "${RED}✗ awg genkey не сработал${NC}"; return 1; }
+  port=$(_awg_pick_port) || { echo -e "${RED}✗ Не найден свободный UDP-порт${NC}"; return 1; }
+  iface=$(_awg_public_iface)
+  [[ -n "$iface" ]] || { echo -e "${RED}✗ Не определён публичный интерфейс (default route)${NC}"; return 1; }
+  junk=$(_awg_gen_junk)
+
+  local priv pub psk
+  read -r priv pub psk <<< "$keys"
+
+  mkdir -p "$AWG_DIR"
+  chmod 700 "$AWG_DIR" 2>/dev/null
+  jq -n --arg priv "$priv" --arg pub "$pub" \
+    --argjson port "$port" --arg iface "$iface" --argjson junk "$junk" \
+    --arg subnet "$AWG_SUBNET" --argjson mtu "$AWG_MTU" \
+    '{private_key: $priv, public_key: $pub, port: $port, iface: $iface,
+      junk: $junk, subnet: $subnet, mtu: $mtu}' > "$AWG_PARAMS_FILE" || {
+    echo -e "${RED}✗ Не удалось записать server-params.json${NC}"
+    return 1
+  }
+  chmod 600 "$AWG_PARAMS_FILE" 2>/dev/null
+
+  # 3) Конфиг интерфейса (без peer-ов — их добавляет реген среза 5)
+  _awg_render_server_conf "$AWG_CONF_FILE" "$port" "$priv" "$junk" "$iface"
+  chmod 600 "$AWG_CONF_FILE" 2>/dev/null
+
+  # 4) ip_forward (системный VPN обязан маршрутизировать)
+  cat > "$AWG_SYSCTL_FILE" <<'EOF'
+# Managed by xrayebator (AmneziaWG forwarding)
+net.ipv4.ip_forward=1
+EOF
+  chmod 644 "$AWG_SYSCTL_FILE"
+  sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
+
+  # 5) Интерфейс
+  # Юнит awg-quick@awg0 ищет конфиг в /etc/amnezia/amneziawg/ (живой тест
+  # 2.26.125.147) — линкуем наш файл; источник правды остаётся в backends/awg/.
+  mkdir -p /etc/amnezia/amneziawg
+  ln -sfn "$AWG_CONF_FILE" /etc/amnezia/amneziawg/awg0.conf
+  systemctl daemon-reload 2>/dev/null
+  if ! systemctl enable --now "$AWG_UNIT" 2>/dev/null; then
+    echo -e "${RED}✗ systemctl enable --now ${AWG_UNIT} не удался${NC}"
+    echo -e "${YELLOW}  Проверьте: awg-quick strip ${AWG_CONF_FILE}; journalctl -u ${AWG_UNIT}${NC}"
+    systemctl disable --now "$AWG_UNIT" 2>/dev/null
+    rm -rf "$AWG_DIR" "$AWG_SYSCTL_FILE"
+    return 1
+  fi
+  sleep 1
+  if ! awg show "$AWG_IFACE" >/dev/null 2>&1; then
+    echo -e "${RED}✗ Интерфейс ${AWG_IFACE} не поднялся${NC}"
+    systemctl disable --now "$AWG_UNIT" 2>/dev/null
+    rm -rf "$AWG_DIR" "$AWG_SYSCTL_FILE"
+    return 1
+  fi
+
+  open_firewall_port "$port" udp
+
+  # 6) Реестр — последним шагом
+  _backend_set awg '(.awg.installed) = true' &&
+    _backend_set awg '(.awg.version) = $v' --arg v "kernel-dkms" &&
+    _backend_set awg '(.awg.port) = $port' --argjson port "$port" &&
+    _backend_set awg '(.awg.unit) = $u' --arg u "$AWG_UNIT" &&
+    _backend_set awg '(.awg.subnet) = $s' --arg s "$AWG_SUBNET" &&
+    _backend_set awg '(.awg.mtu) = $mtu' --argjson mtu "$AWG_MTU" &&
+    _backend_set awg '(.awg.junk) = $junk' --argjson junk "$junk" &&
+    _backend_set awg '(.awg.iface) = $i' --arg i "$iface" &&
+    _backend_set awg '(.awg.sub_body) = false' &&
+    _backend_set awg '(.awg.three_enabled) = true' &&
+    _backend_set awg '(.awg.disable_cookies) = false' || {
+    echo -e "${RED}✗ Не удалось записать реестр бэкендов${NC}"
+    systemctl disable --now "$AWG_UNIT" 2>/dev/null
+    rm -f /etc/amnezia/amneziawg/awg0.conf
+    rm -rf "$AWG_DIR" "$AWG_SYSCTL_FILE"
+    # Полу-запись недопустима: вычищаем объект awg из реестра.
+    safe_jq_write --arg t awg 'del(.[$t])' "$BACKENDS_REGISTRY_FILE" 2>/dev/null
+    return 1
+  }
+
+  # Peer-гранты существующим профилям (срез 5). Режим $1 (у AWG нет аргумента
+  # порта, в отличие от _hysteria2_install): prompt/grant_all/no_prompt.
+  local grant_mode=${1:-prompt}
+  if [[ "$grant_mode" == "grant_all" ]]; then
+    _awg_grant_all_profiles
+  elif [[ "$grant_mode" != "no_prompt" ]]; then
+    echo ""
+    echo -n -e "${YELLOW}Выдать peer-доступ AmneziaWG всем существующим профилям? [y/N]: ${NC}"
+    local grant_ans
+    read -r grant_ans || grant_ans=N
+    [[ "$grant_ans" =~ ^[yYдД]$ ]] && _awg_grant_all_profiles
+  fi
+
+  echo ""
+  echo -e "${GREEN}╔═══════════════════════════════════════════════╗${NC}"
+  echo -e "${GREEN}║      ✓ AMNEZIAWG 2.0 УСТАНОВЛЕН               ║${NC}"
+  echo -e "${GREEN}╚═══════════════════════════════════════════════╝${NC}"
+  echo ""
+  echo -e "${BLUE}Интерфейс:${NC} $AWG_IFACE, порт UDP $port, подсеть $AWG_SUBNET"
+  echo -e "${BLUE}Junk-параметры:${NC} $(jq -c '.junk' "$AWG_PARAMS_FILE")"
+  echo -e "${BLUE}Peer-ов выдано:${NC} $(_awg_grants_count)"
+  return 0
+}
+
+# Удаление AWG. Возвращает: 0=ok, 2=не установлен.
+_awg_uninstall() {
+  if ! _backend_installed awg && [[ ! -f "$AWG_CONF_FILE" ]]; then
+    echo -e "${YELLOW}ℹ AmneziaWG не установлен.${NC}"
+    return 2
+  fi
+  local port
+  port=$(_backend_field awg port)
+
+  echo -e "${CYAN}  → Гашу интерфейс и убираю артефакты...${NC}"
+  systemctl disable --now "$AWG_UNIT" 2>/dev/null
+  ip link del "$AWG_IFACE" 2>/dev/null || true
+  rm -f /etc/amnezia/amneziawg/awg0.conf 2>/dev/null
+  rm -rf "$AWG_DIR"
+  rm -f "$AWG_SYSCTL_FILE"
+
+  if [[ "$port" =~ ^[0-9]+$ ]]; then
+    close_firewall_port "$port" udp
+  fi
+
+  safe_jq_write --arg t awg 'del(.[$t])' "$BACKENDS_REGISTRY_FILE" 2>/dev/null
+
+  echo -e "${GREEN}  ✓ AmneziaWG удалён (модуль/пакеты оставлены в системе)${NC}"
+  return 0
+}
+
+# Счётчик профилей с peer-грантом AWG.
+_awg_grants_count() {
+  local n
+  n=$(jq -s '[.[] | select(.backends.awg.client_private_key != null)] | length' \
+    "$PROFILES_DIR"/*.json 2>/dev/null)
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  echo "$n"
+}
+
+# CLI: awg-install / awg-uninstall / awg-status. Только JSON на stdout.
+awg_install_command() {
+  local grant_mode="no_prompt"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --grant-all) grant_mode="grant_all"; shift ;;
+      *) shift ;;
+    esac
+  done
+  local rc=0
+  exec 3>&1; exec 1>&2
+  _awg_install "$grant_mode" || rc=$?
+  exec 1>&3
+  if [[ $rc == 0 ]]; then
+    jq -n '{ok: true}'
+  elif [[ $rc == 2 ]]; then
+    jq -n '{ok: true, already: true}'
+    rc=0
+  else
+    jq -n --argjson code "$rc" '{ok: false, code: $code}'
+  fi
+  return "$rc"
+}
+
+awg_uninstall_command() {
+  local rc=0
+  exec 3>&1; exec 1>&2
+  _awg_uninstall || rc=$?
+  exec 1>&3
+  if [[ $rc == 0 ]]; then
+    jq -n '{ok: true}'
+  elif [[ $rc == 2 ]]; then
+    jq -n '{ok: true, already: true}'
+    rc=0
+  else
+    jq -n --argjson code "$rc" '{ok: false, code: $code}'
+  fi
+  return "$rc"
+}
+
+awg_status_command() {
+  local full
+  full=$(_backend_status_json) || { echo '{"ok":false,"error":"registry"}'; return 1; }
+  echo "$full" | jq '{ok: .ok, backend: .backends.awg}'
+}
+
+# Переключение режима AWG 3.1 (HeaderProtectionKey + RandomTrailers).
+# Смена режима меняет [Interface]-параметры — все выданные клиентские .conf
+# должны быть перекачаны заново (об этом оператору явно напоминает вывод).
+# $1 = on|off|"" ("" — не менять), $2 = on|off|"" для DisableCookies.
+_awg_31_toggle() {
+  local mode=$1 dc=$2
+  _backend_installed awg || { echo -e "${RED}✗ AmneziaWG не установлен${NC}"; return 1; }
+  [[ -s "$AWG_PARAMS_FILE" ]] || return 1
+  # Догенерация 3.1-полей в params (установки, сделанные до 3.1-этапа).
+  local junk
+  junk=$(jq -c '.junk // {}' "$AWG_PARAMS_FILE")
+  junk=$(_awg_ensure_31_params "$junk") || {
+    echo -e "${RED}✗ Не удалось дополнить 3.1-параметры (openssl?)${NC}"
+    return 1
+  }
+  local cur dc_cur new
+  cur=$(_backend_field awg three_enabled)
+  [[ "$cur" == "true" || "$cur" == "false" ]] || cur=true
+  dc_cur=$(_backend_field awg disable_cookies)
+  [[ "$dc_cur" == "true" ]] || dc_cur=false
+  new="$cur"
+  case "$mode" in on) new=true ;; off) new=false ;; esac
+  case "$dc" in on) dc_cur=true ;; off) dc_cur=false ;; esac
+  jq -c '.junk = $j' --argjson j "$junk" "$AWG_PARAMS_FILE" > "${AWG_PARAMS_FILE}.tmp" \
+    && mv "${AWG_PARAMS_FILE}.tmp" "$AWG_PARAMS_FILE" || return 1
+  chmod 600 "$AWG_PARAMS_FILE" 2>/dev/null
+  _backend_set awg '(.awg.three_enabled) = $e' --argjson e "$new" \
+    && _backend_set awg '(.awg.disable_cookies) = $d' --argjson d "$dc_cur" || return 1
+  _awg_regen_config || return 1
+  if [[ "$new" == true ]]; then
+    echo -e "${GREEN}  ✓ AWG 3.1 включён (HeaderProtectionKey + RandomTrailers${dc_cur:+, DisableCookies})${NC}"
+  else
+    echo -e "${GREEN}  ✓ AWG 3.1 выключен (конфиги в формате 2.0)${NC}"
+  fi
+  echo -e "${YELLOW}  ⚠ Все выданные клиентские .conf нужно перекачать: [Interface]-параметры изменились.${NC}"
+  echo -e "${YELLOW}    Клиентам нужен AmneziaVPN ≥ 5.0.1.5 — старые не импортируют новые ключи.${NC}"
+  return 0
+}
+
+# CLI: awg-31 --on|--off [--disable-cookies|--no-disable-cookies]. Только JSON на stdout.
+awg_31_command() {
+  local mode="" dc=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --on) mode="on"; shift ;;
+      --off) mode="off"; shift ;;
+      --disable-cookies) dc="on"; shift ;;
+      --no-disable-cookies) dc="off"; shift ;;
+      *) shift ;;
+    esac
+  done
+  [[ -n "$mode" || -n "$dc" ]] || {
+    echo '{"ok":false,"error":"--on / --off / --disable-cookies required"}'
+    return 1
+  }
+  local rc=0
+  exec 3>&1; exec 1>&2
+  _awg_31_toggle "$mode" "$dc" || rc=$?
+  exec 1>&3
+  if [[ $rc == 0 ]]; then
+    local en dcv
+    en=$(_backend_field awg three_enabled); [[ "$en" == true ]] || en=false
+    dcv=$(_backend_field awg disable_cookies); [[ "$dcv" == true ]] || dcv=false
+    jq -n --argjson en "$en" --argjson dc "$dcv" \
+      '{ok: true, three_enabled: $en, disable_cookies: $dc}'
+  else
+    jq -n --argjson code "$rc" '{ok: false, code: $code}'
+    rc=1
+  fi
+  return "$rc"
+}
+
+# ── Срез 5: peers per-profile, клиентский .conf, события жизненного цикла ──
+# Модель та же, что у hysteria: профиль — источник правды
+# (.backends.awg {client_private_key, client_public_key, preshared_key,
+# address}), awg0.conf регенерируется из профилей (фильтр expire_disabled)
+# и применяется рестартом интерфейса с откатом. Рестарт = короткий обрыв
+# туннеля всех peer-ов; гранты/отзывы — редкие события, для этапа 1 приемлемо.
+
+# Первый свободный адрес подсети (.2..254) с учётом выданных в профилях.
+_awg_next_address() {
+  local used i
+  used=$(jq -s '[.[] | .backends.awg.address // empty] | map(select(. != ""))' \
+    "$PROFILES_DIR"/*.json 2>/dev/null) || used="[]"
+  for i in $(seq 2 254); do
+    if ! jq -e --arg a "${AWG_SUBNET_PREFIX}.${i}" 'index($a)' <<<"$used" >/dev/null 2>&1; then
+      echo "${AWG_SUBNET_PREFIX}.${i}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Набор 3.1-фич из реестра: {hpk, rt, dc}. По умолчанию (нет записей) — включены.
+_awg_features_json() {
+  local en dc
+  en=$(_backend_field awg three_enabled)
+  dc=$(_backend_field awg disable_cookies)
+  [[ "$en" == "true" || "$en" == "false" ]] || en=true
+  [[ "$dc" == "true" ]] || dc=false
+  jq -cn --argjson e "$en" --argjson d "$dc" '{hpk: $e, rt: $e, dc: $d}'
+}
+
+# Применение нового awg0.conf: рестарт интерфейса с откатом при неудаче.
+_awg_apply_config() {
+  local new_file=$1
+  _backend_installed awg || return 1
+  [[ -s "$new_file" ]] || return 1
+  local had_old=false
+  [[ -f "$AWG_CONF_FILE" ]] && had_old=true
+  local backup="$AWG_CONF_FILE.bak.apply"
+  if [[ "$had_old" == true ]]; then
+    cp -f "$AWG_CONF_FILE" "$backup" || return 1
+  fi
+  cp -f "$new_file" "$AWG_CONF_FILE" || return 1
+  chmod 600 "$AWG_CONF_FILE" 2>/dev/null
+  systemctl restart "$AWG_UNIT" 2>/dev/null
+  sleep 1
+  if awg show "$AWG_IFACE" >/dev/null 2>&1; then
+    rm -f "$backup"
+    return 0
+  fi
+  echo -e "${YELLOW}  ⚠ Интерфейс ${AWG_IFACE} не поднялся с новым конфигом — откатываю...${NC}" >&2
+  if [[ "$had_old" == true ]]; then
+    cp -f "$backup" "$AWG_CONF_FILE"
+    chmod 600 "$AWG_CONF_FILE" 2>/dev/null
+    systemctl restart "$AWG_UNIT" 2>/dev/null
+    sleep 1
+  fi
+  rm -f "$backup"
+  return 1
+}
+
+# Регенерация awg0.conf: [Interface] из server-params + [Peer] из профилей.
+# Истёкший/отключённый профиль (expire_disabled) не попадает в peer-ы —
+# restored после продления вернёт его автоматически.
+_awg_regen_config() {
+  _backend_installed awg || return 0
+  [[ -s "$AWG_PARAMS_FILE" ]] || return 1
+  local port iface priv junk
+  port=$(jq -r '.port // empty' "$AWG_PARAMS_FILE")
+  iface=$(jq -r '.iface // empty' "$AWG_PARAMS_FILE")
+  priv=$(jq -r '.private_key // empty' "$AWG_PARAMS_FILE")
+  junk=$(jq -c '.junk // {}' "$AWG_PARAMS_FILE")
+  [[ -n "$port" && -n "$iface" && -n "$priv" ]] || return 1
+  local tmp="$AWG_DIR/.awg0.conf.new"
+  _awg_render_server_conf "$tmp" "$port" "$priv" "$junk" "$iface" \
+    "$(_awg_features_json)" || return 1
+  local addr cpub psk
+  while IFS=$'\t' read -r addr cpub psk; do
+    [[ -n "$addr" && -n "$cpub" && -n "$psk" ]] || continue
+    cat >> "$tmp" <<EOF
+
+[Peer]
+PublicKey = ${cpub}
+PresharedKey = ${psk}
+AllowedIPs = ${addr}/32
+EOF
+  done < <(jq -r 'select(.backends.awg.address != null and (.expire_disabled // false) == false)
+                   | [.backends.awg.address, .backends.awg.client_public_key, .backends.awg.preshared_key]
+                   | @tsv' "$PROFILES_DIR"/*.json 2>/dev/null)
+  _awg_apply_config "$tmp"
+  local rc=$?
+  rm -f "$tmp"
+  return $rc
+}
+
+# Грант AWG профилю: ключевая тройка + адрес в .backends.awg.
+# $2 = "no_regen" — не рестартовать интерфейс (массовая выдача).
+_awg_grant_profile() {
+  local name=$1
+  _backend_installed awg || return 0
+  local profile_file="$PROFILES_DIR/$name.json"
+  [[ -f "$profile_file" ]] || return 1
+  local existing
+  existing=$(jq -r '.backends.awg.client_private_key // empty' "$profile_file" 2>/dev/null)
+  if [[ -n "$existing" ]]; then
+    [[ "${2:-}" == "no_regen" ]] && return 0
+    _awg_regen_config
+    return $?
+  fi
+  local addr keys cpriv cpub psk
+  addr=$(_awg_next_address) || { echo -e "${RED}✗ Подсеть ${AWG_SUBNET} заполнена${NC}" >&2; return 1; }
+  keys=$(_awg_gen_keys) || { echo -e "${RED}✗ awg genkey не сработал${NC}" >&2; return 1; }
+  read -r cpriv cpub psk <<< "$keys"
+  safe_jq_write --arg a "$addr" --arg cp "$cpriv" --arg cb "$cpub" --arg ps "$psk" \
+    --arg c "$(date +%Y-%m-%d\ %H:%M:%S)" \
+    '.backends = ((.backends // {}) + {awg: {client_private_key: $cp, client_public_key: $cb,
+      preshared_key: $ps, address: $a, created: $c}})' \
+    "$profile_file" || return 1
+  [[ "${2:-}" == "no_regen" ]] && return 0
+  _awg_regen_config
+}
+
+# Массовая выдача peer-ов: один реген на всех.
+_awg_grant_all_profiles() {
+  _backend_installed awg || return 0
+  local pf name granted=0 failed=0
+  for pf in "$PROFILES_DIR"/*.json; do
+    [[ -f "$pf" ]] || continue
+    name=$(jq -r '.name // empty' "$pf" 2>/dev/null)
+    [[ -n "$name" ]] || continue
+    if _awg_grant_profile "$name" no_regen; then
+      granted=$((granted+1))
+    else
+      failed=$((failed+1))
+    fi
+  done
+  _awg_regen_config || return 1
+  echo -e "${GREEN}  ✓ Peer-ы AmneziaWG: выдано ${granted}, ошибок ${failed}${NC}" >&2
+  return 0
+}
+
+# Обработчик событий жизненного цикла (через _backend_apply_profile_lifecycle).
+_awg_on_profile_event() {
+  local name=$1 event=$2
+  _backend_installed awg || return 0
+  local profile_file="$PROFILES_DIR/$name.json"
+  case "$event" in
+    created)
+      # Авто-выдача ключей при создании УМЫШЛЕННО отключена: протокол ключа
+      # выбирает оператор (GUI «Создать профиль» / меню 11-13 / grant CLI).
+      # Иначе каждый новый профиль получал ключи ВСЕХ установленных бэкендов.
+      return 0
+      ;;
+    revoked)
+      # Ротация ключей peer-а: старые клиентские конфиги перестают подключаться.
+      [[ -f "$profile_file" ]] || return 0
+      jq -e '.backends.awg.client_private_key' "$profile_file" >/dev/null 2>&1 || return 0
+      local keys cpriv cpub psk
+      keys=$(_awg_gen_keys) || return 1
+      read -r cpriv cpub psk <<< "$keys"
+      safe_jq_write --arg cp "$cpriv" --arg cb "$cpub" --arg ps "$psk" \
+        '.backends.awg = (.backends.awg + {client_private_key: $cp,
+          client_public_key: $cb, preshared_key: $ps})' "$profile_file" || return 1
+      _awg_regen_config || return 1
+      ;;
+    deleted)
+      # Файл профиля удалён вызывающим ДО lifecycle (rm в
+      # profile_delete_command) — реген по оставшимся профилям снимает
+      # peer удалённого: иначе осиротевший peer живёт вечно и удалённый
+      # пользователь сохраняет доступ. Гварда на файл здесь быть НЕ должно.
+      _awg_regen_config || return 1
+      ;;
+    expired|restored)
+      [[ -f "$profile_file" ]] || return 0
+      _awg_regen_config || return 1
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+  return 0
+}
+
+# Pure-рендер клиентского .conf (без TUI/stdin/записей). Секреты в выводе —
+# вызывающий сам решает, куда их деть (CLI JSON-обёртка / меню / QR).
+_awg_client_conf_pure() {
+  local name=$1
+  local profile_file="$PROFILES_DIR/$name.json"
+  [[ -f "$profile_file" ]] || return 1
+  _backend_installed awg || return 1
+  [[ -s "$AWG_PARAMS_FILE" ]] || return 1
+  local cpriv addr cpub psk spub port mtu junk host features fe_dc
+  cpriv=$(jq -r '.backends.awg.client_private_key // empty' "$profile_file" 2>/dev/null)
+  addr=$(jq -r '.backends.awg.address // empty' "$profile_file" 2>/dev/null)
+  cpub=$(jq -r '.backends.awg.client_public_key // empty' "$profile_file" 2>/dev/null)
+  psk=$(jq -r '.backends.awg.preshared_key // empty' "$profile_file" 2>/dev/null)
+  [[ -n "$cpriv" && -n "$addr" && -n "$cpub" && -n "$psk" ]] || return 1
+  spub=$(jq -r '.public_key // empty' "$AWG_PARAMS_FILE")
+  port=$(jq -r '.port // empty' "$AWG_PARAMS_FILE")
+  mtu=$(jq -r '.mtu // empty' "$AWG_PARAMS_FILE")
+  junk=$(jq -c '.junk // {}' "$AWG_PARAMS_FILE")
+  [[ -n "$spub" && "$port" =~ ^[0-9]+$ ]] || return 1
+  host=$(_connection_server_address 2>/dev/null) || return 1
+  [[ -n "$host" ]] || return 1
+  features=$(_awg_features_json)
+  fe_dc=$(jq -r '.dc // false' <<<"$features")
+  local fe_hpk=$(jq -r '.hpk // false' <<<"$features")
+  local fe_rt=$(jq -r '.rt // false' <<<"$features")
+  local hpk=$(jq -r '.HeaderProtectionKey // empty' <<<"$junk")
+  {
+    # Самодокументирующаяся шапка (этап 2, срез D): в AmneziaVPN видно, что
+    # профиль живёт вне V2Ray/HAPP-мира и how to перекачать конфиг.
+    cat <<EOF
+# Xrayebator: транспорт AmneziaWG (AWG 3.1) — этот профиль работает НЕ через
+# V2Ray-клиенты (HAPP/v2rayNG), а через приложение AmneziaVPN/AmneziaWG.
+# Профиль: ${name}. Full-tunnel; перекачайте .conf после смены ключей/режима.
+[Interface]
+PrivateKey = ${cpriv}
+Address = ${addr}/32
+MTU = ${mtu:-1280}
+Jc = $(jq -r '.Jc' <<<"$junk")
+Jmin = $(jq -r '.Jmin' <<<"$junk")
+Jmax = $(jq -r '.Jmax' <<<"$junk")
+S1 = $(jq -r '.S1' <<<"$junk")
+S2 = $(jq -r '.S2' <<<"$junk")
+EOF
+    local s3 s4
+    s3=$(jq -r '.S3 // empty' <<<"$junk"); s4=$(jq -r '.S4 // empty' <<<"$junk")
+    [[ -n "$s3" ]] && printf 'S3 = %s\n' "$s3"
+    [[ -n "$s4" ]] && printf 'S4 = %s\n' "$s4"
+    printf 'H1 = %s\nH2 = %s\nH3 = %s\nH4 = %s\n' \
+      "$(jq -r '.H1' <<<"$junk")" "$(jq -r '.H2' <<<"$junk")" \
+      "$(jq -r '.H3' <<<"$junk")" "$(jq -r '.H4' <<<"$junk")"
+    [[ "$fe_hpk" == true && -n "$hpk" ]] && printf 'HeaderProtectionKey = %s\n' "$hpk"
+    [[ "$fe_rt" == true ]] && printf 'RandomTrailers = on\n'
+    [[ "$fe_dc" == true ]] && printf 'DisableCookies = on\n'
+    cat <<EOF
+
+[Peer]
+PublicKey = ${spub}
+PresharedKey = ${psk}
+AllowedIPs = 0.0.0.0/0, ::/0
+Endpoint = ${host}:${port}
+PersistentKeepalive = 25
+EOF
+  } || return 1
+}
+
+# CLI: awg-grant --name N / awg-conf --name N. Только JSON на stdout
+# (клиентский .conf — в поле conf).
+awg_grant_command() {
+  local name=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --name) name="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  [[ -n "$name" ]] || { echo '{"ok":false,"error":"--name required"}'; return 1; }
+  local rc=0
+  exec 3>&1; exec 1>&2
+  _awg_grant_profile "$name" || rc=$?
+  exec 1>&3
+  if [[ $rc == 0 ]]; then
+    jq -n --arg n "$name" '{ok: true, name: $n}'
+  else
+    jq -n --argjson code "$rc" '{ok: false, code: $code}'
+    rc=1
+  fi
+  return "$rc"
+}
+
+awg_conf_command() {
+  local name=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --name) name="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  [[ -n "$name" ]] || { echo '{"ok":false,"error":"--name required"}'; return 1; }
+  local conf
+  conf=$(_awg_client_conf_pure "$name" 2>/dev/null) || {
+    echo "{\"ok\":false,\"error\":\"Нет peer-гранта AWG для профиля $name\"}"
+    return 1
+  }
+  jq -n --arg n "$name" --arg c "$conf" '{ok: true, name: $n, conf: $c}'
+}
+
+# Меню: клиентский .conf для профиля с peer-грантом (+QR при наличии qrencode).
+awg_conf_menu() {
+  local -a names=()
+  local pf name
+  for pf in "$PROFILES_DIR"/*.json; do
+    [[ -f "$pf" ]] || continue
+    name=$(jq -r '.backends.awg.address // empty' "$pf" 2>/dev/null)
+    [[ -n "$name" ]] && names+=("$(jq -r '.name' "$pf")")
+  done
+  if [[ ${#names[@]} == 0 ]]; then
+    echo -e "${YELLOW}Нет профилей с peer-грантом AmneziaWG.${NC}"
+    return 0
+  fi
+  echo ""
+  echo -e "${CYAN}Профили с peer-грантом:${NC}"
+  local i=1
+  for name in "${names[@]}"; do
+    echo -e " ${CYAN}${i})${NC} $name"
+    ((i++))
+  done
+  echo -n -e "${YELLOW}Номер профиля [1-${#names[@]}]: ${NC}"
+  local choice
+  read -r choice || return 0
+  [[ "$choice" =~ ^[0-9]+$ ]] || return 0
+  (( choice >= 1 && choice <= ${#names[@]} )) || return 0
+  local selected="${names[$((choice-1))]}"
+  local conf
+  conf=$(_awg_client_conf_pure "$selected" 2>/dev/null) || {
+    echo -e "${RED}✗ Не удалось собрать клиентский конфиг${NC}"
+    return 1
+  }
+  echo ""
+  echo -e "${GREEN}${conf}${NC}"
+  echo ""
+  echo -n -e "${YELLOW}Показать QR? [y/N]: ${NC}"
+  local qr_ans
+  read -r qr_ans || qr_ans=N
+  if [[ "$qr_ans" =~ ^[yYдД]$ ]] && command -v qrencode >/dev/null 2>&1; then
+    qrencode -t ANSIUTF8 "$conf" 2>/dev/null
+  fi
+  return 0
+}
+
+# ═══════════════════════════════════════════════════════════
+# END BACKEND: AMNEZIAWG
+# ═══════════════════════════════════════════════════════════
 
 # Check whether a profile has route array
 profile_has_routes() {
@@ -3320,12 +5156,16 @@ _migrate_sni_list_2026() {
     known_defaults["$domain"]=1
   done
 
+  # Строки обязаны совпадать с shipped sni_list.txt байт-в-байт: иначе grep -Fxq
+  # ниже считает список устаревшим и гоняет переписывание файла с рестартом Xray
+  # на пустом месте. Приоритеты — по замеру 03.09.2026 (MegaFon) с оговоркой:
+  # e-commerce/банки понижены до 2, но не выброшены (на других операторах живут).
   local -a to_add_p1=(
-    "online.uralsib.ru|ru_whitelist|1"
-    "online.vtb.ru|ru_whitelist|1"
-    "www.cdek.ru|ru_whitelist|1"
-    "www.pochta.ru|ru_whitelist|1"
-    "www.avito.ru|ru_whitelist|1"
+    "online.uralsib.ru|ru_whitelist|2"
+    "online.vtb.ru|ru_whitelist|2"
+    "www.cdek.ru|ru_whitelist|2"
+    "www.pochta.ru|ru_whitelist|2"
+    "www.avito.ru|ru_whitelist|2"
   )
   local -a to_add_p3=(
     "github.com|foreign|3"
@@ -4437,7 +6277,10 @@ _default_sni_for_transport() {
     *)
       local from_list
       from_list=$(grep -v '^#' "$SNI_LIST" 2>/dev/null | grep -v '^[[:space:]]*$' | head -n 1 | cut -d'|' -f1)
-      [[ -z "$from_list" ]] && from_list="www.google.com"
+      # Дефолт 2026-10-06: www.cloudflare.com — самый стабильный (глобальный
+      # anycast, TLS1.3, не режется ТСПУ). Список обычно перекрывает фолбэк:
+      # берётся первая строка sni_list.txt, она держится cloudflare-first.
+      [[ -z "$from_list" ]] && from_list="www.cloudflare.com"
       echo "$from_list"
       ;;
   esac
@@ -5513,6 +7356,14 @@ serve_geo_asset() {
 # Построить все vless:// маршруты профиля через pure-функции из xrayebator.
 vless_urls=$(_generate_vless_urls_for_profile "$profile_file" 2>/dev/null) || emit_410_stale
 
+# Hysteria 2 (multi-protocol slice 3): одна ссылка на профиль — если бэкенд
+# установлен, флаг sub_body включён и у профиля есть грант. Реестр читается
+# на каждый запрос: флаг-выключатель работает без рестарта сервиса.
+hysteria2_uri=""
+if _backend_installed hysteria2 && [[ "$(_backend_field hysteria2 sub_body)" == "true" ]]; then
+  hysteria2_uri=$(_hysteria2_profile_link_pure "$profile_file" 2>/dev/null) || hysteria2_uri=""
+fi
+
 query_lc=$(printf '%s' "$query" | tr '[:upper:]' '[:lower:]')
 ua_lc=$(printf '%s' "$user_agent" | tr '[:upper:]' '[:lower:]')
 universal_sub=false
@@ -5603,8 +7454,23 @@ routing_uri=""
 routing_json=""
 if [[ "${HAPP_ROUTING_ENABLED,,}" == "true" ]]; then
   if [[ -s "$HAPP_ROUTING_JSON_FILE" ]]; then
-    if _happ_validate_routing_json_file "$HAPP_ROUTING_JSON_FILE"; then
-      routing_json=$(jq -c . "$HAPP_ROUTING_JSON_FILE" 2>/dev/null) || routing_json=""
+    # Geo database URLs are per-subscriber, so an operator-wide override cannot
+    # hardcode them without leaking one subscriber's token to everyone else.
+    # {{GEOIP_URL}}, {{GEOSITE_URL}} and {{LAST_UPDATED}} are filled in per
+    # request; substitution runs before validation so a leftover placeholder
+    # fails the https_url check and falls back to the managed default.
+    # (Идея из PR #22, tony-adamson.)
+    routing_custom=$(cat "$HAPP_ROUTING_JSON_FILE" 2>/dev/null) || routing_custom=""
+    if [[ "$routing_custom" == *"{{"* ]]; then
+      routing_base_url=$(_subscription_base_url 2>/dev/null)
+      routing_placeholder_lu=$(_happ_routing_last_updated \
+        /usr/local/bin/xrayebator "$HAPP_GEOIP_FILE" "$HAPP_GEOSITE_FILE" 2>/dev/null)
+      routing_custom=${routing_custom//\{\{GEOIP_URL\}\}/${routing_base_url}/sub/${token}/geoip.dat}
+      routing_custom=${routing_custom//\{\{GEOSITE_URL\}\}/${routing_base_url}/sub/${token}/geosite.dat}
+      routing_custom=${routing_custom//\{\{LAST_UPDATED\}\}/${routing_placeholder_lu}}
+    fi
+    if printf '%s' "$routing_custom" | _happ_validate_routing_json; then
+      routing_json=$(printf '%s' "$routing_custom" | jq -c . 2>/dev/null) || routing_json=""
     else
       printf 'xrayebator-sub: invalid HAPP routing profile ignored: %s\n' \
         "$HAPP_ROUTING_JSON_FILE" >&2
@@ -5641,16 +7507,26 @@ if [[ "$universal_sub" == "true" ]]; then
   # классический v2ray-sub: только proxy URI, без HAPP comments/routing.
   # Фильтруем PQ xhttp (encryption=mlkem768...): клиенты без ML-KEM не смогут
   # подключиться, а legacy xhttp (encryption=none) сохраняем. V11.
-  printf '%s' "$vless_urls" | awk '
-    /^vless:\/\// && /&type=xhttp&/ && $0 !~ /encryption=none/ { next }
-    { print }
-  ' | base64 -w0 > "$body_tmp"
+  {
+    printf '%s' "$vless_urls" | awk '
+      /^vless:\/\// && /&type=xhttp&/ && $0 !~ /encryption=none/ { next }
+      { print }
+    '
+    [[ -n "$hysteria2_uri" ]] && printf '%s\n' "$hysteria2_uri"
+  } | base64 -w0 > "$body_tmp"
 else
   # HAPP standard subscriptions are text-based server lists. Keep body conservative:
   # only vless:// rows by default; metadata stays in HTTP headers.
   happ_vless_urls=$(printf '%s' "$vless_urls" | prepare_happ_vless_urls)
   {
-    printf '%s' "$happ_vless_urls"
+    # %s\n обязателен: command substitution съедает trailing newline, и
+    # hysteria2-строка слипается с последним vless:// (живой тест 2.26).
+    printf '%s\n' "$happ_vless_urls"
+    # Мультибэкенд: hysteria2-строка в HAPP-теле (флаг sub_body в реестре —
+    # выключатель, если парсер HAPP споткнётся; проверка — живой спайк).
+    if [[ -n "$hysteria2_uri" ]]; then
+      printf '%s\n' "$hysteria2_uri"
+    fi
     if [[ -n "$routing_uri" ]]; then
       printf '\n%s\n' "$routing_uri"
     fi
@@ -6176,6 +8052,12 @@ server {
         limit_req zone=xrayebator_sub burst=10 nodelay;
         add_header Cache-Control "no-store" always;
         add_header X-Robots-Tag "noindex, nofollow, nosnippet" always;
+        # HAPP routing-профиль уезжает клиенту в заголовке ответа и легко
+        # перерастает дефолтные 4k: nginx тогда отвечает 502 и пишет в лог
+        # "upstream sent too big header". (Идея из PR #23, tony-adamson.)
+        proxy_buffer_size 32k;
+        proxy_buffers 8 32k;
+        proxy_busy_buffers_size 64k;
         proxy_pass http://127.0.0.1:8080;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
@@ -6410,6 +8292,12 @@ server {
         limit_req zone=xrayebator_sub burst=10 nodelay;
         add_header Cache-Control "no-store" always;
         add_header X-Robots-Tag "noindex, nofollow, nosnippet" always;
+        # HAPP routing-профиль уезжает клиенту в заголовке ответа и легко
+        # перерастает дефолтные 4k: nginx тогда отвечает 502 и пишет в лог
+        # "upstream sent too big header". (Идея из PR #23, tony-adamson.)
+        proxy_buffer_size 32k;
+        proxy_buffers 8 32k;
+        proxy_busy_buffers_size 64k;
         proxy_pass http://127.0.0.1:8080;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
@@ -6935,6 +8823,7 @@ happ_subscription_menu() {
     echo -e "${CYAN} 4)${NC} Управление существующими подписками (URL / QR / revoke)"
     echo -e "${CYAN} 5)${NC} Настройки HAPP (.happ_defaults.env)"
     echo -e "${CYAN} 6)${NC} Настроить announcement (HAPP)"
+    echo -e "${CYAN} 7)${NC} Маршрутизация клиента (split для российских сервисов)"
     echo -e "${CYAN} 0)${NC} Назад в главное меню"
     echo ""
     echo -n -e "${YELLOW}Выбор: ${NC}"
@@ -6947,9 +8836,169 @@ happ_subscription_menu() {
       4) manage_subscription_menu ;;
       5) happ_settings_menu ;;
       6) edit_happ_announce_menu ;;
+      7) happ_client_routing_menu ;;
       0) return ;;
     esac
   done
+}
+
+# Клиентский split-профиль для HAPP.
+#
+# Серверный bypass (_apply_bypass_rule) меняет только то, куда VPS отправляет
+# запрос. Клиент всё равно заворачивает трафик в туннель, поэтому российский
+# сайт видит адрес VPS. На ноде без каскада общий outbound и так direct, и
+# bypass там ничего не решает. Не пускать домашний трафик в туннель может
+# только профиль на стороне клиента — его и генерирует эта функция, переиспользуя
+# те же группы доменов, что и серверный bypass. (Идея из PR #23, tony-adamson.)
+_happ_client_split_routing_json() {
+  local gid gname doms_csv dom
+  local -a direct_sites=()
+
+  while IFS='|' read -r gid gname doms_csv; do
+    [[ -z "$gid" ]] && continue
+    while IFS= read -r dom; do
+      [[ -n "$dom" ]] && direct_sites+=("domain:${dom}")
+    done < <(tr ',' '\n' <<< "$doms_csv")
+  done < <(_bypass_bundle_groups)
+
+  [[ ${#direct_sites[@]} -gt 0 ]] || return 1
+
+  printf '%s\n' "${direct_sites[@]}" | jq -R . | jq -s '
+    {
+      Name: "xrayebator-split",
+      GlobalProxy: "true",
+      RemoteDNSType: "DoH",
+      RemoteDNSDomain: "https://cloudflare-dns.com/dns-query",
+      RemoteDNSIP: "1.1.1.1",
+      DomesticDNSType: "DoH",
+      DomesticDNSDomain: "https://cloudflare-dns.com/dns-query",
+      DomesticDNSIP: "1.1.1.1",
+      Geoipurl: "{{GEOIP_URL}}",
+      Geositeurl: "{{GEOSITE_URL}}",
+      LastUpdated: "{{LAST_UPDATED}}",
+      DnsHosts: { "cloudflare-dns.com": "1.1.1.1" },
+      DirectSites: (. | unique),
+      DirectIp: [
+        "geoip:ru",
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "169.254.0.0/16",
+        "224.0.0.0/4",
+        "255.255.255.255"
+      ],
+      ProxySites: [],
+      ProxyIp: [],
+      BlockSites: [],
+      BlockIp: [],
+      DomainStrategy: "IPIfNonMatch",
+      FakeDNS: "false"
+    }'
+}
+
+happ_client_routing_menu() {
+  while true; do
+    show_ascii
+    echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
+    echo -e "${BLUE}    МАРШРУТИЗАЦИЯ КЛИЕНТА (HAPP)              ${NC}"
+    echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
+    echo ""
+    echo -e "${CYAN}По умолчанию HAPP заворачивает в туннель всё, кроме локальных сетей.${NC}"
+    echo -e "${CYAN}Split-профиль оставляет туннель по умолчанию, но выпускает напрямую${NC}"
+    echo -e "${CYAN}российские сервисы (те же группы, что и серверный bypass) и geoip:ru.${NC}"
+    echo -e "${CYAN}Иначе Ozon, банки и Госуслуги видят зарубежный адрес VPS.${NC}"
+    echo ""
+
+    local current="не задан (управляемый профиль по умолчанию)"
+    if [[ -s "$HAPP_ROUTING_JSON_FILE" ]]; then
+      current=$(jq -r '.Name // "без имени"' "$HAPP_ROUTING_JSON_FILE" 2>/dev/null) || current="повреждён"
+      local n_direct
+      n_direct=$(jq -r '.DirectSites | length' "$HAPP_ROUTING_JSON_FILE" 2>/dev/null || echo "?")
+      current="${current} (${n_direct} доменов напрямую)"
+    fi
+    echo -e "${YELLOW}Текущий профиль:${NC} ${current}"
+    echo ""
+    echo -e "${CYAN} 1)${NC} Включить split-профиль для российских сервисов"
+    echo -e "${CYAN} 2)${NC} Вернуть профиль по умолчанию (удалить переопределение)"
+    echo -e "${CYAN} 0)${NC} Назад"
+    echo ""
+    echo -n -e "${YELLOW}Выберите действие: ${NC}"
+    local c
+    read -r c
+
+    case "$c" in
+      1)
+        local generated
+        if ! generated=$(_happ_client_split_routing_json); then
+          echo -e "${RED}✗ Не удалось собрать профиль${NC}"
+          sleep 2
+          continue
+        fi
+        local n_direct
+        n_direct=$(jq -r '.DirectSites | length' <<< "$generated")
+        echo ""
+        echo -e "${CYAN}Напрямую пойдут ${n_direct} доменов и весь geoip:ru.${NC}"
+        echo -e "${CYAN}Всё остальное продолжит идти через VPN.${NC}"
+        echo -n -e "${YELLOW}Записать в ${HAPP_ROUTING_JSON_FILE}? [y/N]: ${NC}"
+        local confirm
+        read -r confirm
+        if [[ ! "$confirm" =~ ^[yYдД]$ ]]; then
+          echo -e "${CYAN}✓ Отменено${NC}"
+          sleep 1
+          continue
+        fi
+        if [[ -s "$HAPP_ROUTING_JSON_FILE" ]]; then
+          cp -a "$HAPP_ROUTING_JSON_FILE" "${HAPP_ROUTING_JSON_FILE}.bak-$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
+        fi
+        printf '%s\n' "$generated" > "$HAPP_ROUTING_JSON_FILE" || {
+          echo -e "${RED}✗ Не удалось записать файл${NC}"
+          sleep 2
+          continue
+        }
+        chmod 644 "$HAPP_ROUTING_JSON_FILE" 2>/dev/null || true
+        echo -e "${GREEN}✓ Split-профиль записан${NC}"
+        echo -e "${CYAN}  Клиенты получат его при следующем обновлении подписки.${NC}"
+        echo -e "${CYAN}  Перезапуск xrayebator-sub.service не нужен: файл читается на каждый запрос.${NC}"
+        echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
+        read -r _
+        ;;
+      2)
+        if [[ ! -e "$HAPP_ROUTING_JSON_FILE" ]]; then
+          echo -e "${CYAN}✓ Переопределения и так нет${NC}"
+          sleep 1
+          continue
+        fi
+        echo -n -e "${YELLOW}Удалить ${HAPP_ROUTING_JSON_FILE}? [y/N]: ${NC}"
+        local confirm
+        read -r confirm
+        if [[ "$confirm" =~ ^[yYдД]$ ]]; then
+          mv "$HAPP_ROUTING_JSON_FILE" "${HAPP_ROUTING_JSON_FILE}.bak-$(date +%Y%m%d-%H%M%S)" 2>/dev/null \
+            && echo -e "${GREEN}✓ Возвращён профиль по умолчанию${NC}" \
+            || echo -e "${RED}✗ Не удалось удалить файл${NC}"
+        else
+          echo -e "${CYAN}✓ Отменено${NC}"
+        fi
+        sleep 2
+        ;;
+      0) return ;;
+      *) echo -e "${RED}Неверный выбор${NC}"; sleep 1 ;;
+    esac
+  done
+}
+
+# Миграция subhttp_hysteria2_2026 (мультибэкенд, срез 3): hysteria2-ссылка
+# в обоих телах подписки. Регенерирует handler существующим repair-путём.
+# На серверах без подписки — no-op: handler сгенерируется с hysteria2-кодом
+# при будущей установке подписки (код уже в install_subscription_server).
+_migrate_subhttp_hysteria2_2026() {
+  [[ -f /usr/local/etc/xray/.subhttp_hysteria2_2026 ]] && return 1
+  if [[ -f /usr/local/etc/xray/.subscription_installed ]]; then
+    if ! _subscription_repair_handler; then
+      echo -e "${RED}✗ Не удалось регенерировать subhttp.sh (hysteria2)${NC}"
+      return 2
+    fi
+  fi
+  return 0
 }
 
 # Главное меню
@@ -7007,6 +9056,7 @@ main_menu() {
   run_migration "subhttp_stale_profiles_410_2026" "HAPP subscription: stale profile diagnostics" _migrate_subhttp_stale_profiles_410_2026 || ((migration_failures++))
   run_migration "subhttp_happ_xhttp_compat_2026" "HAPP subscription: XHTTP mode/no-limit compatibility" _migrate_subhttp_happ_xhttp_compat_2026 || ((migration_failures++))
   run_migration "subhttp_happ_legacy_xhttp_2026" "HAPP subscription: prefer legacy XHTTP route" _migrate_subhttp_happ_legacy_xhttp_2026 || ((migration_failures++))
+  run_migration "subhttp_hysteria2_2026" "Subhttp: hysteria2-ссылка в телах подписки (мультибэкенд)" _migrate_subhttp_hysteria2_2026 || ((migration_failures++))
 
   # Aggregate report (RESEARCH §«Error reporting»): чтобы пользователь не пропустил
   # failure среди скроллящегося TUI вывода.
@@ -7075,6 +9125,11 @@ main_menu() {
     echo -e "${CYAN} 9)${NC} Собственный домен / self-steal заглушка"
     echo -e "${CYAN}10)${NC} Поднять outbound-сервер (зарубежная нода)"
     echo ""
+    echo -e "${MAGENTA} MULTI-PROTOCOL BACKENDS:${NC}"
+    echo -e "${CYAN}11)${NC} Hysteria 2 (быстрый UDP)"
+    echo -e "${CYAN}12)${NC} AmneziaWG 2.0 (системный VPN)"
+    echo -e "${CYAN}13)${NC} Статус бэкендов"
+    echo ""
     echo -e "${RED} 0)${NC} Выход"
     echo ""
     echo -e "${BLUE}╚════════════════════════════════════════╝${NC}"
@@ -7091,6 +9146,9 @@ main_menu() {
       8) cascade_mode_menu ;;
       9) install_selfsteal_stub_menu ;;
       10) setup_outbound_server_menu ;;
+      11) hysteria2_menu ;;
+      12) awg_menu ;;
+      13) backend_status_menu ;;
       0) exit 0 ;;
       *) echo -e "${RED}Неверный выбор${NC}"; sleep 1 ;;
     esac
@@ -7573,6 +9631,8 @@ create_profile() {
   echo -e "${CYAN}Используйте меню 'Подключиться по профилю' для получения ссылки${NC}"
   echo ""
   fix_xray_permissions
+  # Мультибэкенд: гранты per-profile (hysteria2 и будущие) — после успешной Xray-части.
+  _backend_apply_profile_lifecycle "$name" created
   echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
   read
 }
@@ -8096,6 +10156,9 @@ _expire_disable_profile() {
   fi
   safe_jq_write --argjson saved "$saved" \
     '.expire_clients = $saved | .expire_disabled = true' "$profile_file" || return 1
+  # Мультибэкенд: событие expired — реген users-карты уберёт истёкший грант
+  # (фильтр expire_disabled в _hysteria2_regen_config).
+  _backend_apply_profile_lifecycle "$(basename "$profile_file" .json)" expired
   return 0
 }
 
@@ -8136,6 +10199,8 @@ _expire_enable_profile() {
         )' "$CONFIG_FILE" || return 1
   fi
   safe_jq_write 'del(.expire_clients) | .expire_disabled = false' "$profile_file" || return 1
+  # Мультибэкенд: событие restored — грант вернётся в users-карту автоматически.
+  _backend_apply_profile_lifecycle "$(basename "$profile_file" .json)" restored
   return 0
 }
 
@@ -9082,14 +11147,16 @@ change_sni_menu() {
   fi
 
   declare -A sni_desc
-  sni_desc["www.ozon.ru"]="E-commerce, макс. устойчивость для мобильных"
+  # Описания — по замеру 03.09.2026 (MegaFon): оговорки, не приговор —
+  # на других операторах/днях картина другая, перепроверяйте probe test.
+  sni_desc["www.ozon.ru"]="Замер 03.09 (MegaFon): не прошли — перепроверьте на своём операторе"
   sni_desc["api.ozon.ru"]="Ozon API, хорошо в паре с основным"
   sni_desc["st.ozon.ru"]="Ozon CDN статика"
   sni_desc["ir.ozon.ru"]="Ozon CDN изображения"
-  sni_desc["www.wildberries.ru"]="E-commerce, стабильно для Мегафон/Ростелеком"
+  sni_desc["www.wildberries.ru"]="Замер 03.09 (MegaFon): не прошли — перепроверьте"
   sni_desc["splitter.wb.ru"]="Wildberries CDN"
   sni_desc["www.sberbank.ru"]="Банк, оптимально для региональных сетей"
-  sni_desc["www.tinkoff.ru"]="Банк, стабильный вариант"
+  sni_desc["www.tinkoff.ru"]="Замер 03.09 (MegaFon): не прошли — перепроверьте"
   sni_desc["www.alfabank.ru"]="Банк, запасной вариант"
   sni_desc["www.nspk.ru"]="Нац. платёжная система, сложно блокировать"
   sni_desc["sbp.nspk.ru"]="СБП, идеально для МТС"
@@ -9099,11 +11166,11 @@ change_sni_menu() {
   sni_desc["www.gosuslugi.ru"]="Госуслуги, для сложных регионов"
   sni_desc["www.mos.ru"]="Портал Москвы"
   sni_desc["speller.yandex.net"]="Яндекс CDN, универсальный вариант"
-  sni_desc["api-maps.yandex.ru"]="Яндекс Карты API"
+  sni_desc["api-maps.yandex.ru"]="Яндекс Карты API — прошли замер 03.09.2026"
   sni_desc["mc.yandex.ru"]="Яндекс Метрика"
   sni_desc["suggest.yandex.ru"]="Яндекс подсказки"
   sni_desc["www.github.com"]="Только если российские не работают!"
-  sni_desc["www.cloudflare.com"]="Для корпоративных каналов"
+  sni_desc["www.cloudflare.com"]="Прошли замер 03.09.2026, хорош для gRPC"
   sni_desc["aws.amazon.com"]="AWS CDN, запасной вариант для gRPC"
 
   echo -e "${YELLOW}ТОП-20 доменов для маскировки:${NC}\n"
@@ -10482,6 +12549,17 @@ inspect_command() {
     flag=$(_geo_flag_emoji "$(_geo_country_code)")
   fi
 
+  # Мультибэкенд: сводка реестра. STRICT read-only: inspect ничего не создаёт —
+  # при отсутствии файла реестра просто пустой объект; секреты не включаем.
+  local backends_json="{}"
+  if [[ -s "$BACKENDS_REGISTRY_FILE" ]]; then
+    backends_json=$(jq -c \
+      'with_entries(.value |= {installed: (.value.installed // false),
+        version: (.value.version // null), port: (.value.port // null)})' \
+      "$BACKENDS_REGISTRY_FILE" 2>/dev/null) || backends_json="{}"
+    [[ -n "$backends_json" ]] || backends_json="{}"
+  fi
+
   jq -n \
     --argjson ok true --argjson recognized true \
     --arg os "$os" --arg manager "$manager" --arg xray "$xray" \
@@ -10494,12 +12572,13 @@ inspect_command() {
     --arg subscription_service "$sub_service" \
     --arg subscription_url "$sub_url" \
     --arg country "$geo_country" --arg city "$geo_city" --arg flag "$flag" \
+    --argjson backends "$backends_json" \
     '{ok:$ok, recognized:$recognized, os:$os, manager:$manager, xray:$xray,
       profiles:$profiles, profile_count:$profile_count, route_count:$route_count,
       subscription_installed:$subscription_installed, subscription_mode:$subscription_mode,
       subscription_domain:$subscription_domain, subscription_port:$subscription_port,
       subscription_service:$subscription_service, subscription_url:$subscription_url,
-      country:$country, city:$city, flag:$flag}'
+      country:$country, city:$city, flag:$flag, backends:$backends}'
   return 0
 }
 
@@ -10554,6 +12633,7 @@ quickstart_command() {
   run_migration "bypass_routing_2026" "Bypass routing first-run" _migrate_bypass_routing_2026 >/dev/null 2>&1 || true
   run_migration "subhttp_expired_410_2026" "Subhttp expired 410" _migrate_subhttp_expired_410_2026 >/dev/null 2>&1 || true
   run_migration "subhttp_happ_legacy_xhttp_2026" "Subhttp HAPP legacy XHTTP route" _migrate_subhttp_happ_legacy_xhttp_2026 >/dev/null 2>&1 || true
+  run_migration "subhttp_hysteria2_2026" "Subhttp hysteria2 links" _migrate_subhttp_hysteria2_2026 >/dev/null 2>&1 || true
   run_migration "subhttp_happ_xhttp_compat_2026" "Subhttp HAPP XHTTP compat" _migrate_subhttp_happ_xhttp_compat_2026 >/dev/null 2>&1 || true
   run_migration "subhttp_no_default_happ_routing_2026" "Subhttp no default HAPP routing profile" _migrate_subhttp_no_default_happ_routing_2026 >/dev/null 2>&1 || true
   run_migration "subhttp_stale_profiles_410_2026" "Subhttp stale profile 410 handler" _migrate_subhttp_stale_profiles_410_2026 >/dev/null 2>&1 || true
@@ -10759,6 +12839,9 @@ NGINXHTTP
   # A8-fix: переиспользуем существующий действующий сертификат вместо повторного
   # certonly — иначе повторный quickstart упирается в Let's Encrypt rate-limit.
   # IP-серты shortlived (~6 дн.); renew-таймер продлевает их в фоне.
+  # SUB_TLS_MODE: ip_tls (LE-серт, HTTPS :8443) | http_tls (degraded fallback —
+  # HTTP :8080 наружу). Оба проксируют один и тот же локальный handler.
+  local SUB_TLS_MODE="ip_tls"
   local cert_dir="/etc/letsencrypt/live/$server_ip"
   local cert_expiry_ok=0
   local cert_end="" cert_now="" cert_epoch=""
@@ -10806,22 +12889,43 @@ NGINXHTTP
         >/tmp/certbot-ip.log 2>&1; then
       local certbot_reason
       certbot_reason=$(_certbot_failure_reason /tmp/certbot-ip.log)
-      # Fallback: certonly упёрся в rate limit (или временную сетевую ошибку), но
+      # Fallback 1: certonly упёрся в rate limit (или временную сетевую ошибку), но
       # старый серт всё ещё числится действительным — переиспользуем его, чтобы
       # quickstart не падал, а renew-таймер продолжит попытки продления в фоне.
       if [[ -f "$cert_dir/fullchain.pem" && -f "$cert_dir/privkey.pem" ]] && \
          [[ -n "$cert_epoch" && "$cert_epoch" -gt "$cert_now" ]]; then
         echo "  -> certbot не смог выпустить новый серт, но действующий есть — переиспользую его (${cert_end})" >&2
       else
-        if [[ -n "$certbot_reason" ]]; then
-          echo "{\"ok\":false,\"error\":\"certbot failed: ${certbot_reason}\"}"
-        else
-          echo '{"ok":false,"error":"certbot failed. Log: /tmp/certbot-ip.log"}'
+        # Fallback 2 (http_tls): hoster-уровневая блокировка http-01 (LE validation
+        # получает "Connection reset by peer" — порт 80 фильтруется upstream до нашего
+        # стека; подтверждено tcpdump + check-host на VPS 150.241.65.101, 2026-10-08).
+        # Вместо dead-end: поднимаем подписку по HTTP (handler на 8080 открыт наружу,
+        # 404 без токена, токен — bearer) с self-signed сертом для Hysteria и честным
+        # маркером degraded в JSON. Повторный quickstart ПОСЛЕ разблокировки :80 у
+        # хостера выдаст LE-серт и вернёт ip_tls (идемпотентен).
+        SUB_TLS_MODE="http_tls"
+        mkdir -p "/etc/letsencrypt/selfsigned/${server_ip}"
+        if ! openssl ecparam -genkey -name prime256v1 \
+              -out "/etc/letsencrypt/selfsigned/${server_ip}/privkey.pem" 2>/dev/null || \
+           ! openssl req -new -x509 -days 3650 \
+              -key "/etc/letsencrypt/selfsigned/${server_ip}/privkey.pem" \
+              -out "/etc/letsencrypt/selfsigned/${server_ip}/fullchain.pem" \
+              -subj "/CN=${server_ip}" 2>/dev/null; then
+          echo '{"ok":false,"error":"certbot failed и self-signed fallback не создался. Log: /tmp/certbot-ip.log"}'
+          _qs_nginx_rollback
+          return 1
         fi
-        _qs_nginx_rollback
-        return 1
+        chmod 600 "/etc/letsencrypt/selfsigned/${server_ip}/privkey.pem" 2>/dev/null || true
+        if [[ -n "$certbot_reason" ]]; then
+          echo "  -> certbot: ${certbot_reason}" >&2
+        fi
+        echo "  ⚠ LE не смог проверить http-01 (порт 80 заблокирован upstream хостера)." >&2
+        echo "  ⚠ Подписка разворачивается по HTTP (fallback): http://${server_ip}:8080/sub/<token>" >&2
+        echo "    Токен URL остаётся bearer-credential; повторите quickstart после разблокировки :80 —" >&2
+        echo "    тогда будет выпущен LE-серт и подписка вернётся на HTTPS." >&2
       fi
     else
+      SUB_TLS_MODE="ip_tls"
       echo "  TLS сертификат получен" >&2
       # P0-certbot-fix: регистрируем cert в root-owned манифесте (uninstall удалит только его).
       _certbot_register "$server_ip"
@@ -10844,7 +12948,27 @@ NGINXHTTP
     fi
   fi
 
-  # Nginx HTTPS config (проксирует на subscription server, порт 8443 — Xray на 443)
+  # Nginx config: https (ip_tls: LE-серт, прокси на 8080) или http (http_tls
+  # fallback: 8080 открыт напрямую, ACME-challenge на :80 остаётся для
+  # будущего апгрейда до LE-серта повторным quickstart).
+  if [[ "$SUB_TLS_MODE" == "http_tls" ]]; then
+  cat > "$NGINX_SITES_AVAILABLE/xrayebator-sub" << NGINXHTTPSUB
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${server_ip_bracketed};
+    # MUST serve ACME http-01 challenge: повторный quickstart после разблокировки
+    # :80 выпустит LE-серт и переведёт подписку обратно на HTTPS (ip_tls).
+    location ^~ /.well-known/acme-challenge/ {
+        root ${webroot};
+        default_type text/plain;
+    }
+    location / {
+        return 404;
+    }
+}
+NGINXHTTPSUB
+  else
   cat > "$NGINX_SITES_AVAILABLE/xrayebator-sub" << NGINXHTTPS
 limit_req_zone \$binary_remote_addr zone=xrayebator_sub:10m rate=30r/m;
 
@@ -10858,6 +12982,12 @@ server {
     ssl_ciphers HIGH:!aNULL:!MD5;
     location / {
         limit_req zone=xrayebator_sub burst=5 nodelay;
+        # HAPP routing-профиль легко перерастает дефолтные 4k заголовка:
+        # без буферов nginx отвечает 502 "upstream sent too big header".
+        # (Идея из PR #23, tony-adamson; латынь та же, что в доменном TLS-шаблоне.)
+        proxy_buffer_size 32k;
+        proxy_buffers 8 32k;
+        proxy_busy_buffers_size 64k;
         proxy_pass http://127.0.0.1:8080;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
@@ -10885,19 +13015,25 @@ server {
     }
 }
 NGINXHTTPS
-  nginx -t >/dev/null 2>&1 || { echo '{"ok":false,"error":"nginx HTTPS config failed"}'; _qs_nginx_rollback; return 1; }
+  fi
+  nginx -t >/dev/null 2>&1 || { echo '{"ok":false,"error":"nginx config failed"}'; _qs_nginx_rollback; return 1; }
   if ! systemctl reload nginx >/dev/null 2>&1; then
-    echo '{"ok":false,"error":"nginx не перечитал HTTPS config — подписка недоступна"}'
+    echo '{"ok":false,"error":"nginx не перечитал config — подписка недоступна"}'
     _qs_nginx_rollback
     return 1
   fi
 
-  # Пишем маркеры подписки (ip_tls mode) — иначе _subscription_base_url вернёт
-  # локальный http://127.0.0.1:8080 и GUI/happ-setup покажут неверный URL и mode "unknown".
-  _subscription_write_markers "8443" "$server_ip" "$server_ip" "ip_tls"
+  # Пишем маркеры подписки: ip_tls (LE-серт на :8443) или http_tls (fallback —
+  # handler 8080 напрямую). Иначе _subscription_base_url вернёт локальный
+  # http://127.0.0.1:8080 и GUI/happ-setup покажут неверный URL и mode "unknown".
+  _subscription_write_markers "8443" "$server_ip" "$server_ip" "$SUB_TLS_MODE"
 
-  # Автопродление shortlived IP-сертификатов (~6 дней).
-  _install_ip_cert_renew_timer "$certbot_bin" "$server_ip" "$webroot"
+  # Автопродление shortlived IP-сертификатов (~6 дней) — только в ip_tls:
+  # в http_tls серта нет, и таймер certbot renew каждый раз падал бы по тому же
+  # upstream-фильтру, который и вызвал fallback.
+  if [[ "$SUB_TLS_MODE" == "ip_tls" ]]; then
+    _install_ip_cert_renew_timer "$certbot_bin" "$server_ip" "$webroot"
+  fi
 
   # 4. Создание профиля
   echo "=== Профиль ===" >&2
@@ -10947,7 +13083,7 @@ NGINXHTTPS
   fi
   subscription_url="${base}/sub/${result_sub_token}"
 
-# «Сторона» сервера для GUI (country/city/flag) + ОС (PRETTY_NAME) — полезно "Мои серверы".
+  # «Сторона» сервера для GUI (country/city/flag) + ОС (PRETTY_NAME) — полезно "Мои серверы".
   local result_country result_city result_flag result_os
   result_country=$(_geo_country_name)
   result_city=$(_geo_city)
@@ -10962,6 +13098,21 @@ NGINXHTTPS
   QS_DEFAULT_REMOVED=false
   QS_DEFAULT_BACKUP_CREATED=false
 
+  # degraded=true только в http_tls-fallback: сервер работает, но подписка по HTTP
+  # (LE не смог проверить http-01 — обычно порт 80 фильтруется хостером). GUI
+  # сохраняет сервер с setupStatus=partial и показывает понятную причину.
+  if [[ "$SUB_TLS_MODE" == "http_tls" ]]; then
+    jq -n \
+      --arg url "$subscription_url" --arg base "$base" \
+      --arg profile "$HAPP_DEFAULT_PROFILE" --argjson routes "$route_count" \
+      --arg country "$result_country" --arg city "$result_city" \
+      --arg flag "$result_flag" --arg os "$result_os" \
+      --arg cert_reason "${certbot_reason:-}" \
+      '{ok:true, degraded:true, tls_mode:"http_tls", certbot_reason:$cert_reason,
+        subscription_url:$url, base_url:$base, profile:$profile, routes:$routes,
+        country:$country, city:$city, flag:$flag, os:$os}'
+    return 0
+  fi
   echo "{\"ok\":true,\"subscription_url\":\"${subscription_url}\",\"base_url\":\"${base}\",\"profile\":\"${HAPP_DEFAULT_PROFILE}\",\"routes\":${route_count},\"country\":\"${result_country}\",\"city\":\"${result_city}\",\"flag\":\"${result_flag}\",\"os\":\"${result_os}\"}"
   return 0
 }
@@ -11099,6 +13250,11 @@ profiles_command() {
     fi
     [[ "$rcount" =~ ^[0-9]+$ ]] || rcount=0
 
+    # Мультибэкенд: аддитивный объект .backends профиля (гранты hysteria2/awg).
+    local backends
+    backends=$(jq -c '.backends // {}' "$file" 2>/dev/null)
+    [[ -n "$backends" ]] || backends="{}"
+
     local sub_url=""
     if _profile_cli_subscription_url "$sub_token" >/dev/null 2>&1; then
       sub_url="$base/sub/$sub_token"
@@ -11112,12 +13268,13 @@ profiles_command() {
       --argjson pq "$pq" --arg subscription_url "$sub_url" \
       --argjson expire "$expire" --arg expire_date "$expire_date" \
       --argjson expire_disabled "$expire_disabled" \
+      --argjson backends "$backends" \
       '{name: $name, uuid: $uuid, transport: $transport, port: $port,
         fingerprint: $fingerprint, sni: $sni, created: $created,
         sub_token: $sub_token, multi_route: $multi_route, routes: $routes,
         pq_enabled: $pq, subscription_url: $subscription_url,
         expire: $expire, expire_date: $expire_date, expire_disabled: $expire_disabled,
-        expire_supported: true}'
+        expire_supported: true, backends: $backends}'
   done
   printf ']\n'
   return 0
@@ -11316,6 +13473,8 @@ _profile_cli_create_one() {
   fi
 
   fix_xray_permissions
+  # Мультибэкенд: грант hysteria2 новому профилю (после успешной Xray-части).
+  _backend_apply_profile_lifecycle "$pname" created
   local sub_url=""
   if _profile_cli_subscription_url "$sub_token" >/dev/null 2>&1; then
     sub_url="$(_subscription_base_url)/sub/${sub_token}"
@@ -11367,16 +13526,18 @@ profile_delete_command() {
     return 1
   fi
 
-  local rollback_config=""
-  if ! backup_config "cli_delete_$name" rollback_config; then
-    echo '{"ok":false,"error":"Не удалось создать бэкап config.json"}'
-    return 1
-  fi
-
   # CLI-режим: статусы helpers (backup_config, safe_restart_xray, close_firewall_port)
   # печатают цветной мусор в stdout и ломали JSON-парсинг в GUI — душим их в stderr.
+  # Redirect ДО backup_config: её цветная строка тоже мусор для парсера GUI.
   exec 3>&1
   exec 1>&2
+
+  local rollback_config=""
+  if ! backup_config "cli_delete_$name" rollback_config; then
+    echo '{"ok":false,"error":"Не удалось создать бэкап config.json"}' >&3
+    exec 1>&3 3>&-
+    return 1
+  fi
 
   if ! _remove_profile_uuid_from_config "$uuid" "$ports_json"; then
     echo '{"ok":false,"error":"Ошибка обновления конфига"}' >&3
@@ -11407,6 +13568,8 @@ profile_delete_command() {
   done < <(jq -r '.[]' <<< "$ports_json")
 
   fix_xray_permissions
+  # Мультибэкенд: снятие грантов удалённого профиля (реген по оставшимся).
+  _backend_apply_profile_lifecycle "$name" deleted
   echo "{\"ok\":true,\"name\":\"$name\"}"
   return 0
 }
@@ -11490,8 +13653,10 @@ profile_revoke_command() {
   local jq_expr='.sub_token = $t'
   if [[ "$full" == "true" ]]; then
     jq_args+=(--arg old "$old_uuid" --arg new "$new_uuid")
-    jq_expr+=' | .uuid = $new | (.routes // []) |= map(if .uuid? == $old then .uuid = $new else . end)'
-    # routes не хранят uuid (общий на профиль), но выражение безопасно для будущих схем.
+    # ВАЖНО: (.routes // []) |= map(...) — невалидный path в jq («Invalid path
+    # expression with result []» на single-route профилях, где routes = null).
+    # Каноничный guard has("routes") — как в update_all_profiles_on_port.
+    jq_expr+=' | .uuid = $new | if has("routes") then .routes |= map(if .uuid? == $old then .uuid = $new else . end) else . end'
 
     if ! _replace_uuid_in_config "$old_uuid" "$new_uuid" "$ports_json"; then
       echo '{"ok":false,"error":"Не удалось обновить clients в config.json"}' >&3
@@ -11523,6 +13688,8 @@ profile_revoke_command() {
   fix_xray_permissions
   exec 1>&3 3>&-
 
+  # Мультибэкенд: ротация грантов (hysteria2-пароль) при отзыве.
+  _backend_apply_profile_lifecycle "$name" revoked
   local sub_url="" base
   base=$(_subscription_base_url 2>/dev/null || true)
   if [[ -n "$base" ]] && _profile_cli_subscription_url "$new_token" >/dev/null 2>&1; then
@@ -12634,6 +14801,53 @@ if [[ "$XRAYEBATOR_SOURCED" -eq 0 ]]; then
       shift
       bypass_command "$@"
       ;;
+    backend-status)
+      _backend_status_json
+      ;;
+    hysteria2-install)
+      shift
+      hysteria2_install_command "$@"
+      ;;
+    hysteria2-uninstall)
+      hysteria2_uninstall_command
+      ;;
+    hysteria2-status)
+      hysteria2_status_command
+      ;;
+    hysteria2-grant)
+      shift
+      hysteria2_grant_command "$@"
+      ;;
+    hysteria2-subbody)
+      shift
+      hysteria2_subbody_command "$@"
+      ;;
+    hysteria2-link)
+      shift
+      hysteria2_link_command "$@"
+      ;;
+    awg-install)
+      shift
+      awg_install_command "$@"
+      ;;
+    awg-uninstall)
+      awg_uninstall_command
+      ;;
+    awg-status)
+      awg_status_command
+      ;;
+    awg-grant)
+      shift
+      awg_grant_command "$@"
+      ;;
+    awg-conf)
+      shift
+      awg_conf_command "$@"
+      ;;
+    awg-31)
+      shift
+      awg_31_command "$@"
+      ;;
     ""|menu)
       main_menu
       ;;
@@ -12664,11 +14878,25 @@ if [[ "$XRAYEBATOR_SOURCED" -eq 0 ]]; then
       echo -e "  ${CYAN}sudo xrayebator bypass remove --domain D${NC} — убрать домен из обхода (JSON)"
       echo -e "  ${CYAN}sudo xrayebator bypass reset${NC} — сбросить все bypass-правила (JSON)"
       echo -e "  ${CYAN}sudo xrayebator bypass bundle [--group a,b,c]${NC} — применить группы доменов (JSON)"
+      echo -e "  ${CYAN}sudo xrayebator backend-status${NC} — статус мультипротокольных бэкендов (JSON)"
+      echo -e "  ${CYAN}sudo xrayebator hysteria2-install [--port P]${NC} — установить Hysteria 2 (JSON)"
+      echo -e "  ${CYAN}sudo xrayebator hysteria2-uninstall${NC} — удалить Hysteria 2 (JSON)"
+      echo -e "  ${CYAN}sudo xrayebator hysteria2-status${NC} — статус Hysteria 2 (JSON)"
+      echo -e "  ${CYAN}sudo xrayebator hysteria2-grant --name N${NC} — выдать грант профилю (JSON)"
+      echo -e "  ${CYAN}sudo xrayebator hysteria2-subbody --on|--off${NC} — hysteria2-строки в подписке (JSON)"
+      echo -e "  ${CYAN}sudo xrayebator hysteria2-link --name N${NC} — hysteria2-ссылка профиля (JSON)"
+      echo -e "  ${CYAN}sudo xrayebator awg-install${NC} — установить AmneziaWG 2.0 (JSON)"
+      echo -e "  ${CYAN}sudo xrayebator awg-uninstall${NC} — удалить AmneziaWG (JSON)"
+      echo -e "  ${CYAN}sudo xrayebator awg-status${NC} — статус AmneziaWG (JSON)"
+      echo -e "  ${CYAN}sudo xrayebator awg-grant --name N${NC} — выдать peer-грант профилю (JSON)"
+      echo -e "  ${CYAN}sudo xrayebator awg-conf --name N${NC} — клиентский .conf профиля (JSON)"
+      echo -e "  ${CYAN}sudo xrayebator awg-31 --on|--off${NC} — режим AWG 3.1 (HeaderProtection+RandomTrailers; JSON)"
       echo ""
       echo -e "${YELLOW}Файлы:${NC}"
       echo -e "  config:    /usr/local/etc/xray/config.json"
       echo -e "  profiles:  /usr/local/etc/xray/profiles/"
       echo -e "  backups:   /usr/local/etc/xray/backups/"
+      echo -e "  backends:  /usr/local/etc/xrayebator/backends.json"
       echo -e "  docs:      https://github.com/howdeploy/Xrayebator"
       exit 0
       ;;

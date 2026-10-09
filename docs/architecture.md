@@ -52,7 +52,7 @@ configuration and systemd unit form the HAPP subscription path. The active deskt
 
 /usr/local/etc/xray/
 ├── config.json                   # inbounds, outbounds, routing and DNS
-├── profiles/<name>.json          # profile metadata, subscription token, expiry (.expire)
+├── profiles/<name>.json          # profile metadata, subscription token, expiry (.expire), backend grants (.backends)
 ├── upstreams/cascade.json        # cascade upstream parameters
 ├── backups/                      # config backups made before runtime mutations
 ├── .private_key / .public_key    # Reality keys
@@ -62,10 +62,18 @@ configuration and systemd unit form the HAPP subscription path. The active deskt
 ├── .current_branch               # manager branch used by lifecycle updates
 └── migration markers             # records of completed one-time migrations
 
+/usr/local/etc/xrayebator/         # multi-protocol backend root (neutral, Xray paths untouched)
+├── backends.json                  # backend registry: installed/version/port/flags (644, no secrets)
+└── backends/
+    ├── hysteria2/                 # server.yaml (regenerated from profiles), certs, placeholder credential
+    └── awg/                       # awg0.conf (0600), server-params.json (0600)
+
 /usr/local/share/xray/             # geoip.dat and geosite.dat
 /var/log/xray/                     # runtime log directory written by the Xray service
 /etc/systemd/system/xray.service.d/security.conf
 /etc/systemd/system/xrayebator-sub.service
+/etc/systemd/system/hysteria-server.service   # Hysteria 2 backend (optional)
+/etc/systemd/system/awg-quick@awg0.service    # AmneziaWG backend (optional, from amneziawg-tools)
 /etc/nginx/sites-available/xrayebator-sub
 ```
 
@@ -102,13 +110,17 @@ The base is built from the saved subscription markers:
 ```text
 https://<domain>/sub/<32-hex-token>       # public TLS on 443
 https://<domain>:8443/sub/<32-hex-token>  # public TLS on another port
+http://<IP>:8080/sub/<token>              # http_tls fallback (LE could not validate http-01)
 http://127.0.0.1:8080/sub/<token>         # local-only fallback
 ```
 
 The interactive HAPP setup can select the public port and `_subscription_base_url` preserves that
 choice. The non-interactive `quickstart --email <address>` and `quickstart --without-email` IP-TLS paths
 provision nginx, certificate and markers on `8443`, then emit JSON containing `subscription_url` for that
-endpoint. Without an email, Certbot is explicitly told to register without an ACME contact; renewal
+endpoint. When Let's Encrypt cannot validate http-01 (the hoster filters port 80 for foreign sources),
+quickstart degrades to `http_tls`: the markers switch to that mode, the subscription is published over
+HTTP from the loopback handler and the JSON carries `degraded:true`; rerunning the deploy after port 80
+is unblocked restores ip_tls. Without an email, Certbot is explicitly told to register without an ACME contact; renewal
 notices and email-based recovery are unavailable. The token is stored in the profile as `sub_token`;
 revoke rotates it and invalidates the previous URL, while a full revoke (`profile-revoke --full`) also
 changes the uuid in every inbound of the profile so already-downloaded configurations stop connecting.
@@ -132,7 +144,32 @@ or quickstart when the required routes are absent. A profile with no live inboun
 
 The handler also serves the token-protected `geoip.dat` and `geosite.dat` resources required by the
 managed HAPP routing profile. HAPP receives its routing metadata, while v2rayNG and v2rayN receive
-the compatible VLESS body without HAPP-only metadata.
+the compatible VLESS body without HAPP-only metadata. When the Hysteria 2 backend is installed and
+the profile has a grant, the handler additionally appends one `hysteria2://` line to both the HAPP
+and the generic subscription bodies, gated by the registry flag `sub_body`; expired or disabled
+profiles never get the line.
+
+## Multi-protocol backends
+
+Beyond Xray, the manager can install additional transports on the same VPS. All backend state lives
+in the neutral root `/usr/local/etc/xrayebator/` (registry `backends.json` plus per-backend
+directories); the Xray state paths are untouched. Per-profile backend credentials live in the
+profile's additive `.backends` object, which makes the profile JSON the single source of truth:
+server-side configs (`backends/hysteria2/server.yaml`, `backends/awg/awg0.conf`) are always
+regenerated from profiles, and profile lifecycle events (create, delete, revoke, expire, restore)
+propagate through `_backend_apply_profile_lifecycle` to every installed backend.
+
+- **Hysteria 2** — fast UDP transport. Own systemd unit `hysteria-server.service` running as the
+  dedicated `hysteria` user with `CAP_NET_BIND_SERVICE`; UDP 443 by default; adaptive TLS (the
+  subscription Let's Encrypt certificate plus a renewal deploy-hook, or a self-signed certificate);
+  `auth: userpass` with one credential per profile and a placeholder user while the map would
+  otherwise be empty (Hysteria rejects an empty map).
+- **AmneziaWG 2.0** — system VPN. Kernel module via DKMS (PPA `amnezia/ppa` primary, source build
+  fallback), interface `awg0` through `awg-quick@awg0`, subnet `10.8.1.0/24`, per-profile peers
+  (keypair + preshared key + address), `ip_forward` and MASQUERADE on the default-route interface.
+  The distro unit reads `/etc/amnezia/amneziawg/awg0.conf`, which is a symlink to the managed file.
+- Both backends are optional, installed and removed from menu items `11`–`13` or the `hysteria2-*`
+  / `awg-*` CLI commands, and are never installed by default.
 
 ## Update paths
 

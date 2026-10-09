@@ -22,6 +22,8 @@ export interface ServerConnectionMetadata {
   privateKeyPersisted?: boolean | null
   passwordCredentialId?: string | null
   passwordPersisted?: boolean | null
+  /** Персистит http_tls-fallback (подписка работает только с server'а). */
+  degraded?: boolean | null
 }
 
 export interface ServerStore {
@@ -34,6 +36,11 @@ export interface ServerStore {
     connection: ServerConnectionMetadata
   ) => StoredServer
   updateKeys: (id: string, keys: VlessLink[]) => StoredServer | undefined
+  /** Персистит бэкенд-ключи: hysteria2-ссылки и AWG-конфиги per-profile. */
+  updateBackendKeys: (
+    id: string,
+    payload: { hysteria2Keys?: string[]; awgConfs?: Record<string, string> }
+  ) => StoredServer | undefined
   updateConnection: (id: string, input: ServerConnectionMetadata) => StoredServer | undefined
   countCredentialReferences: (credentialId: string, exceptId?: string) => number
   clearCredentialReference: (id: string) => StoredServer | undefined
@@ -60,11 +67,16 @@ function normalizeServer(server: StoredServer, hostKeys: Record<string, string>)
     privateKeyPersisted: server.privateKeyPersisted ?? null,
     passwordCredentialId: server.passwordCredentialId ?? null,
     passwordPersisted: server.passwordPersisted ?? null,
-    setupStatus: server.setupStatus ?? (server.subscriptionUrl ? 'ready' : 'unknown'),
+    setupStatus:
+      server.setupStatus ??
+      (server.subscriptionUrl ? 'ready' : 'unknown'),
+    degraded: server.degraded ?? false,
     diagnostics: server.diagnostics ?? null,
     hostKeyFingerprint:
       hostKeys[hostKeyId(server.host, server.port)] ?? server.hostKeyFingerprint ?? null,
-    keys: server.keys ?? []
+    keys: server.keys ?? [],
+    hysteria2Keys: server.hysteria2Keys ?? [],
+    awgConfs: server.awgConfs ?? {}
   }
 }
 
@@ -136,6 +148,9 @@ export function createServerStore(): ServerStore {
         subscriptionUrl: input.subscriptionUrl || existing?.subscriptionUrl || '',
         keys: input.keys?.length ? input.keys : existing?.keys ?? [],
         routesCount: input.routesCount ?? existing?.routesCount ?? null,
+        setupStatus: input.setupStatus ?? existing?.setupStatus ?? undefined,
+        diagnostics: input.diagnostics ?? existing?.diagnostics ?? null,
+        degraded: input.degraded ?? existing?.degraded ?? false,
         id: existing?.id ?? randomUUID(),
         createdAt: existing?.createdAt ?? new Date().toISOString(),
         hostKeyFingerprint: existingNormalized?.hostKeyFingerprint ?? input.hostKeyFingerprint ?? null
@@ -152,6 +167,24 @@ export function createServerStore(): ServerStore {
       const idx = servers.findIndex((s) => s.id === id)
       if (idx === -1) return undefined
       const updated: StoredServer = { ...servers[idx], keys }
+      const next = [...servers]
+      next[idx] = updated
+      store.set('servers', next)
+      return updated
+    },
+
+    updateBackendKeys(
+      id: string,
+      payload: { hysteria2Keys?: string[]; awgConfs?: Record<string, string> }
+    ): StoredServer | undefined {
+      const servers = store.get('servers')
+      const idx = servers.findIndex((s) => s.id === id)
+      if (idx === -1) return undefined
+      const updated: StoredServer = {
+        ...servers[idx],
+        hysteria2Keys: payload.hysteria2Keys ?? servers[idx].hysteria2Keys ?? [],
+        awgConfs: payload.awgConfs ?? servers[idx].awgConfs ?? {}
+      }
       const next = [...servers]
       next[idx] = updated
       store.set('servers', next)

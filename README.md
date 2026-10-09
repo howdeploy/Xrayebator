@@ -6,7 +6,8 @@
 
 <p>
 <strong>inbounds</strong> · <strong>profiles</strong> · <strong>subscription</strong> ·
-<strong>bypass</strong> · <strong>cascade</strong>
+<strong>bypass</strong> · <strong>cascade</strong> · <strong>hysteria2</strong> ·
+<strong>amneziawg</strong>
 </p>
 
 <p>
@@ -28,8 +29,10 @@
 Xrayebator installs Xray-core, brings up Reality inbounds on random ports, and provisions a standard
 schema-v3 HAPP profile of seven routes for a new setup. Existing seven-route profiles can be reused only
 when they have enough live routes, so inspect the profile JSON when debugging labels or schema. The client
-receives the routes as a single HTTPS subscription link. Current server line — 3.0; the optional Electron
-desktop app is versioned separately.
+receives the routes as a single HTTPS subscription link. As of the multi-protocol stage, optional
+Hysteria 2 (fast UDP) and AmneziaWG 2.0/3.1 (system VPN) backends can be installed on the same VPS from
+menu items 11–13, with per-profile grants wired into the shared revoke/expire lifecycle. Current server
+line — 3.0; the optional Electron desktop app is versioned separately.
 </p>
 
 </div>

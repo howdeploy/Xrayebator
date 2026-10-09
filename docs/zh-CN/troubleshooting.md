@@ -155,9 +155,98 @@ sudo systemctl restart sshd
 
 多个配置档可以同时使用：不同的订阅、SNI、端口和线路提供了更多绕过封锁的选择，但它们共享同一台 VPS 的资源。
 
+## Hysteria 2 服务无法启动
+
+先读原因——安装会回滚产物，状态需要复现：
+
+```bash
+journalctl -u hysteria-server.service --no-pager | tail -20
+```
+
+已知失败模式（生成器已修复，手工改配置时仍然相关）：
+
+- `invalid config: auth.userpass: empty auth userpass` —— auth 映射的键是 `userpass` 而**不是**
+  `users`，且空映射会被拒绝。生成器始终至少渲染 `_xrayebator_placeholder`（尚无配置档授权时）；
+  手工编辑 `server.yaml` 时，请保持 `userpass:` 下有非空映射。
+- `Changing to the requested working directory failed: Permission denied` —— 后端目录必须为
+  `root:hysteria 0750`；只 `chmod` 而不做配对 `chown` 会留下 `root:root`，单元无法进入目录。
+- 证书不可读 —— `le` 模式下证书是 `root:hysteria 0640` 的副本；续期 deploy-hook 负责刷新。
+
+修复后的干净路径：`hysteria2-uninstall` 然后重新 `hysteria2-install`。
+
+## AWG：接口已启动但没有 `latest handshake`
+
+AmneziaWG 对参数不匹配保持沉默：peer 只是永远不出现握手。请检查「必须一致」组——它与每个
+客户端 `.conf` 必须完全相同：
+
+- `S1`–`S4`（3.x 引擎要求 ≥ 12）、`H1`–`H4`；
+- 对端存在的任何 3.x 键：`HeaderProtectionKey`（3.0）与 `RandomTrailers`（3.1）必须逐字节
+  一致。Xrayebator 仅在 3.1 模式（`awg-31 --on`，新安装默认开启）下输出它们；不匹配通常意味着
+  客户端 `.conf` 早于 3.1 切换——请重新下载——或混入了第三方/手工配置；
+- 客户端应用版本：带 `RandomTrailers` 的配置需要 AmneziaVPN ≥ 5.0.1.5；更旧的客户端可能直接
+  拒绝导入。
+
+然后区分调试区域：服务器上的 `awg show awg0` ——若 peer 在列、握手存在但没有流量，问题在
+`awg-quick`/路由/防火墙区域（`ip_forward`、MASQUERADE 接口），而不是协议参数。
+
+在怀疑参数之前，先验证网络路径本身。AWG 套接字位于内核空间，UDP 端口在 `ss`/`netstat` 中不可见
+——只有在客户端尝试连接时于服务器上抓包才能看到：
+
+```bash
+tcpdump -l -ni <iface> 'udp port <port>'
+```
+
+抓不到任何包 → 数据包根本没有到达：运营商/DPI 过滤（典型的 RU 模式——UDP 443 上的 Hysteria 2
+可以通过，而高位随机 UDP 端口被静默丢弃）。抓到包但 `awg show` 仍无握手 → 客户端发送的是
+「垃圾」：重新签发 `.conf`，检查应用版本（3.1 参数需要 AmneziaVPN ≥ 5.0.1.5），或临时
+`awg-31 --off` 并重新导入以测试 2.0 兼容性。注意：`tcpdump` 重定向到文件时若不加 `-l` 会按块
+缓冲输出——早期数据包在缓冲区刷新前可能不可见。
+
+## AmneziaVPN（完整应用）报错 1000，独立版客户端正常
+
+`错误 1000` 是应用笼统的 `AndroidError`；手机端日志此时显示
+`VPN config format error: No value for client_ip`。应用的原生管道只接受自己的导出形态——
+`amnezia-awg2` 容器、与 `last_config` 并列的服务器级 junk 字段、`protocol_version` 以及压缩
+（`qCompress`）payload。裸 `.conf`（或缺少这些字段的朴素 `vpn://`）会被保存，但客户端部分
+到不了隧道。桌面 GUI 的「QR · AmneziaVPN」二维码构造的正是这种形态——请用它代替粘贴
+`.conf`。Xrayebator 安装的 junk 组与 Amnezia 默认值一致（`Jc` 5、`Jmin` 10、`Jmax` 50、
+`H1`–`H4` = 1..4），正是因为应用的 go-туннель对自定义 junk 应用不完整。
+
+## AWG 安装失败
+
+- 首选路径是 `amnezia/ppa` PPA；在没有对应发行版构建的系列上，Xrayebator 回退到源码编译。内核
+  ≥ 5.6 时需要**完整的** `linux-source` 包——仅有内核头文件不够（模块构建会链接整个源码树）。
+- 安装后验证：`lsmod | grep amneziawg` 显示模块，`awg --version` 有响应。
+- 单元 `awg-quick@awg0` 读取 `/etc/amnezia/amneziawg/awg0.conf` —— Xrayebator 将其维护为指向
+  `/usr/local/etc/xrayebator/backends/awg/awg0.conf` 的 symlink。删除 symlink 会让单元失效，
+  尽管后端配置本身有效。
+- 卸载时软件包与内核模块有意保留在系统中；被移除的是接口、配置、symlink 与防火墙规则。
+
+## 订阅中没有 `hysteria2://` 行
+
+只有同时满足以下条件，`hysteria2://` 链接才会追加到两个订阅主体：
+
+1. Hysteria 2 后端已安装（`xrayebator hysteria2-status`）；
+2. 配置档持有授权（`profiles` JSON → `.backends.hysteria2.password`）；
+3. 注册表标志 `sub_body` 为 `true`（总开关——直接改 `backends.json`，处理器每次请求都会重读
+   注册表，无需重启服务）。
+
+过期或停用的配置档不会得到该行；被吊销的配置档在下次刷新订阅时拿到新凭据。吊销后旧 token
+URL 返回 `404` 属于预期——令牌本身已轮换。
+
 ## quickstart 报错 `apt-get install nginx failed`
 
 新装的 Ubuntu VPS 上，`unattended-upgrades` 可能持有 apt/dpkg 锁约 10 分钟，并且对每个包单独调用 `dpkg`，因此简单的锁检查会从包与包之间的空隙漏过。quickstart 现在会额外等待活跃的 `unattended-upgrade` 进程（12 分钟预算），并给 `apt-get install` 传入 `-o DPkg::Lock::Timeout=180`。当 quickstart 提示 apt 超过预算仍被占用时，请稍后重试部署，或等更新队列结束。该行为由 `validation/test-apt-lock-race.sh` 锁定。
+
+## quickstart 报「certbot failed: ... Connection reset by peer」但仍成功结束
+
+Let's Encrypt 无法获取 http-01 challenge——最常见原因是服务商网络对境外来源过滤 80 端口
+（已用 tcpdump 与多节点探测验证：本机防火墙与 nginx 正常，reset 发生在上游）。在此降级
+模式下部署以 `http_tls` 回退结束：结果 JSON 携带 `degraded:true` 与 `tls_mode:"http_tls"`，
+GUI 将服务器标记为「配置不完整」，密钥通过 SSH 加载。此模式下不存在公共订阅
+URL——不会出现可泄露的 HTTP 链接。恢复 HTTPS 的方式：请服务商为 Let's Encrypt validation 网段解除 80 端口
+封锁（或将域名解析到服务器并使用域名 TLS 模式），然后重新部署；流程幂等，challenge
+可达后即签发 LE 证书。回退结构由 `validation/test-quickstart-tls-fallback.sh` 锁定。
 
 ## 安装或使用过程中出现报错
 

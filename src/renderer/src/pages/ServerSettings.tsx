@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import QRCode from 'qrcode'
 import { Button, TextField, Label, Input, Chip, Spinner, AlertDialog } from '@heroui/react'
 import {
   Settings2,
@@ -15,16 +16,26 @@ import {
   Check,
   ShieldOff,
   CalendarClock,
-  CalendarX
+  CalendarX,
+  Zap
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import type { Server, ServerProfile, SniEntry, SshAccessInput } from '@shared/types'
+import type {
+  BackendStatusResult,
+  Server,
+  ServerProfile,
+  SniEntry,
+  SshAccessInput
+} from '@shared/types'
 import { describeExpire, isFutureDate, presetDate } from '@shared/expire'
 import { todayIso } from '@shared/calendar'
+import { buildAwgVpnUrl, stripAwgComments } from '@shared/awg'
 import { isSshAccessReady, SshAccessForm } from '../components/SshAccessForm'
 import { CalendarPicker } from '../components/CalendarPicker'
 import { shouldAutoConnectServer } from './server-access'
 import styles from './ServerSettings.module.css'
+import hystLogo from '../assets/hysteria-logo.svg'
+import amneziaLogo from '../assets/amnezia-logo.jpg'
 
 interface ServerSettingsProps {
   server: Server
@@ -83,6 +94,23 @@ export function ServerSettings({
   const [busy, setBusy] = useState(false)
   const autoConnectStarted = useRef(false)
   const [profiles, setProfiles] = useState<ServerProfile[] | null>(null)
+  const [backends, setBackends] = useState<BackendStatusResult | null>(null)
+  const [backendsLoading, setBackendsLoading] = useState(false)
+  const [backendsError, setBackendsError] = useState<string | null>(null)
+  const [backendBusy, setBackendBusy] = useState<string | null>(null)
+  const [confirmBackend, setConfirmBackend] = useState<
+    | 'hysteria2-uninstall'
+    | 'awg-uninstall'
+    | 'awg31-on'
+    | 'awg31-off'
+    | 'hysteria2-revoke-all'
+    | 'awg-revoke-all'
+    | null
+  >(null)
+  // QR-модалка выдачи ключей бэкенд-боксов. Диалог «Ключи» убран:
+  // полное копирование только на странице Ключей (решение 2026-10-06).
+  const [keysQrUrl, setKeysQrUrl] = useState<string | null>(null)
+  const [keysQrData, setKeysQrData] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [toast, setToast] = useState<string | null>(null)
   const [hostKeyFingerprint, setHostKeyFingerprint] = useState<string | null>(
@@ -95,10 +123,14 @@ export function ServerSettings({
   const [transport, setTransport] = useState('xhttp')
   const [count, setCount] = useState('1')
   const [creating, setCreating] = useState(false)
+  // Выбор мультипротокольного бэкенда в «Создать профиль»: клик по карточке
+  // = только выбор (как у VLESS-транспортов), создание — кнопкой «Создать профиль».
+  const [backendSel, setBackendSel] = useState<'hysteria2' | 'awg' | null>(null)
   const [createExpire, setCreateExpire] = useState('')
   const [createExpireOpen, setCreateExpireOpen] = useState(false)
 
   const [updating, setUpdating] = useState(false)
+  const [updateMenuOpen, setUpdateMenuOpen] = useState(false)
   const [uninstalling, setUninstalling] = useState(false)
   const [confirmUninstall, setConfirmUninstall] = useState(false)
   const [confirmRemove, setConfirmRemove] = useState<ServerProfile | null>(null)
@@ -128,8 +160,10 @@ export function ServerSettings({
   const [revokeStep, setRevokeStep] = useState<'choose' | 'confirm' | 'done'>('choose')
   const [revokeBusy, setRevokeBusy] = useState(false)
   const [revokeUrl, setRevokeUrl] = useState<string | null>(null)
+  const [revokeFullOnly, setRevokeFullOnly] = useState(false)
 
   const [expireTarget, setExpireTarget] = useState<ServerProfile | null>(null)
+  const [expireChooser, setExpireChooser] = useState<ServerProfile[] | null>(null)
   const [expireDate, setExpireDate] = useState('')
   const [expireBusy, setExpireBusy] = useState(false)
   const [expireDone, setExpireDone] = useState(false)
@@ -160,8 +194,22 @@ export function ServerSettings({
     setBusy(true)
     setError(null)
     try {
+      // Бэкенды грузятся ПАРАЛЛЕЛЬНО с профилями (фидбек: не заставлять ждать).
+      setBackendsLoading(true)
+      const backendsP = window.api.backends
+        .status(server.id, access)
+        .then((b) => {
+          setBackends(b)
+          setBackendsError(null)
+        })
+        .catch((err: unknown) => {
+          setBackends(null)
+          setBackendsError(err instanceof Error ? err.message : String(err))
+        })
+        .finally(() => setBackendsLoading(false))
       const result = await window.api.profiles.list(server.id, access)
       setProfiles(result.profiles ?? [])
+      await backendsP
       const refreshed = await window.api.servers.get(server.id)
       setHostKeyFingerprint(refreshed?.hostKeyFingerprint ?? null)
       if (refreshed) {
@@ -187,6 +235,15 @@ export function ServerSettings({
     if (shouldAutoConnectServer(server)) void load()
   }, [server.id])
 
+  useEffect(() => {
+    if (!keysQrUrl) return
+    const onEsc = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setKeysQrUrl(null)
+    }
+    document.addEventListener('keydown', onEsc)
+    return () => document.removeEventListener('keydown', onEsc)
+  }, [keysQrUrl])
+
   const create = async (): Promise<void> => {
     if (!accessReady) {
       setError(t('settings.errorPassword'))
@@ -194,6 +251,14 @@ export function ServerSettings({
     }
     if (!name.trim()) {
       setError(t('settings.errorName'))
+      return
+    }
+    // Pre-check коллизии имени (см. createBackendProfiles).
+    const nameCollision = futureNames.find((nm) =>
+      (profiles ?? []).some((p) => p.name === nm)
+    )
+    if (nameCollision) {
+      setError(t('settings.errorNameExists', { name: nameCollision }))
       return
     }
     setBusy(true)
@@ -376,9 +441,10 @@ export function ServerSettings({
     toastText(t('settings.copied'))
   }
 
-  const openRevoke = (profile: ServerProfile): void => {
+  const openRevoke = (profile: ServerProfile, forceFull = false): void => {
     setRevokeTarget(profile)
-    setRevokeStep('choose')
+    setRevokeFullOnly(forceFull)
+    setRevokeStep(forceFull ? 'confirm' : 'choose')
     setRevokeUrl(null)
   }
 
@@ -493,13 +559,13 @@ export function ServerSettings({
    */
   const expireSupported = (profiles ?? []).some((p) => p.expire_supported === true)
 
-  const updateServer = async (): Promise<void> => {
+  const updateServer = async (branch?: 'main' | 'dev' | 'experimental'): Promise<void> => {
     if (!accessReady) return
     setBusy(true)
     setUpdating(true)
     setError(null)
     try {
-      const result = await window.api.server.update(server.id, access)
+      const result = await window.api.server.update(server.id, access, branch)
       if (result.ok) {
         toastText(t('settings.updated'))
       } else {
@@ -510,7 +576,112 @@ export function ServerSettings({
     } finally {
       setBusy(false)
       setUpdating(false)
+      setUpdateMenuOpen(false)
     }
+  }
+
+  const reloadBackends = async (): Promise<void> => {
+    try {
+      setBackends(await window.api.backends.status(server.id, access))
+      setBackendsError(null)
+    } catch (err) {
+      setBackendsError(err instanceof Error ? err.message : String(err))
+    }
+    try {
+      const fresh = await window.api.profiles.list(server.id, access)
+      if (fresh.ok) setProfiles(fresh.profiles)
+    } catch {
+      // профили уже загружены ранее — молча оставляем как есть
+    }
+  }
+
+  const runBackendAction = async (
+    id: string,
+    action: () => Promise<unknown>
+  ): Promise<void> => {
+    if (!accessReady) return
+    setBusy(true)
+    setBackendBusy(id)
+    setError(null)
+    try {
+      await action()
+      await reloadBackends()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(false)
+      setBackendBusy(null)
+    }
+  }
+
+  const installHysteria2 = (): Promise<void> =>
+    runBackendAction('hysteria2-install', () =>
+      window.api.backends.hysteria2Install(server.id, access, true)
+    )
+  const uninstallHysteria2 = (): Promise<void> => {
+    setConfirmBackend(null)
+    return runBackendAction('hysteria2-uninstall', () =>
+      window.api.backends.hysteria2Uninstall(server.id, access)
+    )
+  }
+  const toggleSubbody = (): Promise<void> =>
+    runBackendAction('subbody', () =>
+      window.api.backends.hysteria2Subbody(
+        server.id,
+        access,
+        !(backends?.backends.hysteria2?.sub_body ?? false)
+      )
+    )
+  const installAwg = (): Promise<void> =>
+    runBackendAction('awg-install', () =>
+      window.api.backends.awgInstall(server.id, access, true)
+    )
+  const uninstallAwg = (): Promise<void> => {
+    setConfirmBackend(null)
+    return runBackendAction('awg-uninstall', () =>
+      window.api.backends.awgUninstall(server.id, access)
+    )
+  }
+  const toggle31 = (on: boolean): Promise<void> => {
+    setConfirmBackend(null)
+    return runBackendAction('awg31', () => window.api.backends.awg31(server.id, access, on))
+  }
+
+  // Revoke/Срок на карточках бэкендов: креденшелы per-profile, поэтому
+  // операции идут по всем профилям с грантом этого бэкенда.
+  const grantedBackendProfiles = (kind: 'hysteria2' | 'awg'): ServerProfile[] =>
+    (profiles ?? []).filter((p) => p.backends?.[kind])
+
+  const revokeBackendKeys = (kind: 'hysteria2' | 'awg'): Promise<void> => {
+    setConfirmBackend(null)
+    const targets = grantedBackendProfiles(kind)
+    return runBackendAction(`${kind}-revoke-all`, async () => {
+      for (const p of targets) {
+        if (kind === 'hysteria2') {
+          await window.api.backends.hysteria2Grant(server.id, access, p.name)
+        } else {
+          await window.api.backends.awgGrant(server.id, access, p.name)
+        }
+      }
+    })
+  }
+
+  const openBackendExpiry = (kind: 'hysteria2' | 'awg'): void => {
+    const granted = grantedBackendProfiles(kind)
+    if (granted.length === 0) return
+    if (granted.length === 1) {
+      setExpireChooser(null)
+      setExpireTarget(granted[0])
+    } else {
+      setExpireChooser(granted)
+    }
+  }
+
+  const showKeysQr = async (data: string): Promise<void> => {
+    setKeysQrUrl(data)
+    setKeysQrData(null)
+    const dataUrl = await QRCode.toDataURL(data, { width: 320, margin: 2 })
+    setKeysQrData(dataUrl)
   }
 
   const forgetHostKey = async (): Promise<void> => {
@@ -549,6 +720,145 @@ export function ServerSettings({
     }
   }
 
+  // Создание профиля бэкенда из карточки в «Создать профиль»:
+  // тот же профиль (имя/количество/срок из общей формы), плюс сразу
+  // выдаётся ключ выбранного протокола (hysteria2/awg attach).
+  const createBackendProfiles = async (kind: 'hysteria2' | 'awg'): Promise<void> => {
+    if (!accessReady) {
+      setError(t('settings.errorPassword'))
+      return
+    }
+    if (!name.trim()) {
+      setError(t('settings.errorName'))
+      return
+    }
+    // Pre-check: удаление по имени снимает ВСЕ ключи профиля (маршруты +
+    // бэкенды), поэтому коллизию имени ловим до создания, а не после.
+    const nameCollision = futureNames.find((nm) =>
+      (profiles ?? []).some((p) => p.name === nm)
+    )
+    if (nameCollision) {
+      setError(t('settings.errorNameExists', { name: nameCollision }))
+      return
+    }
+    if (!backends?.backends[kind]?.installed) {
+      setError(t('settings.backendsCreateNotInstalled'))
+      return
+    }
+    setBusy(true)
+    setCreating(true)
+    setError(null)
+    const beforeNames = new Set((profiles ?? []).map((p) => p.name))
+    let createdNames: string[] = []
+    let failedMessage: string | null = null
+    try {
+      const result = await window.api.profiles.create(server.id, access, {
+        name: name.trim(),
+        transport: 'xhttp',
+        count: Math.min(Math.max(Number(count) || 1, 1), 50),
+        ...(createExpire && isFutureDate(createExpire, Date.now())
+          ? { expire: createExpire }
+          : {})
+      })
+      createdNames = result.ok ? result.names : []
+      if (!result.ok) failedMessage = result.errors[0] ?? t('settings.createFailed')
+    } catch (err) {
+      failedMessage = err instanceof Error ? err.message : String(err)
+    }
+    if (createdNames.length === 0 && failedMessage) {
+      // Профили могли создаться даже при ошибке парсинга — перечитываем список.
+      try {
+        const fresh = await window.api.profiles.list(server.id, access)
+        setProfiles(fresh.profiles ?? [])
+        const newlyAppeared = (fresh.profiles ?? []).filter(
+          (p) => futureNames.includes(p.name) && !beforeNames.has(p.name)
+        )
+        if (newlyAppeared.length > 0) {
+          createdNames = newlyAppeared.map((p) => p.name)
+          failedMessage = null
+        }
+      } catch {
+        // список не критичен, ошибку создания уже показываем
+      }
+    }
+    const grantErrors: string[] = []
+    for (const nm of createdNames) {
+      try {
+        if (kind === 'hysteria2') {
+          await window.api.backends.hysteria2Grant(server.id, access, nm)
+        } else {
+          await window.api.backends.awgGrant(server.id, access, nm)
+        }
+      } catch (err) {
+        grantErrors.push(`${nm}: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+    try {
+      const fresh = await window.api.profiles.list(server.id, access)
+      setProfiles(fresh.profiles ?? [])
+      await reloadBackends()
+    } catch {
+      // не критично — основной результат уже показан
+    }
+    if (createdNames.length > 0 && grantErrors.length === 0) {
+      toastText(t('settings.backendsCreated', { count: createdNames.length }))
+      setName('')
+      setBackendSel(null)
+    } else if (createdNames.length > 0) {
+      setError(t('settings.backendsCreatedPartial'))
+    } else if (failedMessage) {
+      setError(failedMessage)
+    }
+    setBusy(false)
+    setCreating(false)
+  }
+
+  // Ключи бэкенд-профиля: карточки в списке профилей (дубликаты стиля
+  // бэкенд-блока, разделённые по протоколам).
+  const profileHystLink = async (profile: ServerProfile): Promise<string> => {
+    const res = await window.api.backends.hysteria2Link(server.id, access, profile.name)
+    if (!res.ok || !res.link) throw new Error(res.error ?? t('settings.createFailed'))
+    return res.link
+  }
+
+  const qrProfileHyst = async (profile: ServerProfile): Promise<void> => {
+    try {
+      await showKeysQr(await profileHystLink(profile))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const profileAwgConf = async (profile: ServerProfile): Promise<string> => {
+    const res = await window.api.backends.awgConf(server.id, access, profile.name)
+    if (!res.ok || !res.conf) throw new Error(res.error ?? t('settings.createFailed'))
+    return res.conf
+  }
+
+  const qrProfileAwg = async (profile: ServerProfile): Promise<void> => {
+    try {
+      await showKeysQr(stripAwgComments(await profileAwgConf(profile)))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const qrProfileAwgVpn = async (profile: ServerProfile): Promise<void> => {
+    try {
+      const conf = await profileAwgConf(profile)
+      await showKeysQr(
+        await buildAwgVpnUrl(conf, profile.name, {
+          clientPubKey: profile.backends?.awg?.client_public_key
+        })
+      )
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const hyst = backends?.backends.hysteria2
+  const awgEntry = backends?.backends.awg
+
   const transportLabel = (profile: ServerProfile): string =>
     profile.multi_route ? `${profile.transport} · ${profile.routes} ${t('settings.routes')}` : profile.transport
 
@@ -570,18 +880,54 @@ export function ServerSettings({
         <span className={styles.serverName}>{server.name}</span>
         {connected && (
           <div className={styles.headerActions}>
-            <Button
-              variant="secondary"
-              size="sm"
-              isDisabled={busy}
-              onPress={updateServer}
-            >
-              <CloudDownload
-                size={16}
-                className={updating ? styles.iconDownloading : undefined}
-              />
-              {updating ? t('settings.updating') : t('settings.updateServer')}
-            </Button>
+            <div className={styles.updateMenuWrap}>
+              <Button
+                variant="secondary"
+                size="sm"
+                isDisabled={busy}
+                onPress={() => setUpdateMenuOpen((open) => !open)}
+              >
+                <CloudDownload
+                  size={16}
+                  className={updating ? styles.iconDownloading : undefined}
+                />
+                {updating ? t('settings.updating') : t('settings.updateServer')}
+              </Button>
+              {updateMenuOpen && (
+                <div className={styles.updateMenu}>
+                  <button
+                    className={styles.updateMenuItem}
+                    disabled={busy}
+                    onClick={() => void updateServer()}
+                  >
+                    {t('settings.updateBranchAuto')}
+                    <span className={styles.updateMenuHint}>
+                      {t('settings.updateBranchAutoHint')}
+                    </span>
+                  </button>
+                  <button
+                    className={styles.updateMenuItem}
+                    disabled={busy}
+                    onClick={() => void updateServer('main')}
+                  >
+                    {t('settings.updateBranchMain')}
+                    <span className={styles.updateMenuHint}>
+                      {t('settings.updateBranchMainHint')}
+                    </span>
+                  </button>
+                  <button
+                    className={`${styles.updateMenuItem} ${styles.updateMenuBeta}`}
+                    disabled={busy}
+                    onClick={() => void updateServer('dev')}
+                  >
+                    {t('settings.updateBranchDev')}
+                    <span className={styles.updateMenuHint}>
+                      {t('settings.updateBranchDevHint')}
+                    </span>
+                  </button>
+                </div>
+              )}
+            </div>
             <Button
               variant="danger-soft"
               size="sm"
@@ -627,6 +973,18 @@ export function ServerSettings({
 
         {error && <div className={styles.error}>{t('settings.error')}: {error}</div>}
         {toast && <div className={styles.toast}>{toast}</div>}
+
+        {keysQrUrl && (
+          <div
+            className={styles.keysQrModal}
+            role="dialog"
+            aria-modal="true"
+            aria-label="QR"
+            onClick={() => setKeysQrUrl(null)}
+          >
+            {keysQrData ? <img src={keysQrData} alt="QR" /> : null}
+          </div>
+        )}
 
         {connected && (
           <>
@@ -679,7 +1037,10 @@ export function ServerSettings({
                   size="lg"
                   className={styles.createBtn}
                   isDisabled={busy || !accessReady || !name.trim()}
-                  onPress={create}
+                  onPress={() => {
+                    if (backendSel) void createBackendProfiles(backendSel)
+                    else void create()
+                  }}
                 >
                   {busy && <Spinner size="sm" />}
                   {t('settings.createBtn')}
@@ -706,7 +1067,7 @@ export function ServerSettings({
                 <p className={styles.sectionHint}>{t('settings.protocolPrompt')}</p>
                 <div className={styles.transportGrid}>
                   {PROTOCOLS.map((proto) => {
-                    const active = transport === proto.id
+                    const active = transport === proto.id && backendSel === null
                     return (
                       <button
                         key={proto.id}
@@ -715,7 +1076,10 @@ export function ServerSettings({
                           active ? styles.transportCardActive : ''
                         }`}
                         disabled={busy}
-                        onClick={() => setTransport(proto.id)}
+                        onClick={() => {
+                          setTransport(proto.id)
+                          setBackendSel(null)
+                        }}
                       >
                         <span className={styles.transportCardName}>
                           {proto.label}
@@ -733,6 +1097,48 @@ export function ServerSettings({
                   })}
                 </div>
               </div>
+              <div className={styles.backendCreate}>
+                <span className={styles.fieldLabel}>{t('settings.backendsTitle')}</span>
+                <p className={styles.sectionHint}>{t('settings.backendsCreateHint')}</p>
+                <div className={styles.backendCreateGrid}>
+                  <button
+                    type="button"
+                    className={`${styles.backendCreateCard} ${
+                      backendSel === 'hysteria2' ? styles.backendCreateCardActive : ''
+                    }`}
+                    disabled={busy || creating}
+                    onClick={() => setBackendSel(backendSel === 'hysteria2' ? null : 'hysteria2')}
+                  >
+                    <span className={`${styles.backendIcon} ${styles.backendIconHyst}`}>
+                      <img src={hystLogo} alt="Hysteria 2" className={styles.backendIconSvg} />
+                    </span>
+                    <span className={styles.backendCreateText}>
+                      <span className={styles.backendCreateName}>Hysteria 2</span>
+                      <span className={styles.backendCreateDesc}>
+                        {t('settings.backendsCreateHystDesc')}
+                      </span>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className={`${styles.backendCreateCard} ${
+                      backendSel === 'awg' ? styles.backendCreateCardActive : ''
+                    }`}
+                    disabled={busy || creating}
+                    onClick={() => setBackendSel(backendSel === 'awg' ? null : 'awg')}
+                  >
+                    <span className={`${styles.backendIcon} ${styles.backendIconAwg}`}>
+                      <img src={amneziaLogo} alt="AmneziaWG" className={styles.backendIconImg} />
+                    </span>
+                    <span className={styles.backendCreateText}>
+                      <span className={styles.backendCreateName}>AmneziaWG 3.1</span>
+                      <span className={styles.backendCreateDesc}>
+                        {t('settings.backendsCreateAwgDesc')}
+                      </span>
+                    </span>
+                  </button>
+                </div>
+              </div>
             </section>
 
             <section className={styles.listCard}>
@@ -742,7 +1148,8 @@ export function ServerSettings({
               )}
               {profiles!.length === 0 && <div className={styles.empty}>{t('settings.empty')}</div>}
               {profiles!.map((profile) => (
-                <div key={profile.name} className={styles.profileCard}>
+                <Fragment key={profile.name}>
+                <div className={styles.profileCard}>
                   <div className={styles.profileMain}>
                     <div className={styles.profileNameRow}>
                       <span className={styles.profileName}>{profile.name}</span>
@@ -847,11 +1254,367 @@ export function ServerSettings({
                     )}
                   </div>
                 </div>
+                  {profile.backends?.hysteria2 && (
+                    <div className={styles.backendProfileCard}>
+                      <div className={styles.backendProfileHead}>
+                        <span className={`${styles.backendIcon} ${styles.backendIconHyst}`}>
+                          <img src={hystLogo} alt="Hysteria 2" className={styles.backendIconSvg} />
+                        </span>
+                        <div className={styles.backendProfileTitle}>
+                          <div className={styles.backendName}>{profile.name}</div>
+                          <div className={styles.backendProfileSub}>
+                            {t('settings.backendsHyst')} · {t('settings.backendsHystSub')}
+                          </div>
+                          <div
+                            className={`${styles.backendState} ${
+                              hyst?.state === 'active' ? styles.backendStateOk : ''
+                            }`}
+                          >
+                            {hyst?.state === 'active'
+                              ? hyst.sni
+                                ? `${t('settings.backendsActive')} · SNI ${hyst.sni}`
+                                : `${t('settings.backendsActive')} · UDP ${hyst.port ?? '—'}`
+                              : t('settings.backendsNotInstalled')}
+                          </div>
+                        </div>
+                      </div>
+                      <div className={styles.backendActions}>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          isDisabled={busy || hyst?.state !== 'active'}
+                          onPress={() => void qrProfileHyst(profile)}
+                        >
+                          {t('keys.qr')}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          isDisabled={busy}
+                          onPress={() => openExpire(profile)}
+                        >
+                          <CalendarClock size={14} />
+                          {t('settings.backendsExpiryBtn')}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          isDisabled={busy || hyst?.state !== 'active'}
+                          onPress={() => openRevoke(profile, true)}
+                        >
+                          <ShieldOff size={14} />
+                          {t('settings.revokeBtn')}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="danger-soft"
+                          isDisabled={busy}
+                          onPress={() => setConfirmRemove(profile)}
+                        >
+                          <Trash2 size={14} />
+                          {t('settings.deleteKey')}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                  {profile.backends?.awg && (
+                    <div className={styles.backendProfileCard}>
+                      <div className={styles.backendProfileHead}>
+                        <span className={`${styles.backendIcon} ${styles.backendIconAwg}`}>
+                          <img src={amneziaLogo} alt="AmneziaWG" className={styles.backendIconImg} />
+                        </span>
+                        <div className={styles.backendProfileTitle}>
+                          <div className={styles.backendName}>{profile.name}</div>
+                          <div className={styles.backendProfileSub}>
+                            {t('settings.backendsAwg')} · {t('settings.backendsAwgSub')}
+                          </div>
+                          <div
+                            className={`${styles.backendState} ${
+                              awgEntry?.state === 'active' ? styles.backendStateOk : ''
+                            }`}
+                          >
+                            {awgEntry?.state === 'active'
+                              ? `${t('settings.backendsActive')} · UDP ${awgEntry.port ?? '—'}`
+                              : t('settings.backendsNotInstalled')}
+                          </div>
+                        </div>
+                      </div>
+                      <div className={styles.backendActions}>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          isDisabled={busy || awgEntry?.state !== 'active'}
+                          onPress={() => void qrProfileAwg(profile)}
+                        >
+                          {t('keys.qr')}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          isDisabled={busy || awgEntry?.state !== 'active'}
+                          onPress={() => void qrProfileAwgVpn(profile)}
+                        >
+                          {t('keys.backendsQrVpn')}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          isDisabled={busy}
+                          onPress={() => openExpire(profile)}
+                        >
+                          <CalendarClock size={14} />
+                          {t('settings.backendsExpiryBtn')}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          isDisabled={busy || awgEntry?.state !== 'active'}
+                          onPress={() => openRevoke(profile, true)}
+                        >
+                          <ShieldOff size={14} />
+                          {t('settings.revokeBtn')}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="danger-soft"
+                          isDisabled={busy}
+                          onPress={() => setConfirmRemove(profile)}
+                        >
+                          <Trash2 size={14} />
+                          {t('settings.deleteKey')}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </Fragment>
               ))}
+            </section>
+
+            <section>
+              <div className={styles.listCard}>
+                <h2 className={styles.sectionTitle}>
+                  {t('settings.backendsTitle')}
+                  <Chip size="sm" color="default">{t('settings.backendsDevBadge')}</Chip>
+                </h2>
+                <p className={styles.sectionHint}>{t('settings.backendsHint')}</p>
+                <p className={styles.hint}>{t('settings.backendsDevNote')}</p>
+                {backendsError !== null ? (
+                  <p className={styles.hint}>{t('settings.backendsUnsupported')}</p>
+                ) : backendsLoading || backends === null ? (
+                  <>
+                    <div className={styles.backendSkeleton} />
+                    <div className={styles.backendSkeleton} />
+                  </>
+                ) : (
+                  <>
+                    <div className={styles.backendsInner}>
+                      <div className={styles.backendBlock}>
+                        <div className={styles.backendHead}>
+                          <div className={`${styles.backendIcon} ${styles.backendIconHyst}`}>
+                            <img src={hystLogo} alt="Hysteria" className={styles.backendIconSvg} />
+                          </div>
+                          <div className={styles.backendTitle}>
+                            <div className={styles.backendName}>{t('settings.backendsHyst')}</div>
+                            <div className={styles.backendSub}>{t('settings.backendsHystSub')}</div>
+                          </div>
+                        </div>
+                        <div
+                          className={`${styles.backendState} ${
+                            hyst?.state === 'active' ? styles.backendStateOk : ''
+                          }`}
+                        >
+                          {hyst?.installed
+                            ? `${t('settings.backendsActive')} · UDP ${hyst.port ?? '—'} · ${
+                                hyst.version ?? ''
+                              }`
+                            : t('settings.backendsNotInstalled')}
+                        </div>
+                        <p className={styles.backendNote}>{t('settings.backendsHystNote')}</p>
+                        <div className={styles.backendActions}>
+                          {hyst?.installed ? (
+                            <>
+                              <Button
+                                size="sm"
+                                variant={hyst.sub_body ? 'secondary' : 'primary'}
+                                isDisabled={busy}
+                                onPress={toggleSubbody}
+                              >
+                                {hyst.sub_body
+                                  ? t('settings.backendsSubBodyOn')
+                                  : t('settings.backendsSubBodyOff')}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                isDisabled={busy}
+                                onPress={() => openBackendExpiry('hysteria2')}
+                              >
+                                <CalendarClock size={14} />
+                                {t('settings.expireBtn')}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                isDisabled={busy}
+                                onPress={() => setConfirmBackend('hysteria2-revoke-all')}
+                              >
+                                <ShieldOff size={14} />
+                                {t('settings.revokeBtn')}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="danger-soft"
+                                isDisabled={busy}
+                                onPress={() => setConfirmBackend('hysteria2-uninstall')}
+                              >
+                                {backendBusy === 'hysteria2-uninstall'
+                                  ? t('settings.backendsUninstalling')
+                                  : t('settings.backendsUninstall')}
+                              </Button>
+                            </>
+                          ) : (
+                            <Button size="sm" variant="primary" isDisabled={busy} onPress={installHysteria2}>
+                              {backendBusy === 'hysteria2-install'
+                                ? t('settings.backendsInstalling')
+                                : t('settings.backendsInstall')}
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className={styles.backendBlock}>
+                        <div className={styles.backendHead}>
+                          <div className={`${styles.backendIcon} ${styles.backendIconAwg}`}>
+                            <img src={amneziaLogo} alt="Amnezia" className={styles.backendIconImg} />
+                          </div>
+                          <div className={styles.backendTitle}>
+                            <div className={styles.backendName}>{t('settings.backendsAwg')}</div>
+                            <div className={styles.backendSub}>{t('settings.backendsAwgSub')}</div>
+                          </div>
+                        </div>
+                        <div
+                          className={`${styles.backendState} ${
+                            awgEntry?.state === 'active' ? styles.backendStateOk : ''
+                          }`}
+                        >
+                          {awgEntry?.installed
+                            ? `${t('settings.backendsActive')} · UDP ${awgEntry.port ?? '—'} · ${
+                                awgEntry.three_enabled
+                                  ? t('settings.backends31On')
+                                  : t('settings.backends31Off')
+                              }`
+                            : t('settings.backendsNotInstalled')}
+                        </div>
+                        <p className={styles.backendNote}>{t('settings.backendsAwgNote')}</p>
+                        <div className={styles.backendActions}>
+                          {awgEntry?.installed ? (
+                            <>
+                              <Button
+                                size="sm"
+                                variant={awgEntry.three_enabled ? 'secondary' : 'primary'}
+                                isDisabled={busy}
+                                onPress={() => setConfirmBackend('awg31-on')}
+                              >
+                                {t(
+                                  awgEntry.three_enabled
+                                    ? 'settings.backends31Disable'
+                                    : 'settings.backends31Enable'
+                                )}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                isDisabled={busy}
+                                onPress={() => openBackendExpiry('awg')}
+                              >
+                                <CalendarClock size={14} />
+                                {t('settings.expireBtn')}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                isDisabled={busy}
+                                onPress={() => setConfirmBackend('awg-revoke-all')}
+                              >
+                                <ShieldOff size={14} />
+                                {t('settings.revokeBtn')}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="danger-soft"
+                                isDisabled={busy}
+                                onPress={() => setConfirmBackend('awg-uninstall')}
+                              >
+                                {backendBusy === 'awg-uninstall'
+                                  ? t('settings.backendsUninstalling')
+                                  : t('settings.backendsUninstall')}
+                              </Button>
+                            </>
+                          ) : (
+                            <Button size="sm" variant="primary" isDisabled={busy} onPress={installAwg}>
+                              {backendBusy === 'awg-install'
+                                ? t('settings.backendsInstalling')
+                                : t('settings.backendsInstall')}
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
             </section>
           </>
         )}
       </div>
+
+      <AlertDialog.Root
+        isOpen={confirmBackend !== null}
+        onOpenChange={(open) => {
+          if (!open) setConfirmBackend(null)
+        }}
+      >
+        <AlertDialog.Backdrop>
+          <AlertDialog.Container>
+            <AlertDialog.Dialog className={styles.confirmDialog}>
+              <AlertDialog.Header>
+                <AlertDialog.Icon status="warning">
+                  <Zap size={20} />
+                </AlertDialog.Icon>
+                <AlertDialog.Heading>{t('settings.backendsConfirmTitle')}</AlertDialog.Heading>
+              </AlertDialog.Header>
+              <AlertDialog.Body>
+                {confirmBackend === 'hysteria2-uninstall' && t('settings.backendsConfirmHyst')}
+                {confirmBackend === 'awg-uninstall' && t('settings.backendsConfirmAwg')}
+                {confirmBackend === 'awg31-on' && t('settings.backendsConfirm31On')}
+                {confirmBackend === 'awg31-off' && t('settings.backendsConfirm31Off')}
+                {confirmBackend === 'hysteria2-revoke-all' &&
+                  t('settings.backendsConfirmRevokeHystAll')}
+                {confirmBackend === 'awg-revoke-all' && t('settings.backendsConfirmRevokeAwgAll')}
+              </AlertDialog.Body>
+              <AlertDialog.Footer>
+                <Button variant="secondary" onPress={() => setConfirmBackend(null)}>
+                  {t('dashboard.cancel')}
+                </Button>
+                <Button
+                  variant="danger"
+                  onPress={() => {
+                    if (confirmBackend === 'hysteria2-uninstall') void uninstallHysteria2()
+                    else if (confirmBackend === 'awg-uninstall') void uninstallAwg()
+                    else if (confirmBackend === 'awg31-on') void toggle31(true)
+                    else if (confirmBackend === 'awg31-off') void toggle31(false)
+                    else if (confirmBackend === 'hysteria2-revoke-all') void revokeBackendKeys('hysteria2')
+                    else if (confirmBackend === 'awg-revoke-all') void revokeBackendKeys('awg')
+                    setConfirmBackend(null)
+                  }}
+                >
+                  {t('settings.done')}
+                </Button>
+              </AlertDialog.Footer>
+            </AlertDialog.Dialog>
+          </AlertDialog.Container>
+        </AlertDialog.Backdrop>
+      </AlertDialog.Root>
 
       <AlertDialog.Root
         isOpen={confirmRemove !== null}
@@ -988,14 +1751,18 @@ export function ServerSettings({
                       variant="secondary"
                       isDisabled={revokeBusy}
                       onPress={() =>
-                        revokeStep === 'confirm' ? setRevokeStep('choose') : setRevokeTarget(null)
+                        revokeStep === 'confirm'
+                          ? (revokeFullOnly
+                              ? setRevokeTarget(null)
+                              : setRevokeStep('choose'))
+                          : setRevokeTarget(null)
                       }
                     >
                       {t('dashboard.cancel')}
                     </Button>
                     {revokeStep === 'confirm' && (
                       <Button
-                        variant="danger"
+                        variant="danger-soft"
                         isDisabled={revokeBusy}
                         onPress={() => void runRevoke('full')}
                       >
@@ -1013,9 +1780,12 @@ export function ServerSettings({
       </AlertDialog.Root>
 
       <AlertDialog.Root
-        isOpen={expireTarget !== null}
+        isOpen={expireTarget !== null || expireChooser !== null}
         onOpenChange={(open) => {
-          if (!open && !expireBusy) setExpireTarget(null)
+          if (!open && !expireBusy) {
+            setExpireTarget(null)
+            setExpireChooser(null)
+          }
         }}
       >
         <AlertDialog.Backdrop className={styles.blurBackdrop}>
@@ -1030,69 +1800,94 @@ export function ServerSettings({
                 </AlertDialog.Heading>
               </AlertDialog.Header>
               <AlertDialog.Body>
-                <p className={styles.fpHint}>{t('settings.expireHintBody')}</p>
-                {expireTarget && (
-                  <p className={styles.fpCurrent}>
-                    {t('settings.expireCurrent', {
-                      value: expireTarget.expire
-                        ? describeExpire(
-                            expireTarget.expire,
-                            false,
-                            Date.now(),
-                            expireTarget.expire_date
-                          ).date
-                        : t('settings.expireNever')
-                    })}
-                  </p>
+                {expireTarget === null && expireChooser !== null ? (
+                  <div>
+                    <p className={styles.fpHint}>{t('settings.backendsExpiryChoose')}</p>
+                    <div className={styles.revokeOptions}>
+                      {expireChooser.map((p) => (
+                        <Button
+                          key={p.name}
+                          className={styles.revokeOption}
+                          size="sm"
+                          variant="secondary"
+                          onPress={() => {
+                            setExpireTarget(p)
+                            setExpireChooser(null)
+                          }}
+                        >
+                          {p.name}
+                          {p.expire_date ? ` — ${p.expire_date}` : ''}
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <p className={styles.fpHint}>{t('settings.expireHintBody')}</p>
+                    {expireTarget && (
+                      <p className={styles.fpCurrent}>
+                        {t('settings.expireCurrent', {
+                          value: expireTarget.expire
+                            ? describeExpire(
+                                expireTarget.expire,
+                                false,
+                                Date.now(),
+                                expireTarget.expire_date
+                              ).date
+                            : t('settings.expireNever')
+                        })}
+                      </p>
+                    )}
+                    <div className={styles.fpField}>
+                      <span className={styles.fieldLabel}>{t('settings.expireSelect')}</span>
+                      <div className={styles.inlineRow}>
+                        {[7, 30, 90, 365].map((d) => (
+                          <Button
+                            key={d}
+                            size="sm"
+                            variant="secondary"
+                            isDisabled={expireBusy}
+                            onPress={() => setExpireDate(presetDate(d, Date.now()))}
+                          >
+                            {t('settings.expirePreset', { count: d })}
+                          </Button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className={styles.fpField}>
+                      <CalendarPicker
+                        value={expireDate}
+                        disabled={expireBusy}
+                        onChange={setExpireDate}
+                      />
+                      {expireDate && (
+                        <p className={styles.fpCurrent}>
+                          {t('settings.expirePicked', { date: expireDate })}
+                        </p>
+                      )}
+                    </div>
+                    <p className={styles.fpNote}>{t('settings.expireEnforced')}</p>
+                    {/* Снятие срока — отдельное осознанное действие в теле диалога:
+                        раньше оно жило в футере рядом с «Сохранить» и требовало
+                        второй кнопки «Готово», что путало (одно действие — два клика). */}
+                    {expireTarget?.expire ? (
+                      <div className={styles.expireClearRow}>
+                        <Button
+                          variant="danger-soft"
+                          size="sm"
+                          isDisabled={expireBusy}
+                          onPress={() => void applyExpire(null)}
+                        >
+                          <CalendarX size={14} />
+                          {t('settings.expireClear')}
+                        </Button>
+                        <span className={styles.expireClearHint}>
+                          {t('settings.expireClearHint')}
+                        </span>
+                      </div>
+                    ) : null}
+                  </>
                 )}
-                <div className={styles.fpField}>
-                  <span className={styles.fieldLabel}>{t('settings.expireSelect')}</span>
-                  <div className={styles.inlineRow}>
-                    {[7, 30, 90, 365].map((d) => (
-                      <Button
-                        key={d}
-                        size="sm"
-                        variant="secondary"
-                        isDisabled={expireBusy}
-                        onPress={() => setExpireDate(presetDate(d, Date.now()))}
-                      >
-                        {t('settings.expirePreset', { count: d })}
-                      </Button>
-                    ))}
-                  </div>
-                </div>
-                <div className={styles.fpField}>
-                  <CalendarPicker
-                    value={expireDate}
-                    disabled={expireBusy}
-                    onChange={setExpireDate}
-                  />
-                  {expireDate && (
-                    <p className={styles.fpCurrent}>
-                      {t('settings.expirePicked', { date: expireDate })}
-                    </p>
-                  )}
-                </div>
-                <p className={styles.fpNote}>{t('settings.expireEnforced')}</p>
-                {/* Снятие срока — отдельное осознанное действие в теле диалога:
-                    раньше оно жило в футере рядом с «Сохранить» и требовало
-                    второй кнопки «Готово», что путало (одно действие — два клика). */}
-                {expireTarget?.expire ? (
-                  <div className={styles.expireClearRow}>
-                    <Button
-                      variant="danger-soft"
-                      size="sm"
-                      isDisabled={expireBusy}
-                      onPress={() => void applyExpire(null)}
-                    >
-                      <CalendarX size={14} />
-                      {t('settings.expireClear')}
-                    </Button>
-                    <span className={styles.expireClearHint}>
-                      {t('settings.expireClearHint')}
-                    </span>
-                  </div>
-                ) : null}
               </AlertDialog.Body>
               <AlertDialog.Footer>
                 {/* Отмена — слева и всегда только закрывает диалог, без действий. */}

@@ -57,6 +57,25 @@ Xray 以系统用户 `xray` 运行。Drop-in
 - 不要把 local-only URL 交给外部客户端；
 - 没有理解 nginx 配置前，不要在同一域名上托管第三方面板或代理。
 
+## 多协议后端安全
+
+可选后端（Hysteria 2、AmneziaWG）遵循与 Xray 服务相同的信任模型，并按后端细化：
+
+| 路径或类别 | 属主与权限 |
+|---|---|
+| `/usr/local/etc/xrayebator/backends.json` | `root:root 644` —— 刻意不含机密（只有端口、版本、开关）；`xray` 服务账户在订阅处理器中读取它 |
+| `/usr/local/etc/xrayebator/backends/hysteria/` | `root:hysteria 750`；`server.yaml` 与证书 `0640 root:hysteria` —— 服务必须能读，其他任何人不触碰 |
+| `/usr/local/etc/xrayebator/backends/awg/` | `root:root 700`；`awg0.conf` 与 `server-params.json` 为 `0600` —— 服务器私钥与 peer 机密 |
+| Hysteria 占位凭据 | `_xrayebator_placeholder`，随机密码存于 `0600` 文件；仅用于避免空 auth 映射，不签发给任何客户端 |
+| certbot 续期 deploy-hook | `/etc/letsencrypt/renewal-hooks/deploy/xrayebator-hysteria.sh`，root `0755`；把续期后的证书复制进后端目录并重启后端 |
+| `/etc/amnezia/amneziawg/awg0.conf` | 指向受管文件的 symlink —— 发行版 `awg-quick@awg0` 单元经它读取；不存在第二份配置副本 |
+
+Hysteria 以专用用户 `hysteria` 运行，带 `AmbientCapabilities=CAP_NET_BIND_SERVICE` 与
+`NoNewPrivileges=true`；QUIC 缓冲 sysctl 位于 `/etc/sysctl.d/99-xrayebator-hysteria.conf`。
+AmneziaWG 需要 `net.ipv4.ip_forward=1`（独立 sysctl 文件），并通过接口配置的
+`PostUp`/`PostDown` 添加作用于后端子网的 MASQUERADE/FORWARD 规则。后端仅在操作者显式操作时
+安装，通过对应 `*-uninstall` 命令移除；`uninstall.sh` 不参与此流程。
+
 ## VPS 的 SSH 访问
 
 Xrayebator 可以直接以 `root` 安装，但更好的做法是使用权限范围受限的独立用户。

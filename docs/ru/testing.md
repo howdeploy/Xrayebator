@@ -16,7 +16,7 @@ for test_file in validation/*.sh; do bash "$test_file" || exit; done
 
 ## Что покрывают тесты
 
-В `validation/` лежат 28 статических и локальных регрессионных тестов:
+В `validation/` лежат 34 статических и локальных регрессионных теста:
 
 | Тест | Что проверяет |
 |---|---|
@@ -24,7 +24,9 @@ for test_file in validation/*.sh; do bash "$test_file" || exit; done
 | `test-project-update-rollback.sh` | Откат неудачного обновления проекта |
 | `test-xhttp-route-path-repair.sh` | Починку путей XHTTP-маршрутов при миграции |
 | `test-multiroute-argument-preservation.sh` | Сохранение transport-аргументов multiroute-профиля |
-| `test-happ-subscription-static.sh` | Обработчик HAPP-подписки |
+| `test-happ-subscription-static.sh` | Обработчик HAPP-подписки (плейсхолдеры routing, порядок валидации) |
+| `test-happ-client-routing.sh` | HAPP клиентский split-профиль: генератор из bypass-наборов (258 доменов, плейсхолдеры, `geoip:ru`), nginx-буферы, проводка меню |
+| `test-legacy-profile-port-sync.sh` | Легаси-профили без `routes` получают обновления SNI/порта |
 | `test-subscription-server-name.sh` | Имя сервера подписки в клиенте |
 | `test-fingerprint-subscription-sync.sh` | Синхронность маршрутов и подписки при смене fingerprint |
 | `test-dead-stealth-route-pruning.sh` | Отсечение мёртвых stealth-маршрутов |
@@ -36,7 +38,10 @@ for test_file in validation/*.sh; do bash "$test_file" || exit; done
 | `test-installer-network-fallbacks.sh` | Сетевые fallback'и установщика |
 | `test-bbr-removal-migration.sh` | Безопасное удаление удалённого BBR/TCP tuning на всех путях |
 | `test-legacy-udp443-migration.sh` | Одноразовое удаление legacy правила блокировки UDP/443 |
-| `test-main-menu-numbering.sh` | Нумерацию пунктов меню и их соответствие обработчикам |
+| `test-main-menu-numbering.sh` | Нумерацию пунктов меню и их соответствие обработчикам (1..13 с бэкенд-пунктами) |
+| `test-backend-registry.sh` | Реестр бэкендов (мультипротокольный этап): source-mode CRUD через `safe_jq_write`, чтение installed/field, lifecycle-точка как безопасный no-op, форма JSON `backend-status` |
+| `test-hysteria2-lifecycle.sh` | Бэкенд Hysteria 2: рендер `server.yaml` (userpass-карта, placeholder-fallback), модель безопасности юнита, arch-маппинг, TLS-детект, события грантов/revoke/expire-restore, реген deleted при заранее удалённом файле профиля, created = no-op (без авто-выдачи), pure-строитель `hysteria2://`, проводка диспетчера и подписки |
+| `test-awg-lifecycle.sh` | Бэкенд AmneziaWG: junk-диалект по умолчанию Amnezia (Jc=5, Jmin=10, Jmax=50, H1–H4=1..4, S1–S4 уникальные), генерация ключей, рендер серверного конфига (PostUp MASQUERADE, без peer-ов при установке), аллокация адресов, содержимое клиентского `.conf`, события revoke/expire/restore, реген deleted при заранее удалённом файле профиля, created = no-op (без авто-выдачи), диспетчер CLI |
 | `test-main-readiness-regressions.sh` | Регрессии readyness после аудита: certbot-manifest, UFW manifest, nginx rollback, привилегии, SSH-порт |
 | `test-sni-change-cli.sh` | CLI `sni-change`: JSON stdout, Reality, XHTTP host, синхронизацию, rollback |
 | `test-bypass-cli.sh` | CLI `bypass`: JSON stdout, routing-правила, add с проверкой SNI |
@@ -46,6 +51,7 @@ for test_file in validation/*.sh; do bash "$test_file" || exit; done
 | `test-quickstart-email-and-inspect.sh` | Явный email-режим `quickstart` (`--without-email` без фиктивного адреса) и read-only инварианты `inspect --json` |
 | `test-quickstart-migration-parity.sh` | `quickstart` гоняет те же критичные миграции, что и `main_menu` |
 | `test-quickstart-subscription-port.sh` | `quickstart` использует canonical helper базы подписки и не возвращается к несвязанному hardcode URL |
+| `test-quickstart-tls-fallback.sh` | Ветку graceful-degradation `http_tls`: переключение SUB_TLS_MODE, HTTP-only vhost (без ssl и proxy), маркеры с учётом режима, renew-таймер только в ip_tls и degraded-метаданные JSON |
 | `test-audit-functional.sh` | Функциональные regression-проверки аудита HowDeploy (P0/P1) |
 | `test-audit-privilege-regressions.sh` | Regression границ привилегий |
 
@@ -105,7 +111,7 @@ npm test              # Vitest unit-тесты
 
 Три независимых workflow:
 
-- **ci-linux.yml** — Bash validation: `bash -n` всех скриптов + все 28 `validation/test-*.sh` на
+- **ci-linux.yml** — Bash validation: `bash -n` всех скриптов + все 34 `validation/test-*.sh` на
   ubuntu-24.04. Запускается на push в `main`, `dev`, `experimental` и на pull request.
 - **release.yml** — Electron сборка (Windows/macOS/Linux). Запускается только на теги `v*` и manual
   dispatch. Сначала `preflight`: проверяет наличие текста релиза `docs/releases/<tag>.en.md` и

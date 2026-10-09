@@ -18,8 +18,11 @@ import type {
 } from '@shared/types'
 import type { ServerConnectionMetadata, ServerStore } from './core/servers'
 import { Deployer } from './core/deployer'
-import { fetchSubscription } from './core/subscription'
+import { fetchSubscription, parseSubscription } from './core/subscription'
+import { shellCommand } from './core/shell-command'
+import { SshClient } from './core/ssh-client'
 import { ProfileManager } from './core/profiles'
+import { BackendManager } from './core/backend-manager'
 import { ServerManager } from './core/server-manager'
 import { ServerInspector } from './core/server-inspector'
 import { probePortsFor } from './core/probe-ports'
@@ -268,6 +271,8 @@ export function registerIpcHandlers({ store }: IpcContext): void {
           privateKeyPersisted: access.privateKeyPersisted ?? null,
           passwordCredentialId: access.passwordCredentialId ?? null,
           passwordPersisted: access.passwordPersisted ?? null,
+          setupStatus: result.degraded ? 'partial' : 'ready',
+          degraded: result.degraded,
           hostKeyFingerprint: store.getHostKey(payload.host, payload.port) ?? null
         })
 
@@ -288,12 +293,58 @@ export function registerIpcHandlers({ store }: IpcContext): void {
     })()
   })
 
+  // http_tls-fallback: ключи грузятся curl'ом на самом server'е (loopback).
+  // Переиспользуем resolveStoredSshPassword через credentialsFor — как SSH-страницы.
+  const fetchSubscriptionViaServer = async (
+    serverId: string,
+    url: string
+  ): Promise<{ keys: ReturnType<typeof parseSubscription>; hysteria2Links: string[] }> => {
+    const server = store.get(serverId)
+    if (!server) throw new Error('Сервер не найден')
+    const access: SshAccessInput = {
+      username: server.username,
+      authMethod: server.authMethod ?? 'password',
+      passwordCredentialId: server.passwordCredentialId ?? undefined,
+      passwordPersisted: server.passwordPersisted ?? false,
+      privilegeMode: server.privilegeMode ?? 'root'
+    }
+    const { credentials } = await credentialsFor(server, server, access)
+    const client = new SshClient(credentials)
+    try {
+      await client.connect()
+      const res = await client.exec(
+        shellCommand('curl', ['-sS', '--connect-timeout', '5', '--max-time', '30', url])
+      )
+      if (res.code !== 0 || !res.stdout.trim()) {
+        throw new Error(
+          `Subscription недоступна локально на сервере (curl код ${res.code}): ${res.stderr.trim() || 'пусто'}`
+        )
+      }
+      const keys = parseSubscription(res.stdout)
+      if (!keys.length) throw new Error('Subscription вернул пустой список ключей')
+      return { keys, hysteria2Links: [] }
+    } finally {
+      client.close()
+    }
+  }
+
   ipcMain.handle('subscription:fetch', async (_e, serverId: string) => {
     const server = store.get(serverId)
     if (!server) throw new Error('Сервер не найден')
-    const keys = await fetchSubscription(server.subscriptionUrl)
+    // http_tls-fallback: публичный URL недоступен с клиента — ключи тянутся
+    // curl'ом на самом server'е (loopback 127.0.0.1:8080).
+    const { keys, hysteria2Links } = server.degraded
+      ? await fetchSubscriptionViaServer(serverId, server.subscriptionUrl)
+      : await fetchSubscription(server.subscriptionUrl)
     store.updateKeys(serverId, keys)
-    return { serverId, subscriptionUrl: server.subscriptionUrl, keys }
+    // hysteria2-ключи персистятся рядом с vless — страница «Ключи» открывается мгновенно.
+    const updated = store.updateBackendKeys(serverId, { hysteria2Keys: hysteria2Links })
+    return {
+      serverId,
+      subscriptionUrl: server.subscriptionUrl,
+      keys,
+      hysteria2Links: updated?.hysteria2Keys ?? hysteria2Links
+    }
   })
 
   ipcMain.handle('servers:import', async (event, payload: ImportServerPayload) => {
@@ -319,7 +370,8 @@ export function registerIpcHandlers({ store }: IpcContext): void {
       credentials,
       async (url) => {
         emitStep('subscription')
-        return fetchSubscription(url)
+        const fetched = await fetchSubscription(url)
+        return fetched.keys
       },
       emitLog
     )
@@ -461,6 +513,119 @@ export function registerIpcHandlers({ store }: IpcContext): void {
     }
   )
 
+  const backendManagerFor = async (
+    serverId: string,
+    access: SshAccessInput
+  ): Promise<BackendManager> => {
+    const server = store.get(serverId)
+    if (!server) throw new Error('Сервер не найден')
+    const { credentials } = await credentialsFor(server, server, access)
+    return new BackendManager(credentials)
+  }
+
+  // Кэш AWG-конфигов персистится в карточке сервера (server.awgConfs) —
+  // страница «Ключей» показывает их мгновенно и обновляет в фоне.
+  ipcMain.handle('backends:status', async (_e, serverId: string, access: SshAccessInput) => {
+    const manager = await backendManagerFor(serverId, access)
+    const result = await manager.status()
+    if (!result.ok) throw new Error(result.error ?? 'Не удалось получить статус бэкендов')
+    return result
+  })
+
+  ipcMain.handle(
+    'backends:hysteria2Grant',
+    async (_e, serverId: string, access: SshAccessInput, name: string) => {
+      if (!name) throw new Error('Не указано имя профиля')
+      const manager = await backendManagerFor(serverId, access)
+      return manager.hysteria2Grant(name)
+    }
+  )
+
+  ipcMain.handle(
+    'backends:awgGrant',
+    async (_e, serverId: string, access: SshAccessInput, name: string) => {
+      if (!name) throw new Error('Не указано имя профиля')
+      const manager = await backendManagerFor(serverId, access)
+      const result = await manager.awgGrant(name)
+      if (result.ok) store.updateBackendKeys(serverId, { awgConfs: {} })
+      return result
+    }
+  )
+
+  ipcMain.handle(
+    'backends:awgConf',
+    async (_e, serverId: string, access: SshAccessInput, name: string) => {
+      if (!name) throw new Error('Не указано имя профиля')
+      const manager = await backendManagerFor(serverId, access)
+      const result = await manager.awgConf(name)
+      if (!result.ok) throw new Error(result.error ?? 'Не удалось получить конфиг AWG')
+      if (result.conf) {
+        const current = store.get(serverId)
+        store.updateBackendKeys(serverId, {
+          awgConfs: { ...(current?.awgConfs ?? {}), [name]: result.conf }
+        })
+      }
+      return result
+    }
+  )
+
+  ipcMain.handle(
+    'backends:awg31',
+    async (_e, serverId: string, access: SshAccessInput, on: boolean) => {
+      const manager = await backendManagerFor(serverId, access)
+      const result = await manager.awg31(Boolean(on))
+      if (result.ok) store.updateBackendKeys(serverId, { awgConfs: {} })
+      return result
+    }
+  )
+
+  ipcMain.handle(
+    'backends:hysteria2Install',
+    async (_e, serverId: string, access: SshAccessInput, grantAll: boolean) => {
+      const manager = await backendManagerFor(serverId, access)
+      return manager.hysteria2Install(Boolean(grantAll))
+    }
+  )
+
+  ipcMain.handle('backends:hysteria2Uninstall', async (_e, serverId: string, access: SshAccessInput) => {
+    const manager = await backendManagerFor(serverId, access)
+    return manager.hysteria2Uninstall()
+  })
+
+  ipcMain.handle(
+    'backends:awgInstall',
+    async (_e, serverId: string, access: SshAccessInput, grantAll: boolean) => {
+      const manager = await backendManagerFor(serverId, access)
+      return manager.awgInstall(Boolean(grantAll))
+    }
+  )
+
+  ipcMain.handle('backends:awgUninstall', async (_e, serverId: string, access: SshAccessInput) => {
+    const manager = await backendManagerFor(serverId, access)
+    const result = await manager.awgUninstall()
+    if (result.ok) store.updateBackendKeys(serverId, { awgConfs: {} })
+    return result
+  })
+
+  ipcMain.handle(
+    'backends:hysteria2Subbody',
+    async (_e, serverId: string, access: SshAccessInput, on: boolean) => {
+      const manager = await backendManagerFor(serverId, access)
+      return manager.hysteria2Subbody(Boolean(on))
+    }
+  )
+
+  ipcMain.handle(
+    'backends:hysteria2Link',
+    async (_e, serverId: string, access: SshAccessInput, name: string) => {
+      if (!name) throw new Error('Не указано имя профиля')
+      const manager = await backendManagerFor(serverId, access)
+      const result = await manager.hysteria2Link(name)
+      if (!result.ok) throw new Error(result.error ?? 'Не удалось получить hysteria2-ссылку')
+      return result
+    }
+  )
+
   const serverManagerFor = async (
     serverId: string,
     access: SshAccessInput
@@ -473,8 +638,13 @@ export function registerIpcHandlers({ store }: IpcContext): void {
 
   ipcMain.handle(
     'server:update',
-    async (_e, serverId: string, access: SshAccessInput): Promise<ServerMaintenanceResult> => {
-      return (await serverManagerFor(serverId, access)).update()
+    async (
+      _e,
+      serverId: string,
+      access: SshAccessInput,
+      branch?: string
+    ): Promise<ServerMaintenanceResult> => {
+      return (await serverManagerFor(serverId, access)).update(branch)
     }
   )
 

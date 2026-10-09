@@ -106,3 +106,25 @@ describe('normalizeInspection', () => {
     ).toBeNull()
   })
 })
+
+describe('http_tls fallback (hoster-блокировка http-01)', () => {
+  const fallbackInspection: InspectionSnapshot = {
+    ...baseInspection,
+    subscription_mode: 'http_tls',
+    subscription_url: 'http://203.0.113.10:8080/sub/token'
+  }
+
+  it('treats http_tls as a working fallback subscription, not a public one', () => {
+    const result = normalizeInspection(fallbackInspection, routes)
+    expect(result.diagnostics.subscription).toBe('fallback')
+    // Мёртвый публичный URL не сохраняется: снаружи на него никто не слушает,
+    // реальный канал доставки ключей — SSH.
+    expect(result.subscriptionUrl).toBe('')
+    expect(result.keys).toHaveLength(1)
+    expect(result.setupStatus).toBe('partial')
+  })
+
+  it('never probes the http_tls endpoint from the user network', () => {
+    expect(subscriptionProbeTarget(fallbackInspection)).toBeNull()
+  })
+})

@@ -6,7 +6,8 @@
 
 <p>
 <strong>入站</strong> · <strong>配置档</strong> · <strong>订阅</strong> ·
-<strong>分流</strong> · <strong>级联</strong>
+<strong>分流</strong> · <strong>级联</strong> · <strong>hysteria2</strong> ·
+<strong>amneziawg</strong>
 </p>
 
 <p>
@@ -27,7 +28,9 @@
 <strong>一个 bash 脚本，把干净的 VPS 变成私人 VLESS Reality 服务器。</strong><br>
 Xrayebator 安装 Xray-core，在随机端口上建立 Reality 入站，并为新安装创建包含七条线路的标准
 schema-v3 HAPP 配置档。已有七线路配置档在满足存活线路数量时可能被复用，因此排查 label 或 schema
-时请检查配置档 JSON。客户端通过一条 HTTPS 订阅链接获取线路。当前服务器版本线为 3.0；可选
+时请检查配置档 JSON。客户端通过一条 HTTPS 订阅链接获取线路。自多协议阶段起，同一台 VPS 可选装
+Hysteria 2（高速 UDP）与 AmneziaWG 2.0/3.1（系统级 VPN）后端——菜单项 11–13，每配置档授权纳入统一的
+revoke/expire 生命周期。当前服务器版本线为 3.0；可选
 Electron 桌面应用单独版本化。
 </p>
 

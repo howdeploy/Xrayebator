@@ -44,7 +44,11 @@ export function maskSubscriptionUrl(url: string): string {
 export function subscriptionProbeTarget(snapshot: InspectionSnapshot): string | null {
   const url = snapshot.subscription_url?.trim() ?? ''
   if (!url) return null
+  // http_tls-fallback (quickstart при hoster-блокировке http-01): URL публичный,
+  // но HTTP — рабочий endpoint с server'а; probe из интернета пользователя может
+  // не пройти, поэтому сохраняем URL как metadata, но не считаем его «public».
   if (snapshot.subscription_mode === 'local_only') return null
+  if (snapshot.subscription_mode === 'http_tls') return null
   if (isLocalSubscriptionUrl(url)) return null
   if (!url.startsWith('https://')) return null
   return url
@@ -55,6 +59,10 @@ function subscriptionState(
   probe: SubscriptionProbe
 ): SubscriptionState {
   if (!snapshot.subscription_installed) return 'missing'
+  // http_tls-fallback: endpoint работает с server'а (локальный curl подтверждён
+  // quickstart'ом), но из интернета пользователя может быть недоступен —
+  // честный отдельный статус, а не «public» и не «localOnly».
+  if (snapshot.subscription_mode === 'http_tls') return 'fallback'
   const publicUrl = subscriptionProbeTarget(snapshot) !== null
   if (!publicUrl) {
     return snapshot.subscription_mode === 'local_only' ? 'localOnly' : 'missing'
@@ -98,8 +106,12 @@ export function normalizeInspection(
 
   // Публичный, но недосягаемый URL сохраняем как metadata — карточка помнит
   // endpoint; Keys-страница ориентируется на diagnostics.subscription.
+  // http_tls-fallback URL НЕ сохраняем: снаружи на него никто не слушает,
+  // мёртвый https-URL вводит в заблуждение (реальный канал — SSH).
   const subscriptionUrl =
-    subscription === 'localOnly' || subscription === 'missing' ? '' : publicUrl
+    subscription === 'localOnly' || subscription === 'missing' || subscription === 'fallback'
+      ? ''
+      : publicUrl
 
   return {
     setupStatus: ready ? 'ready' : 'partial',

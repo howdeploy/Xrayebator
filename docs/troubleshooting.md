@@ -231,9 +231,116 @@ count and provider limits. Grow the user count gradually and watch the load.
 Multiple profiles can be used at once: different subscriptions, SNIs, ports and routes give more
 options for bypassing blocks, but they share the same VPS resources.
 
+## Hysteria 2 service does not start
+
+Read the reason first — the install rolls its artifacts back, so reproduce the state:
+
+```bash
+journalctl -u hysteria-server.service --no-pager | tail -20
+```
+
+Known failure modes, all fixed in the generator but relevant when hand-editing configs:
+
+- `invalid config: auth.userpass: empty auth userpass` — the auth map key is `userpass`, **not**
+  `users`, and an empty map is rejected. The generator always renders at least the
+  `_xrayebator_placeholder` user while no profile has a grant; if you hand-edit `server.yaml`, keep
+  a non-empty map under `userpass:`.
+- `Changing to the requested working directory failed: Permission denied` — the backend directory
+  must be `root:hysteria 0750`; a `chmod` without the matching `chown` keeps it `root:root` and the
+  unit cannot enter it.
+- Certificate unreadable — in `le` mode the certificates are copies owned `root:hysteria 0640`; the
+  renewal deploy-hook refreshes them.
+
+After fixing, the clean path is `hysteria2-uninstall` followed by a fresh `hysteria2-install`.
+
+## AWG: interface is up but there is no `latest handshake`
+
+AmneziaWG reports parameter mismatches by silence: the peer simply never appears with a handshake.
+Check the must-match group — these must be identical on the server and in every client `.conf`:
+
+- `S1`–`S4` (≥ 12 for 3.x engines), `H1`–`H4`;
+- any 3.x keys present on the other side: `HeaderProtectionKey` (3.0) and `RandomTrailers` (3.1)
+  must match byte-for-byte. Xrayebator emits them only in 3.1 mode (`awg-31 --on`, on by default
+  for new installs); a mismatch usually means the client `.conf` predates a 3.1 switch —
+  re-download it — or was mixed with a hand-made or third-party one;
+- the client application version: `RandomTrailers`-era configs need AmneziaVPN ≥ 5.0.1.5; older
+  clients may refuse to import the config entirely.
+
+Then split the debug zones: `awg show awg0` on the server — if the peer is listed with a handshake
+but no traffic passes, the problem is in the `awg-quick`/routing/firewall zone (`ip_forward`,
+MASQUERADE interface), not in the protocol parameters.
+
+Before blaming the parameters, verify the network path itself. The AWG socket lives in kernel
+space, so the UDP port is invisible to `ss`/`netstat` — the only way to see anything is a capture
+on the server while the client tries to connect:
+
+```bash
+tcpdump -l -ni <iface> 'udp port <port>'
+```
+
+Nothing captured → the packets never arrive: carrier/DPI filtering (a typical RU pattern is
+Hysteria 2 on UDP 443 passing while a high random UDP port is silently dropped). The capture shows
+packets but `awg show` still reports no handshake → the client is sending garbage: re-issue the
+`.conf`, check the app version (3.1 params need AmneziaVPN ≥ 5.0.1.5), or temporarily run
+`awg-31 --off` and re-import to test 2.0 compatibility. Note that `tcpdump` without `-l`
+block-buffers its output when redirected to a file — early packets may not appear until the buffer
+flushes.
+
+## AmneziaVPN (the full app) fails with error 1000, the standalone client works
+
+`error 1000` is the app's generic `AndroidError`; the phone-side log then shows
+`VPN config format error: No value for client_ip`. The app's native pipeline only accepts its own
+export shape — the `amnezia-awg2` container, server-side junk fields next to `last_config`,
+`protocol_version` and a compressed (`qCompress`) payload. A raw `.conf` (or a bare `vpn://`
+without those fields) is stored, but the client part never reaches the tunnel. The desktop GUI's
+«QR · AmneziaVPN» code builds exactly that shape — use it instead of pasting a `.conf`. The junk
+group Xrayebator installs mirrors the Amnezia defaults (`Jc` 5, `Jmin` 10, `Jmax` 50,
+`H1`–`H4` = 1..4) precisely because the app's go-tunnel applies custom junk incompletely.
+
+## AWG install fails
+
+- The primary path is the `amnezia/ppa` PPA; on distribution series without PPA builds Xrayebator
+  falls back to a source build. For kernels ≥ 5.6 that build needs the **full** `linux-source`
+  package — kernel headers alone are not enough (the module build links the whole source tree).
+- Verify after install: `lsmod | grep amneziawg` shows the module, `awg --version` answers.
+- The `awg-quick@awg0` unit reads `/etc/amnezia/amneziawg/awg0.conf` — Xrayebator maintains it as a
+  symlink to `/usr/local/etc/xrayebator/backends/awg/awg0.conf`. Deleting the symlink breaks the
+  unit while the backend config remains valid.
+- On uninstall the packages and the kernel module deliberately stay in the system; only the
+  interface, config, symlink and firewall rule are removed.
+
+## The subscription has no `hysteria2://` line
+
+`hysteria2://` links are appended to both subscription bodies only when all of these hold:
+
+1. the Hysteria 2 backend is installed (`xrayebator hysteria2-status`);
+2. the profile has a grant (`profiles` JSON → `.backends.hysteria2.password`);
+3. the registry flag `sub_body` is `true` (the kill switch — flip it in `backends.json`, the
+   handler re-reads the registry on every request, no service restart needed).
+
+An expired or disabled profile never gets the line; a revoked profile gets a new credential on the
+next subscription fetch. A `404` on a previously working token URL after a revoke is expected — the
+token itself was rotated.
+
 ## Quickstart fails with `apt-get install nginx failed`
 
 On a freshly provisioned Ubuntu VPS, `unattended-upgrades` may hold the apt/dpkg lock for ~10 minutes and invoke `dpkg` separately for every package, so a plain flock check slips into the gap between packages. The quickstart path now also waits for an active `unattended-upgrade` worker (12-minute budget) and passes `-o DPkg::Lock::Timeout=180` to `apt-get install`. Rerun the deployment when it reports the lock is still busy, or wait for the queue to finish. `validation/test-apt-lock-race.sh` locks these behaviors.
+
+## Quickstart reports `certbot failed: ... Connection reset by peer` but still succeeds
+
+Let's Encrypt could not fetch the http-01 challenge — most often the hoster's
+network filters port 80 for foreign sources (verified with tcpdump and
+multi-node probes: our firewall and nginx are fine, the reset happens upstream).
+Since this degradation the deploy finishes in `http_tls` fallback mode: the
+result JSON carries `degraded:true` and `tls_mode:"http_tls"`, the GUI shows the
+server as *Partially configured*, and keys are loaded over SSH. There is **no
+public subscription URL at all** in this mode — no leakable HTTP link exists.
+To restore
+HTTPS, ask the hoster to unblock port 80 for Let's Encrypt validation ranges
+(or point a domain at the server and use the domain TLS mode), then re-run the
+deploy; the run is idempotent and issues the LE certificate when the challenge
+becomes reachable. `validation/test-quickstart-tls-fallback.sh` locks the
+fallback structure.
 
 ## An error appeared during installation or use
 

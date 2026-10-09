@@ -178,6 +178,11 @@ export function Dashboard({
                         ? styles.setupBadgePartial
                         : styles.setupBadgeDefault
                   }`}
+                  title={
+                    server.degraded
+                      ? t('dashboard.degradedHint')
+                      : undefined
+                  }
                 >
                   {t(`dashboard.setup.${server.setupStatus ?? 'unknown'}`)}
                 </span>

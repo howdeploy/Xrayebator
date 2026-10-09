@@ -12,7 +12,19 @@ export type XrayState = 'running' | 'stopped' | 'missing' | 'unknown'
 
 export type ProfilesState = 'available' | 'empty' | 'missing' | 'unknown'
 
-export type SubscriptionState = 'public' | 'localOnly' | 'missing' | 'unreachable' | 'unknown'
+/**
+ * Состояние подписки с сервера (inspect/normalize):
+ * public — HTTPS endpoint работает; fallback — http_tls-режим (endpoint с
+ * server'а работает, из интернета может быть недоступен: hoster-фильтр :80);
+ * localOnly — только 127.0.0.1; missing/unreachable — проблемные.
+ */
+export type SubscriptionState =
+  | 'public'
+  | 'fallback'
+  | 'localOnly'
+  | 'missing'
+  | 'unreachable'
+  | 'unknown'
 
 export interface PrivateKeyReference {
   credentialId: string
@@ -91,6 +103,13 @@ export interface Server {
   routesCount: number | null
   subscriptionUrl: string
   keys: VlessLink[]
+  /**
+   * Мультипротокольный этап: hysteria2-ссылки из тела подписки — персистятся
+   * вместе с vless-ключами, чтобы страница «Ключи» открывалась мгновенно.
+   */
+  hysteria2Keys?: string[]
+  /** Кэш клиентских .conf AWG per-profile (имя профиля → конфиг). */
+  awgConfs?: Record<string, string>
   authMethod?: SshAuthMethod
   privilegeMode?: SshPrivilegeMode
   privateKeyPath?: string | null
@@ -102,6 +121,12 @@ export interface Server {
   setupStatus?: ServerSetupStatus
   diagnostics?: ServerDiagnostics | null
   hostKeyFingerprint?: string | null
+  /**
+   * http_tls-fallback (quickstart при hoster-блокировке http-01): подписка
+   * работает с server'а, но публичного HTTPS нет. Карточка помечается
+   * «Настроен частично», Keys грузит ключи по SSH.
+   */
+  degraded?: boolean
 }
 
 export interface VlessLink {
@@ -114,6 +139,103 @@ export interface SubscriptionResult {
   serverId: string
   subscriptionUrl: string
   keys: VlessLink[]
+  /** Строки hysteria2:// из тела подписки (UDP-бэкенд). */
+  hysteria2Links?: string[]
+}
+
+/** Грант Hysteria 2 в профиле (username = имя профиля, password = 32 hex). */
+export interface ProfileHysteria2Grant {
+  username: string
+  password: string
+  created?: string
+}
+
+/** Грант AmneziaWG peer-а в профиле (адрес 10.8.1.x, full-tunnel клиент). */
+export interface ProfileAwgGrant {
+  client_private_key: string
+  client_public_key: string
+  preshared_key: string
+  address: string
+  created?: string
+}
+
+/**
+ * Аддитивный объект бэкенд-грантов в профиле. Профиль — единственный источник
+ * правды: revoke/expire на сервере синхронно меняют эти креденшелы.
+ * Пометка для UI: AWG-грант работает через клиент AmneziaVPN, НЕ через V2Ray/HAPP.
+ */
+export interface ProfileBackends {
+  hysteria2?: ProfileHysteria2Grant
+  awg?: ProfileAwgGrant
+}
+
+/** Запись одного бэкенда в реестре сервера (backend-status). */
+export interface BackendEntry {
+  installed: boolean
+  /** active | inactive | unknown (unknown — юнит не задан). */
+  state: string
+  version?: string
+  port?: number
+  unit?: string
+  /** Hysteria 2: le | selfsigned. */
+  tls_mode?: string
+  sni?: string
+  masquerade?: string
+  /** Hysteria 2: строки hysteria2:// в телах подписки (kill-switch). */
+  sub_body?: boolean
+  /** AWG 3.1: HeaderProtectionKey + RandomTrailers. */
+  three_enabled?: boolean
+  /** AWG 3.1: локальный флаг отключения cookie-механизма. */
+  disable_cookies?: boolean
+  subnet?: string
+}
+
+export interface BackendStatusResult {
+  ok: boolean
+  backends: Record<string, BackendEntry>
+  error?: string
+}
+
+export interface BackendGrantResult {
+  ok: boolean
+  name?: string
+  error?: string
+}
+
+/** Результат install/uninstall бэкенда (rc=2 воркера → already). */
+export interface BackendSimpleResult {
+  ok: boolean
+  already?: boolean
+  error?: string
+}
+
+export interface Hysteria2SubbodyResult {
+  ok: boolean
+  sub_body?: boolean
+  error?: string
+}
+
+export interface Hysteria2LinkResult {
+  ok: boolean
+  name?: string
+  /** hysteria2://user:pass@host:port/?sni=…&insecure=…#🇩🇪 Country · name */
+  link?: string
+  error?: string
+}
+
+export interface AwgConfResult {
+  ok: boolean
+  name?: string
+  /** Полный текст клиентского .conf (секреты уровня оператора). */
+  conf?: string
+  error?: string
+}
+
+export interface BackendToggleResult {
+  ok: boolean
+  three_enabled?: boolean
+  disable_cookies?: boolean
+  error?: string
 }
 
 export interface ServerProfile {
@@ -141,6 +263,11 @@ export interface ServerProfile {
    * показывал бы бессрочность там, где управление сроком недоступно.
    */
   expire_supported?: boolean
+  /**
+   * Мультипротокольный этап: гранты опциональных бэкендов. Пустой объект или
+   * отсутствие поля — профиль не имеет доступа к hysteria2/awg.
+   */
+  backends?: ProfileBackends
 }
 
 export interface ProfileCreateInput {
@@ -365,13 +492,80 @@ export interface ElectronAPI {
     ) => Promise<ProfileExpireResult>
   }
   server: {
+    /**
+     * Обновить менеджер на сервере. Без branch — закреплённая на сервере ветка
+     * (.current_branch) или main. Явная ветка (main | dev | experimental) —
+     * управляемая бета: обновиться с dev, не дожидаясь вливания в main.
+     */
     update: (
       serverId: string,
-      access: SshAccessInput
+      access: SshAccessInput,
+      branch?: 'main' | 'dev' | 'experimental'
     ) => Promise<ServerMaintenanceResult>
     uninstall: (
       serverId: string,
       access: SshAccessInput
     ) => Promise<ServerMaintenanceResult>
+  }
+  backends: {
+    /** Статус всех бэкендов из реестра сервера (backend-status). */
+    status: (
+      serverId: string,
+      access: SshAccessInput
+    ) => Promise<BackendStatusResult>
+    hysteria2Grant: (
+      serverId: string,
+      access: SshAccessInput,
+      name: string
+    ) => Promise<BackendGrantResult>
+    /** Установка Hysteria 2 (длинная операция). */
+    hysteria2Install: (
+      serverId: string,
+      access: SshAccessInput,
+      grantAll: boolean
+    ) => Promise<BackendSimpleResult>
+    hysteria2Uninstall: (
+      serverId: string,
+      access: SshAccessInput
+    ) => Promise<BackendSimpleResult>
+    /** Kill-switch hysteria2-строк в подписке. */
+    hysteria2Subbody: (
+      serverId: string,
+      access: SshAccessInput,
+      on: boolean
+    ) => Promise<Hysteria2SubbodyResult>
+    /** hysteria2:// ссылка профиля (требует грант и установленный бэкенд). */
+    hysteria2Link: (
+      serverId: string,
+      access: SshAccessInput,
+      name: string
+    ) => Promise<Hysteria2LinkResult>
+    awgGrant: (
+      serverId: string,
+      access: SshAccessInput,
+      name: string
+    ) => Promise<BackendGrantResult>
+    /** Установка AmneziaWG (может собирать kernel-модуль — минуты). */
+    awgInstall: (
+      serverId: string,
+      access: SshAccessInput,
+      grantAll: boolean
+    ) => Promise<BackendSimpleResult>
+    awgUninstall: (
+      serverId: string,
+      access: SshAccessInput
+    ) => Promise<BackendSimpleResult>
+    /** Клиентский .conf AWG peer-а для профиля ( AmneziaVPN, не V2Ray/HAPP ). */
+    awgConf: (
+      serverId: string,
+      access: SshAccessInput,
+      name: string
+    ) => Promise<AwgConfResult>
+    /** Тумблер AWG 3.1: включение/выключение требует перекачки .conf клиентов. */
+    awg31: (
+      serverId: string,
+      access: SshAccessInput,
+      on: boolean
+    ) => Promise<BackendToggleResult>
   }
 }

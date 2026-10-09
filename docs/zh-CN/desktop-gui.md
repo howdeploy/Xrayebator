@@ -44,20 +44,22 @@ GUI 会显示部署日志和步骤状态，但进行中的部署没有 IPC 取�
 向导显示步骤索引和实际执行工作的实时控制台：SSH 连接、`xrayebator inspect --json` 调用、返回的组件状态、订阅探测和最终结果。订阅 URL 是 bearer credential，因此其令牌在进入控制台前会被遮蔽（`…`）；密码和密钥字节完全不会出现在其中。
 ### Server keys
 
-Server keys 会从保存的 `subscription_url` 刷新订阅，并显示返回的 VLESS 线路。每条 VLESS 链接都可以复制或生成二维码；订阅 URL 也可以复制，页面还提供复制全部内容的操作。此页面不会在服务器上创建独立订阅，也不会轮换订阅令牌（轮换在 Server settings 的配置档卡片上进行）。
+Server keys 会从保存的 `subscription_url` 刷新订阅，并显示返回的 VLESS 线路。每条 VLESS 链接都可以复制或生成二维码；订阅 URL 也可以复制，页面还提供复制全部内容的操作。此页面不会在服务器上创建独立订阅，也不会轮换订阅令牌（轮换在 Server settings 的配置档卡片上进行）。当服务器存在多协议后端时，页面还会从持久化本地存储中显示它们的密钥：每个持有授权的配置档一张 Hysteria 2 卡片（`hysteria2://` 链接，复制+二维码；卡片芯片标注所属配置档名称：`HYSTERIA2 · <配置档> · UDP :<端口>`），以及一张 AmneziaWG 卡片——客户端 `.conf`，其中 `Endpoint`/`Address` 以键值字段呈现，去掉服务注释头的完整 `.conf` 以文本和二维码提供，可导入 AmneziaVPN/AmneziaWG。后端卡片立即从持久化存储渲染，并与 VLESS 线路并行刷新；spinner 位于卡片内部，仅在数据获取期间可见。AWG 卡片有两个二维码：普通二维码用于独立版 AmneziaWG 客户端，「QR · AmneziaVPN」则是应用原生压缩 `vpn://` 形态（`amnezia-awg2` 容器、服务器级 junk 字段、`protocol_version` 3.1），是完整版 AmneziaVPN 的推荐导入路径。
 
 ### Server settings
 
 Server settings 先通过 SSH 认证。如果卡片中已有系统钥匙串保存的 SSH 密码或持久化私钥，页面会自动连接并只显示配置档面板；仅当没有已保存的凭据或连接失败时才显示访问表单。访问摘要与“更改访问方式”操作位于 Dashboard 的服务器卡片上，而不在配置档页面内。连接后可以：
 
 - 列出已有配置档；
-- 创建一个或多个配置档并删除配置档；
-- 选择 `xhttp`、`tcp`、`tcp-utls`、`tcp-xudp`、`tcp-mux` 或 `grpc` 传输；
+- 创建一个或多个配置档并删除配置档（配置档名称唯一：GUI 在创建前预检名称冲突——删除以配置档为单位，名称唯一才能保证删除精确）；
+- 选择 `xhttp`、`tcp`、`tcp-utls`、`tcp-xudp`、`tcp-mux` 或 `grpc` 传输——或选择两个多协议后端之一（传输网格下方的 Hysteria 2 / AmneziaWG 3.1 卡片）。点击后端卡片只是选择协议（选择 VLESS 传输会取消后端选择，反之亦然）；配置档由「创建配置档」按钮创建，且只有所选后端会签发密钥——底层的 VLESS 配置档使用推荐的 `xhttp` 传输；
 - 修改配置档 fingerprint，从 `sni-list` 选择 SNI，或手动输入 SNI；
 - 修改配置档线路的端口，或选择随机端口；
-- 更新服务器安装；
+- 更新服务器安装（分支菜单：「按服务器上固定的分支」——`.current_branch`，否则 main；**main 是最新的稳定版本**；**dev 是包含全部新功能的最新版本，但可能不稳定**；从 dev 切回只需更新到 main）；
 - 确认后卸载服务器安装；
-- 在明确确认后重置固定的 SSH host key。
+- 在明确确认后重置固定的 SSH host key；
+- 管理多协议后端（与菜单项 11–13 对齐）：合并面板「补充协议」（正在开发中——界面和行为可能变化）显示 Hysteria 2 与 AmneziaWG 状态（版本、端口、TLS 模式 / 接口、junk 摘要），提供安装/卸载、订阅中 `hysteria2://` 行的总开关和 AWG 3.1 切换——后两者均带明确确认；
+- 配置档列表中每个配置档的后端卡片：标题为配置档名称，副标题为协议，绿色状态行（「已激活 · SNI …」或「已激活 · UDP <端口>」）；操作有二维码（AmneziaWG 另有「QR · AmneziaVPN」）、有效期、Revoke 和删除。删除配置档会立即吊销其后端密钥——AWG peer 从 `awg0.conf` 移除，Hysteria 密码从 `server.yaml` 移除（不残留孤立凭据），名称立即可复用。完整复制功能只在 Server keys 页面。
 
 SNI 和端口属于 inbound 级别的设置：修改它们可能影响共享该 inbound 的所有配置档。Fingerprint 则不同：它是按配置档/线路保存的客户端参数，不会修改其他线路。服务端命令会报告结果以及是否需要重新连接。
 
@@ -90,6 +92,14 @@ xrayebator sni-change --name NAME [--route R] --sni SNI
 xrayebator sni-list
 xrayebator port-change --name NAME [--route R] --port PORT|random
 xrayebator bypass list|add --domain D|remove --domain D|reset|bundle [--group a,b,c]
+```
+
+后端管理会额外调用：
+
+```text
+xrayebator backend-status
+xrayebator hysteria2-install [--port P] [--grant-all] / hysteria2-uninstall / hysteria2-grant --name N / hysteria2-subbody --on|--off / hysteria2-link --name N
+xrayebator awg-install [--grant-all] / awg-uninstall / awg-grant --name N / awg-conf --name N / awg-31 --on|--off
 ```
 
 部署流程会调用以下命令之一：

@@ -2,6 +2,76 @@
 
 User-facing Xrayebator changes. The server manager and Electron application are published from the canonical `howdeploy/Xrayebator` repository.
 
+## [0.6.5-beta.1] - 2026-10-08
+
+Multi-protocol stage: Xray Reality is joined by Hysteria 2 (UDP/QUIC) and AmneziaWG 3.1
+(system VPN), a neutral backend registry with per-profile grants and lifecycle, a
+HAPP client-routing generator with split routing, softer SNI defaults, a graceful
+`http_tls` degradation path for hosters that filter port 80, and a wave of GUI feedback
+polish. **0.6.5 is in testing — if you need a proven build, stay on 0.6.0.**
+
+### Added
+
+- **Hysteria 2 backend** (multi-protocol slices 2–3): install/uninstall/status via the
+  registry, a dedicated `hysteria` system user with its own `hysteria-server.service`
+  (CAP_NET_BIND_SERVICE), QUIC buffer sysctls, per-profile grants (`hysteria2-grant`)
+  with passwords stored in the profile JSON, server config regenerated from profiles
+  with rollback, adaptive TLS (Let's Encrypt cert copied with a renewal deploy-hook,
+  or self-signed with `insecure=1` client links), and `hysteria2://` lines appended to
+  both subscription bodies behind a kill switch.
+- **AmneziaWG 3.1 backend** (slices 4–5 + 3.1): kernel module via DKMS (amnezia PPA
+  with a manual source-build fallback), `awg0` interface with junk params matching the
+  official Amnezia dialect, per-profile peers with keypair + preshared key, `awg0.conf`
+  regenerated from profiles, client `.conf` and `awg-conf` JSON for the GUI, AWG 3.1
+  format on by default (`HeaderProtectionKey`, `RandomTrailers`, `S1`–`S4`) with an
+  `awg-31` toggle and explicit re-download warnings, and the GUI delivering keys in the
+  app-native `vpn://` shape for AmneziaVPN.
+- **Multi-protocol GUI**: a "multi-protocol backends" panel in Server settings with
+  official Hysteria/Amnezia logos, backend profile cards alongside VLESS cards
+  (create flow with an explicit protocol choice — a new profile receives keys only
+  from the chosen backend), per-backend QR (including "QR · AmneziaVPN"), expiry,
+  revoke and delete with immediate backend-key revocation on profile deletion.
+- **HAPP client routing** (`bypass` CLI + generator): managed HAPP profile can carry
+  split routing from bypass groups, with placeholders (`{{GEOIP_URL}}`, `{{GEOSITE_URL}}`,
+  `{{LAST_UPDATED}}`) resolved per subscriber — geo databases are downloaded through the
+  subscription itself.
+- **quickstart `http_tls` graceful degradation**: when Let's Encrypt cannot validate
+  http-01 for the IP (`Connection reset by peer` — the hoster filters port 80), the
+  deploy no longer dead-ends: markers switch to `http_tls`, the subscription stays
+  loopback-only (there is no public subscription URL at all — the GUI loads keys over
+  SSH from `127.0.0.1:8080`), a self-signed certificate is generated for future backends,
+  and the result JSON carries `degraded:true` / `tls_mode:"http_tls"` / `certbot_reason`.
+  Re-running quickstart after the hoster unblocks port 80 restores HTTPS.
+- SNI candidates updated from the 03.09.2026 reachability measurements; the default SNI
+  for new profiles is `www.cloudflare.com`.
+- Server country in key names: the HAPP profile fragments are labelled with a country
+  flag and name (`🇫🇮 Finland · happ-...`) resolved from the server IP geo databases.
+- `validation/` grew from 28 to 34 scripts: backend registry, Hysteria 2 lifecycle,
+  AmneziaWG junk/renderers/lifecycle, HAPP client routing, legacy profile port sync,
+  quickstart `http_tls` fallback, apt-lock race, profile revoke/expire CLI.
+- Branch choice for server updates: the "Update Xrayebator" button became a menu —
+  "Auto — as pinned on the server" (previous behavior), "main — latest stable release",
+  "dev — every feature first" (may be unstable): a server can be moved to the dev
+  manager before the merge without polluting main; switching back is an update from main.
+
+### Fixed
+
+- `revoke --full` crashed on single-route profiles (invalid jq path).
+- `xrayebator profile-delete` printed colored status lines into stdout JSON; the CLI
+  path is JSON-clean now and backend grants are revoked in the same command (no
+  orphaned AWG peers or Hysteria passwords).
+- Backend keys are granted only for the explicitly chosen protocol — creation no longer
+  issues keys from every installed backend.
+- AWG ports moved out of the ephemeral range and ufw reloads are avoided during batch
+  firewall updates.
+- Dead duplicate function definitions in the single-file manager removed (a shadowed
+  validator whose body would have clobbered subscription markers if ever called).
+- The GUI no longer shows a dead `https://IP:8443` subscription URL on degraded
+  (`http_tls`) servers: no public link is displayed or saved at all, keys are fetched
+  over SSH, and the server is stored as "partially configured" with a degraded badge.
+- Backend key creation/revoke/expiry dialogs match the VLESS card semantics
+  (danger-soft confirmations, device notes, expiry presets).
+
 ## [0.6.0] - 2026-10-01
 
 Access control in the panel: subscription revocation (link-only or full), profile expiry
