@@ -2,6 +2,31 @@
 
 User-facing Xrayebator changes. The server manager and Electron application are published from the canonical `howdeploy/Xrayebator` repository.
 
+## [0.6.5-beta.2] - 2026-10-14
+
+Second beta cut: the manager and GUI code are unchanged from `0.6.5-beta.1` — this
+release is the same build with a full live validation stamp and a documentation
+cleanup. **Still a beta: if you need a proven build, stay on 0.6.0.**
+
+### Testing
+
+- Live matrix: 8 fresh deploys across Ubuntu 22.04/24.04 and Debian 12/13 on 4
+  independent hosters (reachable from Russia): 7 full `install.sh` + `quickstart`
+  runs with ACME, a Let's Encrypt certificate on the IP and a publicly answering
+  subscription, plus 1 deploy on a hoster filtering inbound port 80 — the
+  `http_tls` fallback completes the install, keys over SSH, a self-signed cert
+  for future backends, quickstart re-run stays idempotent.
+- Both TLS branches (`ip_tls` and `http_tls`) confirmed live, including two
+  German VPSes; the CLI self-update main→dev lands on the dev HEAD with
+  `backend-status` / `profiles` responding (the 0.6.5 GUI contract).
+
+### Documentation
+
+- HAPP provisioning scenarios (quickstart email/without-email, `http_tls`
+  degradation, `inspect`, `happ-setup`) synchronized in ru/en/zh
+  `configuration.md`;
+- mojibake left in the `0.6.5-beta.1` release notes is fixed.
+
 ## [0.6.5-beta.1] - 2026-10-08
 
 Multi-protocol stage: Xray Reality is joined by Hysteria 2 (UDP/QUIC) and AmneziaWG 3.1
