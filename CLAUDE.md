@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Xrayebator — automated Xray Reality VPN manager for bypassing DPI censorship in Russia. The single Bash application (`xrayebator`, ~12700 lines) turns a VPS into a managed VPN server with an interactive terminal UI. The installer requires Bash, root/sudo, an apt-based Debian/Ubuntu-like system and systemd; the tested matrix is Debian 12/13 and Ubuntu 22.04/24.04. The **active desktop GUI** lives in `src/` (Electron + React + TypeScript) and drives the same Bash CLI over SSH. A legacy PySide6 GUI sits in `gui-legacy/` and is archival, not the active desktop app.
+Xrayebator — automated Xray Reality VPN manager for bypassing DPI censorship in Russia. The single Bash application (`xrayebator`, ~14900 lines) turns a VPS into a managed VPN server with an interactive terminal UI. The installer requires Bash, root/sudo, an apt-based Debian/Ubuntu-like system and systemd; the tested matrix is Debian 12/13 and Ubuntu 22.04/24.04. The **active desktop GUI** lives in `src/` (Electron + React + TypeScript) and drives the same Bash CLI over SSH. A legacy PySide6 GUI sits in `gui-legacy/` and is archival, not the active desktop app.
 
 ## Validation
 
