@@ -26,7 +26,7 @@ bash -n uninstall.sh
 
 ### Single-file application
 
-All logic lives in `xrayebator`. Supporting scripts (`install.sh`, `update.sh`, `uninstall.sh`) handle lifecycle but are not part of the runtime.
+All logic lives in `xrayebator`. Supporting scripts (`install.sh`, `update.sh`, `uninstall.sh`) handle lifecycle but are not part of the runtime. The repository is a single runtime source file, but a deployed VPS is not literally one file: `xrayebator` generates additional root-owned runtime artifacts from heredocs — `/usr/local/bin/subhttp.sh` (the subscription/geo HTTP handler, which sources `xrayebator` in source-mode), systemd units (`xrayebator-sub.service`, `xrayebator-expire.service/.timer`) and nginx vhosts. Never edit those on the server — change `xrayebator` and regenerate.
 
 ### Production paths
 
