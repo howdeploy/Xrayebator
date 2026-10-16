@@ -100,6 +100,10 @@ npm test              # Vitest unit-тесты
 | `tests/unit/server-inspector.test.ts` | Нормализация диагностики: публичная vs local-only/unreachable подписка, partial- и refuse-import состояния |
 | `tests/unit/deployer.test.ts` | Аргументы quickstart: режимы provided/without email без фиктивного адреса |
 | `tests/unit/ui-contracts.test.ts` | Готовность deployment и формирование payload при выборе email-режима |
+| `tests/unit/awg-shared.test.ts` | Парсинг AWG `.conf`, снятие комментариев, сборка `vpn://` и qCompress |
+| `tests/unit/backend-manager.test.ts` | Разбор backend-статуса и AWG-конфигов (hysteria2/awg, флаги 3.1) |
+| `tests/unit/calendar.test.ts` | Календарь: локальные ISO-даты без UTC-сдвига, сетка месяца, границы навигации |
+| `tests/unit/expire.test.ts` | Статусы срока действия, дата по часовому поясу сервера, приоритет флага отключения |
 
 `npm run typecheck` дополнительно проверяет `tsconfig.contracts.json` — он компилирует строгие onboarding-контракты из `tests/type-contracts/` (обязательный `emailMode`, keychain-ссылка в выборщике ключа, открытый import API); Vitest-транспиляция такие регрессии типов не ловит.
 

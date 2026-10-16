@@ -122,12 +122,16 @@ and a real client connection are live-server checks by design.
 
 ## Electron GUI unit tests
 
-The active Electron GUI has exactly fourteen Vitest unit files:
+The active Electron GUI has exactly eighteen Vitest unit files:
 
 | Test | What it checks |
 |---|---|
+| `tests/unit/awg-shared.test.ts` | AWG shared helpers: `.conf` parsing, comment stripping, `vpn://` body/URL builder and the qCompress round-trip |
+| `tests/unit/backend-manager.test.ts` | Backend status JSON and AWG conf parsing (hysteria2 + awg, 3.1 flags) |
+| `tests/unit/calendar.test.ts` | Calendar grid helpers: local (non-UTC-shifted) ISO dates, month cells, navigation bounds |
 | `tests/unit/countryFlag.test.ts` | Country-flag lookup used by server cards |
 | `tests/unit/deployer.test.ts` | Quickstart argument building: provided/without email mode, no fake address, validation only in provided mode |
+| `tests/unit/expire.test.ts` | Expiry badge states, server-local date rendering and the disabled-flag precedence |
 | `tests/unit/extractJson.test.ts` | JSON extraction from noisy `xrayebator` command output |
 | `tests/unit/probe-ports.test.ts` | Ports used by the Dashboard reachability probe |
 | `tests/unit/server-inspector.test.ts` | Inspection normalization: public vs local-only/unreachable subscription, partial and refused-import states |

@@ -97,6 +97,10 @@ npm test              # Vitest 单元测试
 | `tests/unit/server-inspector.test.ts` | 诊断规范化：公网与仅本地/不可达订阅、partial 及拒绝导入状态 |
 | `tests/unit/deployer.test.ts` | quickstart 参数构建：provided/without email 模式，不使用虚假地址 |
 | `tests/unit/ui-contracts.test.ts` | email 模式选择下的部署就绪判断与 payload 构造 |
+| `tests/unit/awg-shared.test.ts` | AWG `.conf` 解析、注释剔除、`vpn://` 构建与 qCompress |
+| `tests/unit/backend-manager.test.ts` | 后端状态与 AWG 配置解析（hysteria2/awg、3.1 标志） |
+| `tests/unit/calendar.test.ts` | 日历：本地 ISO 日期（无 UTC 偏移）、月网格、导航边界 |
+| `tests/unit/expire.test.ts` | 有效期徽标状态、服务器时区日期与禁用标志优先级 |
 
 `npm run typecheck` 还会检查 `tsconfig.contracts.json`，其中编译 `tests/type-contracts/` 中严格的 onboarding 契约（必需的 `emailMode`、keychain 引用密钥选择器、已暴露的 import API）；仅靠 Vitest 转译无法捕获这类类型回归。
 

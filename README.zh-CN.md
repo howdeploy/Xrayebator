@@ -298,7 +298,7 @@ npm run dev          # Electron + Vite dev server
 npm run build        # 编译 renderer 与 main process
 ```
 
-Electron 检查：`npm test` 运行 `tests/` 中的 14 个单元测试文件；`npm run typecheck` 检查 TypeScript，
+Electron 检查：`npm test` 运行 `tests/` 中的 18 个单元测试文件；`npm run typecheck` 检查 TypeScript，
 包含 `tests/type-contracts/` 中严格的 onboarding 契约；`npm run build` 构建应用。在原生 Windows 上，POSIX 专用测试
 `tests/unit/shell-command.test.ts`
 可能因缺少 `/bin/sh` 而失败；Linux CI 是事实来源。参见[测试](docs/zh-CN/testing.md#桌面图形界面)
