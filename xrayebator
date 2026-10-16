@@ -10750,7 +10750,7 @@ bypass_routing_menu() {
     echo ""
 
     echo -e "${CYAN} 1)${NC} Добавить домен в обход"
-    echo -e "${CYAN} 2)${NC} Применить дефолтный bundle (5 групп)"
+    echo -e "${CYAN} 2)${NC} Применить дефолтный bundle (8 групп)"
     echo -e "${CYAN} 3)${NC} Удалить домен из обхода"
     echo -e "${CYAN} 4)${NC} Сбросить ВСЕ правила обхода"
     echo -e "${CYAN} 0)${NC} Назад в главное меню"
