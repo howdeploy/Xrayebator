@@ -102,6 +102,7 @@ Xrayebator решает обе задачи так:
 | Reality-инбаунды | Поднимает инбаунды на свободных портах `30000-60000`, сверяясь и с `config.json`, и с реально слушающими сокетами | `xrayebator` |
 | Multi-route профиль | Один профиль = набор маршрутов с общим `sub_token`; несколько профилей могут делить один порт | `profiles/<name>.json` |
 | HAPP-подписка | Отдаёт список `vless://`, управляемый Global Proxy routing и geo-базы по защищённому токеном URL; наружу публикуется nginx по HTTPS | `subhttp.sh`, `xrayebator-sub.service` |
+| Форматы подписки | Один токен — четыре тела: HAPP, base64 для v2rayNG/v2rayN, Clash/mihomo YAML и sing-box JSON; формат выбирается по `?target=` или по User-Agent | `_subscription_render_*_pure`, `subhttp.sh` |
 | Post-quantum XHTTP | Маршрут `xhttp-pq` работает с VLESS-шифрованием `mlkem768x25519plus` | `.vless_encryption`, `.vless_decryption` |
 | Совместимость с v2ray | `v2rayNG`/`v2rayN` получают классический base64-body без HAPP-метаданных | `subhttp.sh` |
 | Revoke подписки | Генерирует новый 32-символьный hex-токен, старый URL перестаёт работать; полный отзыв (`--full`) меняет ещё и uuid — уже скачанные конфиги отваливаются | `openssl rand -hex 16`, `profile-revoke` |
@@ -116,7 +117,7 @@ Xrayebator решает обе задачи так:
 | Миграции | Одноразовые миграции по marker-файлам: backup → правка → рестарт → маркер | `run_migration` |
 | geo-базы | Кладёт расширенные `geoip.dat` и `geosite.dat` из релизов Loyalsoldier в `/usr/local/share/xray` | `install.sh` |
 
-Не поддерживается и не заявляется: H2, WebSocket, SplitHTTP, подписки Clash/mihomo.
+Не поддерживается и не заявляется: H2, WebSocket, SplitHTTP.
 
 ## Как это работает
 
@@ -359,7 +360,10 @@ TypeScript, включая строгие onboarding-контракты из `te
   чужие сертификаты certbot и правила UFW не трогаются. Domain ACME webroot
   `/var/www/xrayebator-domain-acme` может остаться и потребовать ручной очистки.
 - Маршрут `tcp-mux` сохраняется для совместимости, но это не mux-пресет.
-- H2, WebSocket, SplitHTTP и подписки Clash/mihomo не поддерживаются.
+- H2, WebSocket, SplitHTTP не поддерживаются.
+- В форматах Clash/mihomo и sing-box нет маршрутов с PQ-шифрованием (VLESS Encryption не поддержан их
+  клиентами) и xhttp: в sing-box такого транспорта нет вовсе, а в Clash/mihomo он включается
+  параметром `?xhttp=1` и требует mihomo ≥ 1.19.
 - Ёмкость по пользователям ничем не ограничена в интерфейсе, но упирается в CPU, RAM, канал VPS,
   число маршрутов и лимиты провайдера.
 - Установщик и project updater используют свои validation/restart/rollback paths, отличные от runtime
@@ -406,7 +410,7 @@ sudo xrayebator-uninstall               # снять сервис и конфи�
 | v2rayNG | Частично | Получает base64-подписку, HAPP-метаданные не использует |
 | v2rayN | Частично | Подписки с VLESS работают, HAPP-специфика не используется |
 | Shadowrocket | Вручную | Годится для raw VLESS, не основной клиент для подписки |
-| sing-box · Hiddify · NekoBox · mihomo | Не целевые | Не рассчитывайте на PQ-XHTTP и HAPP-роутинг |
+| sing-box · Hiddify · NekoBox · mihomo | Подписка | Получают YAML (Clash/mihomo) или JSON (sing-box) по тому же URL; PQ-XHTTP и HAPP-роутинга в них нет |
 
 - Android: [HAPP](https://www.happ.su/) · [v2rayNG](https://github.com/2dust/v2rayNG) · [NekoBox](https://github.com/MatsuriDayo/NekoBoxForAndroid)
 - iOS: [HAPP](https://www.happ.su/) · [Shadowrocket](https://apps.apple.com/app/shadowrocket/id932747118) · [V2Box](https://apps.apple.com/app/v2box-v2ray-client/id6446814690)

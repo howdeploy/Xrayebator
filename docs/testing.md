@@ -36,7 +36,7 @@ promise that installer and updater paths behave identically.
 
 ## Validation suite
 
-`validation/` contains exactly 36 scripts. Run every `validation/test-*.sh`; the current set is:
+`validation/` contains exactly 37 scripts. Run every `validation/test-*.sh`; the current set is:
 
 | Script | What it checks |
 |---|---|
@@ -44,6 +44,7 @@ promise that installer and updater paths behave identically.
 | `test-audit-privilege-regressions.sh` | Privilege boundaries, certificate ownership, rollback and HAPP setup regressions |
 | `test-traffic-limit-cli.sh` | Per-profile traffic accounting: limit-unit normalization, delta accumulation and watermark reset, immediate ban/unban with the flow preserved, `expire` × traffic cross-guards, the Stats inbound migration with a port collision, the traffic fields of the `profiles` output, migration registration |
 | `test-alerts-monitor.sh` | Monitoring Telegram alerts: `alerts-setup/status/enable/disable/test`, no config saved when the test is undelivered, the timer units and migration, service and backend detection (hysteria2, AWG), the subscription and its degradation to `http_tls`, the SNI probe (partial/full unreachability, recovery, interval, retry without a repeated probe), the reboot edge trigger |
+| `test-subscription-formats.sh` | Subscription formats: normalization of `vless://` (7 transports) and `hysteria2://`, IPv6/percent-decoding, Clash/mihomo YAML (reality-opts, flow, packet-encoding, grpc-opts, hysteria2, PyYAML validation when available), sing-box JSON through `jq`, PQ and xhttp skipping with a reason, edge cases (no live routes, PQ only), content negotiation in the handler heredoc, migration registration and the `profiles` CLI contract |
 | `test-bbr-removal-migration.sh` | Safe removal of the retired BBR/TCP tuning |
 | `test-profile-revoke-expire-cli.sh` | Subscription revoke (token-only and uuid rotation, foreign clients on shared ports survive) and profile expiry (disable/enable, rebuild without a snapshot, idempotent `expire-check`) |
 | `test-cascade-routing.sh` | Cascade routing configuration |
@@ -170,7 +171,7 @@ provide useful local coverage, while CI runs the Electron typecheck and unit sui
 The workflows have separate responsibilities:
 
 - `.github/workflows/ci-linux.yml` is the Bash core gate on `ubuntu-24.04`: it installs `jq`,
-  `uuid-runtime` and `ripgrep`, runs all four Bash syntax checks, then runs all 36 validation
+  `uuid-runtime` and `ripgrep`, runs all four Bash syntax checks, then runs all 37 validation
   scripts.
 - `.github/workflows/release.yml` is the active Electron release path for `v*` tags or manual runs.
   A `preflight` job first checks that the release notes file `docs/releases/<tag>.en.md` exists and

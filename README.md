@@ -102,6 +102,7 @@ about.
 | Reality inbounds | Brings up inbounds on free ports in `30000-60000`, checking both `config.json` and actually listening sockets | `xrayebator` |
 | Multi-route profile | One profile = a set of routes with a shared `sub_token`; several profiles may share one port | `profiles/<name>.json` |
 | HAPP subscription | Serves the `vless://` list, a managed Global Proxy routing profile and token-protected geo databases; nginx publishes it over HTTPS | `subhttp.sh`, `xrayebator-sub.service` |
+| Subscription formats | One token — four bodies: HAPP, base64 for v2rayNG/v2rayN, Clash/mihomo YAML and sing-box JSON; the format is chosen by `?target=` or by User-Agent | `_subscription_render_*_pure`, `subhttp.sh` |
 | Post-quantum XHTTP | The `xhttp-pq` route runs VLESS encryption `mlkem768x25519plus` | `.vless_encryption`, `.vless_decryption` |
 | v2ray compatibility | `v2rayNG` and `v2rayN` receive a classic base64 body without HAPP metadata | `subhttp.sh` |
 | Subscription revoke | Generates a new 32-character hex token; the old URL stops working. Full revocation (`--full`) also rotates the uuid, so already-downloaded configs stop connecting | `openssl rand -hex 16`, `profile-revoke` |
@@ -116,7 +117,7 @@ about.
 | Migrations | One-shot migrations driven by marker files: backup → edit → restart → marker | `run_migration` |
 | geo databases | Places extended `geoip.dat` and `geosite.dat` from Loyalsoldier releases into `/usr/local/share/xray` | `install.sh` |
 
-Not supported and not claimed: H2, WebSocket, SplitHTTP, Clash/mihomo subscriptions.
+Not supported and not claimed: H2, WebSocket, SplitHTTP.
 
 ## How it works
 
@@ -362,7 +363,10 @@ Russian and Chinese versions live in [`docs/ru/`](docs/ru/) and [`docs/zh-CN/`](
   system user. Cleanup is path/name based for nginx vhosts, not a general ownership manifest. It leaves
   global Certbot state, the nginx package, foreign certbot certificates and UFW rules untouched. Domain-mode ACME webroot `/var/www/xrayebator-domain-acme` may remain for manual cleanup.
 - The `tcp-mux` route is kept for compatibility; it is not a mux preset.
-- H2, WebSocket, SplitHTTP and Clash/mihomo subscriptions are not supported.
+- H2, WebSocket and SplitHTTP are not supported.
+- The Clash/mihomo and sing-box formats carry no routes with PQ encryption (VLESS Encryption is not
+  supported by their clients) and no xhttp: sing-box has no such transport at all, while in
+  Clash/mihomo it is enabled by the `?xhttp=1` parameter and requires mihomo ≥ 1.19.
 - The interface imposes no hard limit on users, but real capacity is bound by CPU, RAM, VPS
   bandwidth, route count and provider limits.
 - Installation and project-update lifecycle paths use their own validation/restart/rollback sequences;
@@ -410,7 +414,7 @@ Import the subscription URL into the client, not an individual `vless://` link. 
 | v2rayNG | Partial | Receives the base64 subscription, ignores HAPP metadata |
 | v2rayN | Partial | VLESS subscriptions work, HAPP specifics are unused |
 | Shadowrocket | Manual | Fine for raw VLESS, not the primary subscription client |
-| sing-box · Hiddify · NekoBox · mihomo | Not targeted | Do not expect PQ-XHTTP or HAPP routing |
+| sing-box · Hiddify · NekoBox · mihomo | Subscription | Receive YAML (Clash/mihomo) or JSON (sing-box) over the same URL; no PQ-XHTTP and no HAPP routing |
 
 - Android: [HAPP](https://www.happ.su/) · [v2rayNG](https://github.com/2dust/v2rayNG) · [NekoBox](https://github.com/MatsuriDayo/NekoBoxForAndroid)
 - iOS: [HAPP](https://www.happ.su/) · [Shadowrocket](https://apps.apple.com/app/shadowrocket/id932747118) · [V2Box](https://apps.apple.com/app/v2box-v2ray-client/id6446814690)

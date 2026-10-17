@@ -96,6 +96,7 @@ Xrayebator 同时解决这两个问题：
 | Reality 入站 | 在 `30000-60000` 的空闲端口上建立入站，同时核对 `config.json` 与实际监听的套接字 | `xrayebator` |
 | 多线路配置档 | 一个配置档 = 共享 `sub_token` 的一组线路；多个配置档可共用同一端口 | `profiles/<name>.json` |
 | HAPP 订阅 | 提供 `vless://` 列表、托管的 Global Proxy 路由及令牌保护的 geo 数据库，由 nginx 通过 HTTPS 对外发布 | `subhttp.sh`、`xrayebator-sub.service` |
+| 订阅格式 | 一个令牌四种订阅体：HAPP、面向 v2rayNG/v2rayN 的 base64、Clash/mihomo YAML 与 sing-box JSON；格式按 `?target=` 或 User-Agent 选择 | `_subscription_render_*_pure`、`subhttp.sh` |
 | 后量子 XHTTP | `xhttp-pq` 线路使用 VLESS 加密 `mlkem768x25519plus` | `.vless_encryption`、`.vless_decryption` |
 | v2ray 兼容 | `v2rayNG` 与 `v2rayN` 获得不含 HAPP 元数据的经典 base64 订阅体 | `subhttp.sh` |
 | 吊销订阅 | 生成新的 32 位十六进制令牌，旧链接立即失效；完全吊销（`--full`）同时更换 uuid，已下载的配置随即断开 | `openssl rand -hex 16`、`profile-revoke` |
@@ -110,7 +111,7 @@ Xrayebator 同时解决这两个问题：
 | 迁移 | 由标记文件驱动的一次性迁移：备份 → 修改 → 重启 → 写标记 | `run_migration` |
 | geo 数据库 | 把 Loyalsoldier 发行版的 `geoip.dat` 与 `geosite.dat` 放入 `/usr/local/share/xray` | `install.sh` |
 
-不支持也不声称支持：H2、WebSocket、SplitHTTP、Clash/mihomo 订阅。
+不支持也不声称支持：H2、WebSocket、SplitHTTP。
 
 ## 工作原理
 
@@ -343,7 +344,10 @@ Electron 检查：`npm test` 运行 `tests/` 中的 19 个单元测试文件；`
   域名模式的 ACME webroot
   `/var/www/xrayebator-domain-acme` 可能保留，需要手工清理。
 - `tcp-mux` 线路仅为兼容保留，它并不是 mux 预设。
-- 不支持 H2、WebSocket、SplitHTTP 以及 Clash/mihomo 订阅。
+- 不支持 H2、WebSocket、SplitHTTP。
+- Clash/mihomo 与 sing-box 格式中没有 PQ 加密线路（这些客户端不支持 VLESS Encryption），也没有
+  xhttp：sing-box 根本没有这种传输方式，而在 Clash/mihomo 中它需要通过 `?xhttp=1` 开启并要求
+  mihomo ≥ 1.19。
 - 界面没有硬性的用户数上限，但实际容量受 CPU、内存、VPS 带宽、线路数量和服务商限制约束。
 - 安装程序和项目更新使用独立的校验、重启与回滚路径，不等同于运行时 `safe_restart_xray` 事务；
   lifecycle 更新后请检查 Xray、DNS 和订阅。
@@ -387,7 +391,7 @@ sudo xrayebator-uninstall               # 移除服务与配置
 | v2rayNG | 部分支持 | 接收 base64 订阅，不使用 HAPP 元数据 |
 | v2rayN | 部分支持 | 支持 VLESS 订阅，不使用 HAPP 专有字段 |
 | Shadowrocket | 手工 | 适合原始 VLESS，不是订阅流程的主力客户端 |
-| sing-box · Hiddify · NekoBox · mihomo | 非目标 | 不要指望 PQ-XHTTP 与 HAPP 路由 |
+| sing-box · Hiddify · NekoBox · mihomo | 订阅 | 通过同一 URL 获得 YAML（Clash/mihomo）或 JSON（sing-box）；其中没有 PQ-XHTTP 与 HAPP 路由 |
 
 - Android：[HAPP](https://www.happ.su/) · [v2rayNG](https://github.com/2dust/v2rayNG) · [NekoBox](https://github.com/MatsuriDayo/NekoBoxForAndroid)
 - iOS：[HAPP](https://www.happ.su/) · [Shadowrocket](https://apps.apple.com/app/shadowrocket/id932747118) · [V2Box](https://apps.apple.com/app/v2box-v2ray-client/id6446814690)

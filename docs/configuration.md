@@ -210,6 +210,51 @@ with all standard labels or the current schema. Inspect the actual JSON; migrati
 routes into an existing profile. Use the menu or `quickstart` to re-provision/create a managed
 profile when `xhttp-legacy`, `xhttp-pq` or the expected seven-route shape is missing.
 
+## Subscription formats
+
+One token serves four different bodies: a separate subscription per client is not created, the
+format is chosen on the fly.
+
+| Format | For | How it is selected |
+|---|---|---|
+| HAPP | HAPP (and any unknown client) | no parameters or `?target=happ` |
+| v2ray/base64 | v2rayNG, v2rayN, Shadowrocket | `?target=v2ray` (synonym `base64`) or the `v2rayNG`/`v2rayN` User-Agent |
+| Clash/mihomo YAML | mihomo, Clash Verge, Stash, FlClash | `?target=clash` (synonym `mihomo`) or the `mihomo`/`clash`/`stash`/`flclash` User-Agent |
+| sing-box JSON | sing-box, Hiddify, NekoBox, Karing | `?target=singbox` (synonym `sing-box`) or the User-Agent of those clients |
+
+The bodies are built from the very same profile links, so the route set and the Reality parameters
+match in every format:
+
+- `tcp`, `tcp-utls`, `tcp-xudp` → TCP + `flow: xtls-rprx-vision` (plus
+  `packet-encoding: xudp` for XUDP), `client-fingerprint`, `reality-opts` (public-key/short-id);
+- `tcp-mux` → plain TCP without flow: mux is initiated by the client, the server does not depend on
+  it;
+- gRPC → `grpc-opts.grpc-service-name` (Clash) and `transport.type=grpc` (sing-box);
+- Hysteria 2 — when the backend is installed, the profile has a grant and `sub_body` is on in the
+  registry (the auth string is passed in full; for a self-signed certificate —
+  `skip-cert-verify: true`);
+- `subscription-userinfo` (usage, limit, expiry) is sent in every format: it is understood by
+  v2rayNG, HAPP, Clash UIs (Clash Verge, Mihomo Party) and sing-box clients (Hiddify, Karing).
+
+What these two formats deliberately do not have, and why:
+
+- **the PQ route (VLESS Encryption, `mlkem768x25519plus`)** — neither mihomo nor sing-box supports
+  it; the route is skipped and the reason goes into the YAML as a comment (`# skipped: …`);
+- **xhttp** — sing-box has no such transport at all; in Clash it is enabled explicitly with
+  `?xhttp=1` (mihomo ≥ 1.19 is required: on older builds the unknown `network` breaks loading of the
+  whole config, so by default the route is skipped).
+
+```bash
+# The profile subscription URL in every format — the token is the same
+sudo xrayebator profiles | jq -r '.[] | [.name, .subscription_url, .subscription_url_clash, .subscription_url_singbox] | @tsv'
+curl -s "$(sudo xrayebator profiles | jq -r '.[0].subscription_url_clash')" | head -20
+```
+
+If no format is requested explicitly and the User-Agent is unknown, the answer stays the HAPP body:
+the behaviour of links already issued to clients does not change. Existing installations get the new
+formats after the `subhttp_formats_2026` migration, which regenerates the subscription handler on
+the first menu entry.
+
 ## Desktop GUI
 
 The active Electron app is a CLI front-end over SSH, not a complete replacement for the terminal

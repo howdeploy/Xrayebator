@@ -145,6 +145,17 @@ HAPP routing profile. HAPP получает routing metadata, а v2rayNG и v2ra
 дополнительно добавляет одну строку `hysteria2://` в оба тела подписки (HAPP и generic) — под
 управлением флага `sub_body` в реестре; истёкший или отключённый профиль строки не получает.
 
+Тел теперь четыре, и все они строятся из одних и тех же ссылок профиля: HAPP, base64 для
+v2rayNG/v2rayN, Clash/mihomo YAML и sing-box JSON. Нормализацию ссылок делает
+`_subscription_links_json` (разбор `vless://`/`hysteria2://`, IPv6-скобки, percent-decoding,
+матрица поддержки транспортов клиентами), а сам формат собирают чистые билдеры
+`_subscription_render_clash_pure` и `_subscription_render_singbox_pure`. Формат выбирается по
+`?target=` или User-Agent, по умолчанию остаётся HAPP-тело. Маршруты, которые клиент не умеет
+(PQ VLESS Encryption, xhttp в sing-box, xhttp в Clash без `?xhttp=1`), пропускаются с пояснением —
+mihomo не грузит конфиг с неизвестным `network`, поэтому «нарисовать хоть что-нибудь» здесь хуже
+пропуска. `subscription-userinfo` отдаётся во всех форматах: его понимают и Clash-UI, и
+sing-box-клиенты.
+
 ## Мультипротокольные бэкенды
 
 Помимо Xray, менеджер может установить на тот же VPS дополнительные транспорты. Всё состояние

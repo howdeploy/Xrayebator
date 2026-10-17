@@ -153,6 +153,17 @@ the profile has a grant, the handler additionally appends one `hysteria2://` lin
 and the generic subscription bodies, gated by the registry flag `sub_body`; expired or disabled
 profiles never get the line.
 
+There are now four bodies, and all of them are built from the same profile links: HAPP, base64 for
+v2rayNG/v2rayN, Clash/mihomo YAML and sing-box JSON. Link normalization is done by
+`_subscription_links_json` (parsing `vless://`/`hysteria2://`, IPv6 brackets, percent-decoding, the
+client transport-support matrix), while the format itself is assembled by the pure builders
+`_subscription_render_clash_pure` and `_subscription_render_singbox_pure`. The format is selected by
+`?target=` or User-Agent, and by default the HAPP body remains. Routes the client cannot handle
+(PQ VLESS Encryption, xhttp in sing-box, xhttp in Clash without `?xhttp=1`) are skipped with an
+explanation — mihomo refuses to load a config with an unknown `network`, so "draw something anyway"
+is worse than skipping here. `subscription-userinfo` is served in every format: both Clash UIs and
+sing-box clients understand it.
+
 ## Multi-protocol backends
 
 Beyond Xray, the manager can install additional transports on the same VPS. All backend state lives

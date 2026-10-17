@@ -212,6 +212,48 @@ JSON; миграции не доделывают недостающие марш
 `quickstart` для пересоздания управляемого профиля, если отсутствуют `xhttp-legacy`, `xhttp-pq`
 или ожидаемая форма из семи маршрутов.
 
+## Форматы подписки
+
+Один токен отдаёт четыре разных тела: отдельная подписка под каждый клиент не заводится, формат
+выбирается на лету.
+
+| Формат | Кому | Как выбирается |
+|---|---|---|
+| HAPP | HAPP (и любой незнакомый клиент) | без параметров или `?target=happ` |
+| v2ray/base64 | v2rayNG, v2rayN, Shadowrocket | `?target=v2ray` (синоним `base64`) либо User-Agent `v2rayNG`/`v2rayN` |
+| Clash/mihomo YAML | mihomo, Clash Verge, Stash, FlClash | `?target=clash` (синоним `mihomo`) либо User-Agent `mihomo`/`clash`/`stash`/`flclash` |
+| sing-box JSON | sing-box, Hiddify, NekoBox, Karing | `?target=singbox` (синоним `sing-box`) либо User-Agent этих клиентов |
+
+Тела строятся из одних и тех же ссылок профиля, поэтому состав маршрутов и параметры Reality
+совпадают во всех форматах:
+
+- `tcp`, `tcp-utls`, `tcp-xudp` → TCP + `flow: xtls-rprx-vision` (у XUDP ещё
+  `packet-encoding: xudp`), `client-fingerprint`, `reality-opts` (public-key/short-id);
+- `tcp-mux` → обычный TCP без flow: mux инициирует клиент, сервер от него не зависит;
+- gRPC → `grpc-opts.grpc-service-name` (Clash) и `transport.type=grpc` (sing-box);
+- Hysteria 2 — если бэкенд установлен, у профиля есть грант и в реестре включён `sub_body`
+  (auth-строка уходит целиком; для self-signed сертификата — `skip-cert-verify: true`);
+- `subscription-userinfo` (расход, лимит, срок) отдаётся во всех форматах: его понимают v2rayNG,
+  HAPP, Clash-UI (Clash Verge, Mihomo Party) и sing-box-клиенты (Hiddify, Karing).
+
+Чего в этих двух форматах нет и почему:
+
+- **PQ-маршрут (VLESS Encryption, `mlkem768x25519plus`)** — ни mihomo, ни sing-box его не умеют;
+  маршрут пропускается, причина уходит комментарием в YAML (`# skipped: …`);
+- **xhttp** — в sing-box такого транспорта нет вовсе; в Clash он включается явно, `?xhttp=1`
+  (нужен mihomo ≥ 1.19: на старых сборках неизвестный `network` ломает загрузку всего конфига,
+  поэтому по умолчанию маршрут пропускается).
+
+```bash
+# URL подписки профиля во всех форматах — токен один и тот же
+sudo xrayebator profiles | jq -r '.[] | [.name, .subscription_url, .subscription_url_clash, .subscription_url_singbox] | @tsv'
+curl -s "$(sudo xrayebator profiles | jq -r '.[0].subscription_url_clash')" | head -20
+```
+
+Если формат не указан явно и User-Agent незнакомый, ответ остаётся HAPP-телом: поведение уже
+выданных клиентам ссылок не меняется. Существующие установки получают новые форматы после
+миграции `subhttp_formats_2026`, которая регенерирует обработчик подписки при первом входе в меню.
+
 ## Десктоп-GUI
 
 Активное Electron-приложение — это CLI-фронтенд поверх SSH, а не полная замена терминальному меню.

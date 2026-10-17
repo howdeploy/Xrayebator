@@ -396,6 +396,31 @@ journalctl -u xrayebator-monitor.service -n 50 --no-pager
 - `failed:[...]` in the `monitor-check` output — the event exists, but Telegram did not accept it:
   the state is not recorded and the send is retried on the next tick (the SNI probe is not repeated).
 
+## Clash/mihomo or sing-box do not see the subscription
+
+The response format is chosen by `?target=` or by User-Agent, and by default the HAPP body is
+served: a client that did not identify itself receives text it cannot parse.
+
+```bash
+# What the handler serves in the requested format (from the server itself)
+curl -s -H 'User-Agent: mihomo/1.19' "http://127.0.0.1:8080/sub/<token>" | head -20
+curl -s "http://127.0.0.1:8080/sub/<token>?target=singbox" | jq '.outbounds | length'
+```
+
+- **Clash/mihomo complains about the config or sees no proxies** — look at the `# skipped:` comment
+  line at the top of the YAML: PQ routes are always skipped, xhttp only without `?xhttp=1`. If the
+  profile consists of xhttp routes only, the YAML keeps groups with `DIRECT`: add `&xhttp=1`
+  (mihomo ≥ 1.19 is required) or issue a profile with tcp/gRPC routes.
+- **Some routes are missing in mihomo** — that is by design: `tcp-mux` is served as plain TCP, gRPC
+  and Hysteria 2 are there, while PQ/xhttp are not (the limitations are listed in the README).
+- **sing-box shows a single outbound** — the profile probably has xhttp routes only (sing-box has no
+  such transport). Check the profile contents and `?target=singbox` by hand.
+- **The format does not switch** — the server carries an old revision of the handler: the
+  `subhttp_formats_2026` migration regenerates `subhttp.sh` on menu entry; a repeated `happ-setup`
+  or reinstalling the subscription (menu `6`) does the same.
+- **v2rayNG/HAPP started receiving YAML** — an explicit `?target=` in the saved link overrides the
+  User-Agent: remove the parameter or set `?target=v2ray`/`?target=happ`.
+
 ## An error appeared during installation or use
 
 Copy the full error text from the terminal. For installation failures, include the relevant

@@ -125,6 +125,15 @@ loopback 处理器发布，JSON 携带 `degraded:true`；解除 80 端口封锁�
 元数据。当 Hysteria 2 后端已安装且配置档持有授权时，处理器会在 HAPP 与通用两个订阅主体中各追加
 一行 `hysteria2://`，由注册表标志 `sub_body` 控制；过期或停用的配置档不会得到该行。
 
+如今订阅体共有四种，它们都由配置档的同一批链接生成：HAPP、面向 v2rayNG/v2rayN 的 base64、
+Clash/mihomo YAML 与 sing-box JSON。链接归一化由 `_subscription_links_json` 完成（解析
+`vless://`/`hysteria2://`、IPv6 方括号、percent-decoding、各客户端对传输方式的支持矩阵），格式本身
+则由纯函数构造器 `_subscription_render_clash_pure` 与 `_subscription_render_singbox_pure` 生成。格式按
+`?target=` 或 User-Agent 选择，默认仍然是 HAPP 订阅体。客户端无法使用的线路（PQ VLESS Encryption、
+sing-box 中的 xhttp、未加 `?xhttp=1` 时的 Clash xhttp）会被跳过并附上说明——mihomo 无法加载含未知
+`network` 的配置，因此这里「随便画点什么」比跳过更糟。`subscription-userinfo` 在所有格式中都会返回：
+Clash UI 与 sing-box 客户端都能识别它。
+
 ## 多协议后端
 
 除 Xray 外，管理器可以在同一台 VPS 上安装其他传输。所有后端状态位于中性根目录

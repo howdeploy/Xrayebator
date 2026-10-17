@@ -187,6 +187,44 @@ TLS endpoint 再写入标记，拒绝凭空生成。已有标记会被复用而�
 实际 JSON；迁移不会向现有配置档补建缺失线路。当缺少 `xhttp-legacy`、`xhttp-pq` 或预期的七线路
 形态时，请使用菜单或 `quickstart` 重新配置受管理的 HAPP 配置档。
 
+## 订阅格式
+
+一个令牌可以返回四种不同的订阅体：不需要为每个客户端单独建订阅，格式在请求时决定。
+
+| 格式 | 适用客户端 | 如何选择 |
+|---|---|---|
+| HAPP | HAPP（以及任何未知客户端） | 不带参数，或 `?target=happ` |
+| v2ray/base64 | v2rayNG、v2rayN、Shadowrocket | `?target=v2ray`（同义 `base64`），或 User-Agent `v2rayNG`/`v2rayN` |
+| Clash/mihomo YAML | mihomo、Clash Verge、Stash、FlClash | `?target=clash`（同义 `mihomo`），或 User-Agent `mihomo`/`clash`/`stash`/`flclash` |
+| sing-box JSON | sing-box、Hiddify、NekoBox、Karing | `?target=singbox`（同义 `sing-box`），或这些客户端的 User-Agent |
+
+各订阅体都由配置档的同一批链接生成，因此线路组成与 Reality 参数在所有格式中一致：
+
+- `tcp`、`tcp-utls`、`tcp-xudp` → TCP + `flow: xtls-rprx-vision`（XUDP 还带
+  `packet-encoding: xudp`）、`client-fingerprint`、`reality-opts`（public-key/short-id）；
+- `tcp-mux` → 不带 flow 的普通 TCP：mux 由客户端发起，服务端不依赖它；
+- gRPC → `grpc-opts.grpc-service-name`（Clash）与 `transport.type=grpc`（sing-box）；
+- Hysteria 2 —— 后端已安装、配置档持有授权且注册表中 `sub_body` 打开时（auth 字符串完整下发；
+  自签证书时带 `skip-cert-verify: true`）；
+- `subscription-userinfo`（用量、限额、有效期）在所有格式中都会返回：v2rayNG、HAPP、
+  Clash UI（Clash Verge、Mihomo Party）以及 sing-box 客户端（Hiddify、Karing）都能识别它。
+
+这两种格式里没有什么，以及为什么：
+
+- **PQ 线路（VLESS Encryption，`mlkem768x25519plus`）** —— mihomo 与 sing-box 都不支持；线路会被
+  跳过，原因作为注释写入 YAML（`# skipped: …`）；
+- **xhttp** —— sing-box 根本没有这种传输方式；在 Clash 中需要显式开启 `?xhttp=1`
+  （要求 mihomo ≥ 1.19：旧版本遇到未知 `network` 会导致整个配置加载失败，因此默认跳过该线路）。
+
+```bash
+# 配置档订阅 URL 的全部格式——令牌是同一个
+sudo xrayebator profiles | jq -r '.[] | [.name, .subscription_url, .subscription_url_clash, .subscription_url_singbox] | @tsv'
+curl -s "$(sudo xrayebator profiles | jq -r '.[0].subscription_url_clash')" | head -20
+```
+
+如果没有显式指定格式且 User-Agent 未知，响应仍然是 HAPP 订阅体：已经发给客户端的链接行为不变。
+现有安装通过迁移 `subhttp_formats_2026` 获得新格式，它在首次进入菜单时重新生成订阅处理器。
+
 ## 桌面图形界面
 
 活跃的 Electron 桌面应用（`src/`）是通过 SSH 调用 CLI 的前端，不是终端菜单的完整替代品。它从不直接修改

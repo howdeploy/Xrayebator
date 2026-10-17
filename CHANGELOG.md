@@ -8,6 +8,23 @@ Next `0.6.5` cut: the server manager plus the GUI traffic-limit card.
 
 ### Added
 
+- **Clash/mihomo and sing-box subscription formats.** One subscription token now serves four bodies
+  instead of two: the HAPP body, the base64 v2ray body, **Clash/mihomo YAML** and **sing-box JSON**.
+  The format is negotiated per request — `?target=clash|mihomo|singbox|sing-box|v2ray|base64|happ`
+  wins, then the `User-Agent` (`mihomo`/`clash`/`stash`/`flclash`, `sing-box`/`sfa`/`sfi`/`sfm`/
+  `nekobox`/`hiddify`/`karing`, `v2rayNG`/`v2rayN`), and an unknown client still gets the HAPP body,
+  so already-issued links keep working. All formats are rendered from the same normalized link set
+  (reality `public-key`/`short-id`, Vision `flow`, `packet-encoding: xudp`, gRPC service name,
+  hysteria2 with its full auth string and `skip-cert-verify` for self-signed certificates), which
+  means routes and Reality parameters cannot drift between clients. Routes a client cannot use are
+  **skipped with an explanatory comment instead of being emitted broken**: the PQ route (VLESS
+  Encryption is supported by neither mihomo nor sing-box), xhttp in sing-box (no such transport),
+  and xhttp in Clash unless `?xhttp=1` is passed (mihomo ≥ 1.19; older builds refuse to load a config
+  with an unknown `network`). `subscription-userinfo` is now sent for every format — v2rayNG, HAPP,
+  Clash UIs (Clash Verge, Mihomo Party) and sing-box clients all read it — and `profiles` gained the
+  additive `subscription_url_clash` / `subscription_url_singbox` fields. Existing installations get
+  the new handler through the `subhttp_formats_2026` migration, registered in `main_menu`,
+  `quickstart` and `happ-setup`.
 - **Per-profile traffic accounting and limits.** `install.sh` adds a loopback `dokodemo-door` API
   inbound (`127.0.0.1:10085`), `policy.system` stats and the `api → api` routing rule, so accounting
   works on a fresh install; the client `email` equals the profile name, which makes the Stats API

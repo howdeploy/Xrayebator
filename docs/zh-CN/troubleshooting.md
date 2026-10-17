@@ -300,6 +300,29 @@ journalctl -u xrayebator-monitor.service -n 50 --no-pager
 - `monitor-check` 输出中的 `failed:[...]` —— 事件存在，但 Telegram 没有接受：状态不会被记录，发送会
   在下一个周期重试（SNI 探测不会随之重跑）。
 
+## Clash/mihomo 或 sing-box 收不到或无法解析订阅
+
+响应格式按 `?target=` 或 User-Agent 选择，默认返回 HAPP 订阅体：没有表明身份的客户端拿到的文本
+它无法解析。
+
+```bash
+# 处理器在指定格式下返回什么（在服务器本机执行）
+curl -s -H 'User-Agent: mihomo/1.19' "http://127.0.0.1:8080/sub/<token>" | head -20
+curl -s "http://127.0.0.1:8080/sub/<token>?target=singbox" | jq '.outbounds | length'
+```
+
+- **Clash/mihomo 报配置错误或看不到代理** —— 请看 YAML 开头的 `# skipped:` 注释行：PQ 线路总是被
+  跳过，xhttp 则在没有 `?xhttp=1` 时被跳过。如果配置档只有 xhttp 线路，YAML 中只会剩下带 `DIRECT`
+  的分组：请加上 `&xhttp=1`（需要 mihomo ≥ 1.19），或签发带 tcp/gRPC 线路的配置档。
+- **mihomo 中缺少部分线路** —— 这是有意为之：`tcp-mux` 以普通 TCP 下发，gRPC 与 Hysteria 2 都在，
+  而 PQ/xhttp 不在（限制清单见 README）。
+- **sing-box 只显示一个 outbound** —— 很可能配置档里只有 xhttp 线路（sing-box 没有这种传输方式）。
+  请检查配置档组成，并手动加上 `?target=singbox`。
+- **格式不切换** —— 服务器上还是旧版处理器：迁移 `subhttp_formats_2026` 会在进入菜单时重新生成
+  `subhttp.sh`；重新运行 `happ-setup` 或用菜单 `6` 重装订阅效果相同。
+- **v2rayNG/HAPP 开始收到 YAML** —— 保存的链接里显式写了 `?target=`，它会覆盖 User-Agent：去掉该
+  参数，或改成 `?target=v2ray`/`?target=happ`。
+
 ## 安装或使用过程中出现报错
 
 请完整复制终端中的报错文本。如果问题出在 Xrayebator 代码上，请提交 issue。
