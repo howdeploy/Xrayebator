@@ -8,6 +8,22 @@ Next `0.6.5` cut: the server manager plus the GUI traffic-limit card.
 
 ### Added
 
+- **DNS-01 certificates and a domain-based subscription (Cloudflare / Route53).** `xrayebator
+  dns01-setup --domain sub.example.com --provider cloudflare|route53` issues a Let's Encrypt
+  certificate by proving domain ownership with a TXT record, so **port 80 is not needed at all** —
+  exactly the case where http-01 fails and the subscription degrades to `http_tls` on hosters that
+  filter inbound :80. It installs the matching certbot plugin, writes provider credentials as `0600`
+  root (`/etc/letsencrypt/xrayebator-dns01-cloudflare.ini`, or an AWS profile handed to certbot via
+  `AWS_SHARED_CREDENTIALS_FILE`), renews through the standard `certbot.timer` with a
+  `systemctl reload nginx` deploy hook, renders an nginx vhost with a **single TLS server** (no
+  `listen 80`, no ACME location), opens only the subscription port in UFW, and flips the
+  subscription markers to `domain_tls`, so the published URL becomes `https://<domain>/sub/<token>`.
+  `xrayebator dns01-status` reports the provider, mode, domain, port, credential presence, days
+  until expiry and whether the deploy hook is in place; without an email the certificate is
+  registered with `--register-unsafely-without-email` (no renewal notices), matching the quickstart
+  convention. Menu item `6` → `8` runs the same flow interactively, `uninstall.sh` removes the
+  credential files, and the certificate stays covered by the root-owned `.certbot_owned` manifest,
+  so third-party domains are never touched.
 - **Clash/mihomo and sing-box subscription formats.** One subscription token now serves four bodies
   instead of two: the HAPP body, the base64 v2ray body, **Clash/mihomo YAML** and **sing-box JSON**.
   The format is negotiated per request — `?target=clash|mihomo|singbox|sing-box|v2ray|base64|happ`

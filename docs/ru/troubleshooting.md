@@ -393,6 +393,30 @@ curl -s "http://127.0.0.1:8080/sub/<token>?target=singbox" | jq '.outbounds | le
 - **v2rayNG/HAPP стали получать YAML** — явный `?target=` в сохранённой ссылке перебивает
   User-Agent: уберите параметр или поставьте `?target=v2ray`/`?target=happ`.
 
+## DNS-01 не выдаёт сертификат
+
+`dns01-setup` падает, а подписка остаётся в прежнем режиме (команда переключает маркеры только
+после успешного выпуска, поэтому рабочий URL не ломается).
+
+```bash
+sudo xrayebator dns01-status                 # провайдер, домен, срок сертификата, deploy-hook
+tail -30 /tmp/certbot-dns01.log              # вывод certbot: причина отказа
+dig +short TXT _acme-challenge.sub.example.com   # должна появляться TXT-запись во время выпуска
+```
+
+- **Cloudflare: `Invalid token` / `unauthorized`** — токену не выдано право `DNS:Edit` именно на эту
+  зону (Zone → API → Tokens). Токен из глобального API-key не подходит: нужен API Token.
+- **Route53: `AccessDenied` / `Unable to locate credentials`** — у ключа нет
+  `route53:ChangeResourceRecordSets`/`ListHostedZones`, либо зона в другом аккаунте. Файл
+  `/etc/letsencrypt/xrayebator-dns01-aws.ini` передаётся certbot через `AWS_SHARED_CREDENTIALS_FILE`.
+- **`NXDOMAIN` / `No valid IP addresses`** — домен не делегирован или A/AAAA-запись не указывает на
+  VPS: DNS-01 подтверждает владение зоной, но подписка всё равно должна резолвиться в этот сервер.
+- **TXT-запись не успела появиться** — увеличьте `--dns-cloudflare-propagation-seconds` (по умолчанию
+  30) в аргументах certbot; у медленных зон помогает 60–120.
+- **Продление** — штатный `certbot.timer`; в renewal-конфиге остаётся deploy-hook на `systemctl reload
+  nginx`, поэтому подписка подхватывает новый сертификат без ручных действий (`dns01-status` показывает
+  `deploy_hook: true`).
+
 ## Вылезла ошибка при установке или работе
 
 Скопируйте текст ошибки из терминала целиком. Если проблема в коде Xrayebator — открывайте issue.

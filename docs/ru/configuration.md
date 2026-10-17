@@ -153,6 +153,8 @@ legacy-файлы и блоки, ранее созданные Xrayebator, и с
 | `sudo xrayebator awg-grant --name N` | Выдать per-profile peer (ключевая пара + preshared key + адрес `10.8.1.x` в `.backends.awg` профиля); `awg0.conf` регенерируется; JSON |
 | `sudo xrayebator awg-conf --name N` | Клиентский `.conf` peer-а профиля в JSON `{ok, name, conf}` — full-tunnel AllowedIPs, серверные junk-параметры, endpoint; импорт в клиент AmneziaWG/AmneziaVPN |
 | `sudo xrayebator awg-31 --on\|--off` | Переключить формат конфига AWG 3.1 (`HeaderProtectionKey`, `RandomTrailers`, `S3`/`S4`); для новых установок 3.1 включён по умолчанию, тумблер досоздаёт недостающие параметры сервера на месте, предупреждает, что все выданные клиентские `.conf` нужно скачать заново (AmneziaVPN ≥ 5.0.1.5), и регенерирует интерфейс с откатом |
+| `sudo xrayebator dns01-setup --domain sub.example.com --provider cloudflare\|route53` | HTTPS-подписка по домену через DNS-01: порт 80 не нужен, сертификат проверяется TXT-записью. Пишет credentials `0600`, выпускает certbot-сертификат с deploy-hook, поднимает nginx-vhost без `listen 80` и переводит маркеры в `domain_tls`; JSON |
+| `sudo xrayebator dns01-status` | Состояние DNS-01: провайдер, режим, домен, порт, наличие credentials, срок сертификата в днях и наличие deploy-hook; JSON |
 | `sudo xrayebator alerts-setup --token T --chat-id C` | Подключить Telegram-уведомления: проверяет токен через `getMe`, отправляет тестовое сообщение и **только после успешной доставки** сохраняет `alerts.json` (0600) и включает `xrayebator-monitor.timer`; JSON |
 | `sudo xrayebator alerts-status` | Состояние мониторинга: конфиг, таймер, время последней проверки, события и результат последней SNI-пробы (токен бота не показывается); JSON |
 | `sudo xrayebator alerts-test` | Тестовое сообщение в настроенный чат (проверка доставки); JSON |
@@ -544,6 +546,50 @@ sudo xrayebator monitor-check --force-sni    # прогнать проверку
 состоянии). Пороги настраиваются переменными окружения юнита: `ALERTS_REMIND_SEC` (напоминание,
 86400), `ALERTS_EXPIRE_WARN_SEC` (горизонт «истекает», 259200), `ALERTS_SNI_INTERVAL_SEC` (86400),
 `ALERTS_SNI_TIMEOUT` (8 секунд на один SNI).
+
+## DNS-01: сертификат и домен подписки без порта 80
+
+Обычные режимы подписки (`ip_tls`, `domain_tls`) получают сертификат Let's Encrypt через http-01, то
+есть через доступный снаружи порт 80. Часть хостеров его фильтрует — тогда подписка деградирует в
+`http_tls` (HTTP без сертификата). DNS-01 проверяет владение доменом по TXT-записи, поэтому порт 80
+не нужен вовсе, а подписка живёт по своему домену: `https://sub.example.com/sub/<token>`.
+
+```bash
+# Cloudflare: API-token с правом DNS:Edit на зону
+sudo xrayebator dns01-setup --domain sub.example.com --provider cloudflare \
+  --token CF_API_TOKEN --email admin@example.com
+
+# Route53: ключи с правом Route53:ChangeResourceRecordSets
+sudo xrayebator dns01-setup --domain sub.example.com --provider route53 \
+  --aws-access-key-id AKIA... --aws-secret-access-key ... --without-email
+
+sudo xrayebator dns01-status   # провайдер, домен, порт, срок сертификата, deploy-hook
+```
+
+Что делает команда:
+
+1. ставит `certbot` и плагин провайдера (`python3-certbot-dns-cloudflare` или
+   `python3-certbot-dns-route53`);
+2. пишет credentials-файл `0600` root — `/etc/letsencrypt/xrayebator-dns01-cloudflare.ini`
+   (`dns_cloudflare_api_token = …`) или `xrayebator-dns01-aws.ini` (профиль `[default]`,
+   передаётся certbot через `AWS_SHARED_CREDENTIALS_FILE`);
+3. выпускает сертификат `certbot certonly --dns-cloudflare|--dns-route53 -d <домен>` с
+   `--deploy-hook "systemctl reload nginx"` (продление — штатный `certbot.timer`, сертификат
+   перевыпускается без остановки подписки);
+4. пишет nginx-vhost **только с TLS-сервером** (никакого `listen 80` и ACME-location — в этом
+   режиме они не нужны), открывает в UFW только публичный порт подписки (по умолчанию `443`);
+5. переводит маркеры подписки в `domain_tls`, поэтому `_subscription_base_url` и GUI отдают
+   `https://<домен>`.
+
+Требования и оговорки:
+
+- домен должен быть делегирован и его A/AAAA-запись указывать на этот VPS (проверка DNS не
+  выполняется: split-DNS и proxied-зоны дают ложные срабатывания);
+- без email сертификат выпускается с `--register-unsafely-without-email` — уведомления о продлении
+  и восстановление аккаунта по почте недоступны (как в `quickstart`);
+- credentials-файлы удаляются `xrayebator-uninstall`; сертификаты — по root-owned манифесту
+  `.certbot_owned`, чужие домены не трогаются;
+- переключение на DNS-01 не отменяет уже выданные ссылки: меняется только базовый URL подписки.
 
 ## Каскад и upstream-ноды
 

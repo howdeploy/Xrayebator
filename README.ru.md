@@ -103,6 +103,7 @@ Xrayebator решает обе задачи так:
 | Multi-route профиль | Один профиль = набор маршрутов с общим `sub_token`; несколько профилей могут делить один порт | `profiles/<name>.json` |
 | HAPP-подписка | Отдаёт список `vless://`, управляемый Global Proxy routing и geo-базы по защищённому токеном URL; наружу публикуется nginx по HTTPS | `subhttp.sh`, `xrayebator-sub.service` |
 | Форматы подписки | Один токен — четыре тела: HAPP, base64 для v2rayNG/v2rayN, Clash/mihomo YAML и sing-box JSON; формат выбирается по `?target=` или по User-Agent | `_subscription_render_*_pure`, `subhttp.sh` |
+| DNS-01 подписка | Сертификат Let's Encrypt проверяется TXT-записью (Cloudflare/Route53), поэтому HTTPS-подписка по домену работает даже там, где хостер фильтрует порт 80 | `dns01-setup`, `dns01-status` |
 | Post-quantum XHTTP | Маршрут `xhttp-pq` работает с VLESS-шифрованием `mlkem768x25519plus` | `.vless_encryption`, `.vless_decryption` |
 | Совместимость с v2ray | `v2rayNG`/`v2rayN` получают классический base64-body без HAPP-метаданных | `subhttp.sh` |
 | Revoke подписки | Генерирует новый 32-символьный hex-токен, старый URL перестаёт работать; полный отзыв (`--full`) меняет ещё и uuid — уже скачанные конфиги отваливаются | `openssl rand -hex 16`, `profile-revoke` |

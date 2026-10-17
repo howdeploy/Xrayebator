@@ -16,7 +16,7 @@ for test_file in validation/*.sh; do bash "$test_file" || exit; done
 
 ## Что покрывают тесты
 
-В `validation/` лежат 37 статических и локальных регрессионных тестов:
+В `validation/` лежат 38 статических и локальных регрессионных тестов:
 
 | Тест | Что проверяет |
 |---|---|
@@ -57,6 +57,7 @@ for test_file in validation/*.sh; do bash "$test_file" || exit; done
 | `test-traffic-limit-cli.sh` | Учёт трафика профилей: нормализацию единиц лимита, накопление дельт и сброс watermark, мгновенный бан/разбан с сохранением flow, кросс-гарды `expire` × трафик, миграцию Stats-инбаунда с коллизией порта, трафик-поля вывода `profiles`, регистрацию миграций |
 | `test-alerts-monitor.sh` | Telegram-алерты мониторинга: `alerts-setup/status/enable/disable/test`, отсутствие сохранения конфига при недоставленном тесте, unit'ы и миграцию таймера, детекцию сервисов и бэкендов (hysteria2, AWG), подписку и её деградацию до `http_tls`, SNI-пробу (частичная/полная недоступность, восстановление, интервал, retry без повторной пробы), edge-триггер перезагрузки |
 | `test-subscription-formats.sh` | Форматы подписки: нормализацию `vless://` (7 транспортов) и `hysteria2://`, IPv6/percent-decoding, Clash/mihomo YAML (reality-opts, flow, packet-encoding, grpc-opts, hysteria2, валидация PyYAML при наличии), sing-box JSON через `jq`, пропуск PQ и xhttp с пояснением, edge-cases (нет живых маршрутов, только PQ), content negotiation в heredoc'е хендлера, регистрацию миграции и CLI-контракт `profiles` |
+| `test-dns01-certbot.sh` | DNS-01 (Cloudflare/Route53): валидацию домена (IP и локальные имена отклоняются) и провайдера, сборку аргументов certbot (плагин, credentials, propagation, deploy-hook, `-m` или регистрация без email), запись credentials `0600` с содержимым по провайдеру, nginx-vhost **без** `listen 80` и ACME-location, CLI-ошибки без записи на диск и проводку (диспатчер, пункт меню, пакеты плагинов, UFW-порт, маркеры `domain_tls`, manifest certbot, cleanup в uninstall) |
 
 > Статические тесты не заменяют проверку на disposable VPS: создание и удаление профиля, валидацию
 > конфига, рестарт сервисов, rollback и реальное подключение клиента.
@@ -119,7 +120,7 @@ npm test              # Vitest unit-тесты
 
 Три независимых workflow:
 
-- **ci-linux.yml** — Bash validation: `bash -n` всех скриптов + все 37 `validation/test-*.sh` на
+- **ci-linux.yml** — Bash validation: `bash -n` всех скриптов + все 38 `validation/test-*.sh` на
   ubuntu-24.04. Запускается на push в `main`, `dev`, `experimental` и на pull request.
 - **release.yml** — Electron сборка (Windows/macOS/Linux). Запускается только на теги `v*` и manual
   dispatch. Сначала `preflight`: проверяет наличие текста релиза `docs/releases/<tag>.en.md` и
