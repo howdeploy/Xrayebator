@@ -181,4 +181,30 @@ grep -q 'xrayebator-dns01-cloudflare.ini' uninstall.sh || fail "uninstall не �
 grep -q 'xrayebator-dns01-aws.ini' uninstall.sh || fail "uninstall не удаляет AWS-credentials"
 grep -q 'dns01-setup --domain sub.example.com' xrayebator || fail "нет help-строки dns01-setup"
 
-echo "✓ DNS-01 (Cloudflare/Route53): валидация, аргументы certbot, credentials 0600, vhost без :80, CLI-ошибки, проводка — OK"
+# ═══════════ 7. repair-dns01: замена http_tls-подписки на DNS-01 (A3) ═══════════
+grep -q '^repair_dns01_command() {' xrayebator || fail "нет функции repair_dns01_command"
+grep -q 'repair-dns01)' xrayebator || fail "нет диспатчера repair-dns01"
+grep -q 'Подписка уже на HTTPS' xrayebator || fail "repair-dns01 без no-op для ip_tls/domain_tls"
+grep -q 'подписка осталась в http_tls' xrayebator || fail "repair-dns01 без честной ошибки при неудаче"
+grep -q '_dns01_install "$domain" "$provider" "$email" "$token" "$aws_key" "$aws_secret" "$port"' xrayebator \
+  || fail "repair-dns01 не вызывает _dns01_install с полным набором аргументов"
+
+# Функционально: валидация срабатывает ДО системных вызовов и ничего не пишет.
+out=$(repair_dns01_command --domain 203.0.113.10 --provider cloudflare --token "$CF_TOKEN") || true
+assert_json "$out" '.ok == false and (.error | test("--domain"))' "repair-dns01: IP вместо домена"
+out=$(repair_dns01_command --domain sub.example.com --provider digitalocean --token "$CF_TOKEN") || true
+assert_json "$out" '.ok == false and (.error | test("cloudflare"))' "repair-dns01: неизвестный провайдер"
+out=$(repair_dns01_command --domain sub.example.com --provider cloudflare --token "short") || true
+assert_json "$out" '.ok == false and (.error | test("--token"))' "repair-dns01: короткий токен"
+out=$(repair_dns01_command --domain sub.example.com --provider route53) || true
+assert_json "$out" '.ok == false and (.error | test("aws"))' "repair-dns01: route53 без ключей"
+[[ ! -f "$DNS01_MARKER_FILE" ]] || fail "repair-dns01 не должен писать маркер при ошибках валидации"
+
+# A2/A4: quickstart умеет выбирать PQ при развёртывании (флаг парсится и влияет на профиль)
+grep -q -- '--pq) deploy_pq=true' xrayebator || fail "quickstart не парсит --pq"
+grep -q -- '--without-pq) deploy_pq=false' xrayebator || fail "quickstart не парсит --without-pq"
+grep -q 'if \[\[ "$deploy_pq" == "true" \]\]' xrayebator || fail "quickstart не использует deploy_pq"
+grep -q '_pq_add_route_for_profile "$PROFILES_DIR/$HAPP_DEFAULT_PROFILE.json" tcp' xrayebator \
+  || fail "quickstart --pq не добавляет PQ-маршрут managed-профилю"
+
+echo "✓ DNS-01 (Cloudflare/Route53): валидация, аргументы certbot, credentials 0600, vhost без :80, CLI-ошибки, repair-dns01, quickstart --pq, проводка — OK"
