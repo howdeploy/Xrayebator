@@ -106,7 +106,9 @@ make_config() {
       {port: 8443, tag: "inbound-8443", settings: {clients: [
         {id: $f, flow: "", email: "friend"}], decryption: "none"}}
     ],
-    routing: {rules: [{type: "field", inboundTag: ["api"], outboundTag: "api"}]}
+    routing: {rules: [{type: "field", inboundTag: ["api"], outboundTag: "api"}]},
+    policy: {system: {statsInboundUplink: true, statsInboundDownlink: true},
+             levels: {"0": {handshake: 4, statsUserUplink: true, statsUserDownlink: true}}}
   }' > "$CONFIG_FILE"
 }
 make_config
@@ -327,6 +329,23 @@ jq -e '.inbounds | any(.tag == "api" and .port == 10086)' "$MIG2_CFG" >/dev/null
   || fail "collision: api inbound must use 10086"
 CONFIG_FILE="$SAVED_CFG"
 
+# --- 12b. Ремонт серверов, прошедших баг-версию traffic_stats_2026 ---
+# Маркер прежней миграции уже стоит (флагов уровня 0 в конфиге нет), поэтому
+# починить учёт может только отдельная миграция — иначе расход навсегда нулевой.
+REPAIR_CFG="$WORKDIR/repair-levels.json"
+jq '.policy = {system: {statsInboundUplink: true, statsInboundDownlink: true},
+               levels: {"0": {handshake: 4}}}' "$MIG_CFG" > "$REPAIR_CFG"
+jq 'del(.inbounds[] | select(.tag == "api"))' "$REPAIR_CFG" > "$REPAIR_CFG.tmp" && mv "$REPAIR_CFG.tmp" "$REPAIR_CFG"
+CONFIG_FILE="$REPAIR_CFG"
+rc=0; _migrate_traffic_user_stats_2026 >/dev/null 2>&1 || rc=$?
+[[ "$rc" == "0" ]] || fail "traffic_user_stats_2026 must repair missing level flags (0), got $rc"
+jq -e '.policy.levels["0"].statsUserUplink == true and .policy.levels["0"].statsUserDownlink == true and
+       .policy.levels["0"].handshake == 4' "$REPAIR_CFG" >/dev/null \
+  || fail "repair migration did not add level-0 stats flags / clobbered level settings"
+rc=0; _migrate_traffic_user_stats_2026 >/dev/null 2>&1 || rc=$?
+[[ "$rc" == "1" ]] || fail "traffic_user_stats_2026 second run must be no-op (1), got $rc"
+CONFIG_FILE="$SAVED_CFG"
+
 # --- 13. profiles JSON: поля трафика для GUI ---
 profiles_json=$(
   _profile_cli_subscription_url() { return 1; }
@@ -337,6 +356,24 @@ jq -e '. | map(select(.name == "friend")) | .[0] |
   .traffic_supported == true and (.traffic_used | type == "number") and
   (.traffic_limit | type == "number") and (.traffic_disabled | type == "boolean")' \
   <<< "$profiles_json" >/dev/null || fail "profiles JSON missing traffic fields: $profiles_json"
+
+# Честный capability-флаг: без api-инбаунда и user-level флагов учёт не работает,
+# и GUI должен прятать управление лимитом вместо молчаливо неработающего лимита.
+NOACC_CFG="$WORKDIR/no-accounting-config.json"
+jq 'del(.inbounds[] | select(.tag == "api")) |
+    del(.policy.levels["0"].statsUserUplink, .policy.levels["0"].statsUserDownlink)' \
+  "$CONFIG_FILE" > "$NOACC_CFG"
+SAVED_ACC_CFG="$CONFIG_FILE"
+CONFIG_FILE="$NOACC_CFG"
+profiles_json_noacc=$(
+  _profile_cli_subscription_url() { return 1; }
+  _subscription_base_url() { printf 'https://example.invalid'; }
+  profiles_command 2>/dev/null
+) || fail "profiles command failed (no-accounting config)"
+jq -e '. | map(select(.name == "friend")) | .[0] | .traffic_supported == false' \
+  <<< "$profiles_json_noacc" >/dev/null \
+  || fail "traffic_supported must be false without api inbound + level-0 user stats"
+CONFIG_FILE="$SAVED_ACC_CFG"
 
 # --- 14. Статические инварианты handler'а подписки и юнитов ---
 # Регрессия: голый `exec {FD}>file 2>/dev/null` в _lock_acquire применялся бы
@@ -359,7 +396,7 @@ awk '/"policy": \{/,/^  \}/' install.sh | grep -q '"statsUserUplink": true' \
   || fail "install.sh: policy без statsUserUplink уровня 0"
 awk '/"policy": \{/,/^  \}/' install.sh | grep -q '"statsUserDownlink": true' \
   || fail "install.sh: policy без statsUserDownlink уровня 0"
-for name in traffic_stats_2026 traffic_timer_2026 subhttp_traffic_2026; do
+for name in traffic_stats_2026 traffic_user_stats_2026 traffic_timer_2026 subhttp_traffic_2026; do
   count=$(grep -c "run_migration \"$name\"" xrayebator || true)
   [[ "$count" -ge 3 ]] || fail "migration $name зарегистрирована меньше 3 раз (main/quickstart/happ-setup): $count"
 done

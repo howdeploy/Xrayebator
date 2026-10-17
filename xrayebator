@@ -9099,6 +9099,7 @@ main_menu() {
   run_migration "subhttp_happ_legacy_xhttp_2026" "HAPP subscription: prefer legacy XHTTP route" _migrate_subhttp_happ_legacy_xhttp_2026 || ((migration_failures++))
   run_migration "subhttp_hysteria2_2026" "Subhttp: hysteria2-ссылка в телах подписки (мультибэкенд)" _migrate_subhttp_hysteria2_2026 || ((migration_failures++))
   run_migration "traffic_stats_2026" "Stats API: учёт трафика профилей" _migrate_traffic_stats_2026 || ((migration_failures++))
+  run_migration "traffic_user_stats_2026" "User-level статистика трафика (ремонт F1)" _migrate_traffic_user_stats_2026 || ((migration_failures++))
   run_migration "traffic_timer_2026" "Таймер учёта трафика профилей (5 мин)" _migrate_traffic_timer_2026 || ((migration_failures++))
   run_migration "subhttp_traffic_2026" "Subhttp: реальный traffic в subscription-userinfo" _migrate_subhttp_traffic_2026 || ((migration_failures++))
   run_migration "alerts_monitor_2026" "Таймер мониторинга сервера (Telegram-алерты)" _migrate_alerts_monitor_2026 || ((migration_failures++))
@@ -12714,6 +12715,7 @@ quickstart_command() {
   run_migration "subhttp_happ_legacy_xhttp_2026" "Subhttp HAPP legacy XHTTP route" _migrate_subhttp_happ_legacy_xhttp_2026 >/dev/null 2>&1 || true
   run_migration "subhttp_hysteria2_2026" "Subhttp hysteria2 links" _migrate_subhttp_hysteria2_2026 >/dev/null 2>&1 || true
   run_migration "traffic_stats_2026" "Stats API traffic accounting" _migrate_traffic_stats_2026 >/dev/null 2>&1 || true
+  run_migration "traffic_user_stats_2026" "User-level traffic statistics (repair)" _migrate_traffic_user_stats_2026 >/dev/null 2>&1 || true
   run_migration "traffic_timer_2026" "Traffic accounting timer" _migrate_traffic_timer_2026 >/dev/null 2>&1 || true
   run_migration "subhttp_traffic_2026" "Subhttp traffic userinfo" _migrate_subhttp_traffic_2026 >/dev/null 2>&1 || true
   run_migration "alerts_monitor_2026" "Telegram alerts monitor timer" _migrate_alerts_monitor_2026 >/dev/null 2>&1 || true
@@ -13216,6 +13218,7 @@ happ_setup_command() {
   run_migration "happ_legacy_xhttp_route_2026" "HAPP legacy xhttp route" _migrate_happ_legacy_xhttp_route_2026 >/dev/null 2>&1 || true
   run_migration "subhttp_multiroute_2026" "Subhttp multiroute handler" _migrate_subhttp_multiroute_2026 >/dev/null 2>&1 || true
   run_migration "traffic_stats_2026" "Stats API traffic accounting" _migrate_traffic_stats_2026 >/dev/null 2>&1 || true
+  run_migration "traffic_user_stats_2026" "User-level traffic statistics (repair)" _migrate_traffic_user_stats_2026 >/dev/null 2>&1 || true
   run_migration "traffic_timer_2026" "Traffic accounting timer" _migrate_traffic_timer_2026 >/dev/null 2>&1 || true
   run_migration "subhttp_traffic_2026" "Subhttp traffic userinfo" _migrate_subhttp_traffic_2026 >/dev/null 2>&1 || true
   run_migration "alerts_monitor_2026" "Telegram alerts monitor timer" _migrate_alerts_monitor_2026 >/dev/null 2>&1 || true
@@ -13304,6 +13307,19 @@ profiles_command() {
   local base
   base=$(_subscription_base_url 2>/dev/null || true)
 
+  # Честный capability-флаг: учёт трафика работает только если в конфиге есть
+  # api-инбаунд и user-level статистика уровня 0. Иначе GUI не должен предлагать
+  # управление лимитом (сервер обновили, но миграции ещё не проходили) — тот же
+  # контракт, что у expire_supported: нет флага → нет и функции.
+  local traffic_supported=true
+  if ! jq -e '
+    any(.inbounds[]?; .tag == "api") and
+    (.policy.levels["0"].statsUserUplink == true) and
+    (.policy.levels["0"].statsUserDownlink == true)
+  ' "$CONFIG_FILE" >/dev/null 2>&1; then
+    traffic_supported=false
+  fi
+
   local first=1
   printf '['
   for file in "$PROFILES_DIR"/*.json; do
@@ -13370,6 +13386,7 @@ profiles_command() {
       --argjson expire_disabled "$expire_disabled" \
       --argjson traffic_used "$traffic_used" --argjson traffic_limit "$traffic_limit" \
       --argjson traffic_disabled "$traffic_disabled" \
+      --argjson traffic_supported "$traffic_supported" \
       --argjson backends "$backends" \
       '{name: $name, uuid: $uuid, transport: $transport, port: $port,
         fingerprint: $fingerprint, sni: $sni, created: $created,
@@ -13378,7 +13395,7 @@ profiles_command() {
         expire: $expire, expire_date: $expire_date, expire_disabled: $expire_disabled,
         expire_supported: true, backends: $backends,
         traffic_used: $traffic_used, traffic_limit: $traffic_limit,
-        traffic_disabled: $traffic_disabled, traffic_supported: true}'
+        traffic_disabled: $traffic_disabled, traffic_supported: $traffic_supported}'
   done
   printf ']\n'
   return 0
@@ -14623,8 +14640,27 @@ _migrate_subhttp_traffic_2026() {
   return 0
 }
 
-# ═══════════════════════════════════════════════════════════
-# Telegram-алерты (F2): мониторинг сервера — здоровье сервисов
+# Ремонт уже обновившихся серверов: миграция traffic_stats_2026 (до фикса) ставила
+# только policy.system.statsInbound*, поэтому её маркер стоит, а user-level флагов
+# уровня 0 в конфиге нет — без них Xray не регистрирует счётчики user>>> и расход
+# остаётся нулевым. Отдельная миграция нужна именно потому, что прежняя уже
+# отмечена как выполненная и повторно не запустится. Идемпотентна: no-op → 1.
+_migrate_traffic_user_stats_2026() {
+  if [[ "$(jq -r '(.policy.levels["0"].statsUserUplink == true) and (.policy.levels["0"].statsUserDownlink == true)' "$CONFIG_FILE" 2>/dev/null)" == "true" ]]; then
+    return 1
+  fi
+  if ! safe_jq_write '
+    .policy = ((.policy // {}) + {levels: ((.policy.levels // {}) + {"0": ((.policy.levels["0"] // {}) + {
+      statsUserUplink: true,
+      statsUserDownlink: true
+    })})})
+  ' "$CONFIG_FILE"; then
+    return 2
+  fi
+  return 0
+}
+
+
 # (xray/sub/nginx, а также hysteria-server и интерфейс AWG, если бэкенды
 # установлены), истекающие и отключённые по сроку профили, отключённые по
 # лимиту трафика, живость подписки и её деградация до http_tls, доступность
