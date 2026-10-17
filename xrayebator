@@ -1320,72 +1320,6 @@ _subscription_render_singbox_pure() {
   '
 }
 
-# Deep-link'и подписки: те же URL, но «одним тапом» из мессенджера/QR.
-# Схемы сверены с клиентами: v2rayNG объявляет scheme=v2rayng, host=install-sub
-# (V2rayNG AndroidManifest.xml), HAPP использует тот же padded-Base64-payload, что
-# и уже применяемый здесь happ://routing/onadd/<b64>. Остальные клиенты умеют
-# импортировать сам URL — для них deep-link не выдумываем.
-# Args: client (happ|v2rayng), subscription_url. Печатает ссылку или возвращает 1.
-_deeplink_pure() {
-  local client="$1" url="$2"
-  [[ -n "$url" ]] || return 1
-  case "$client" in
-    v2rayng)
-      local encoded
-      encoded=$(jq -nr --arg u "$url" '$u|@uri') || return 1
-      printf 'v2rayng://install-sub?url=%s\n' "$encoded"
-      ;;
-    happ)
-      printf 'happ://add/%s\n' "$(printf '%s' "$url" | base64 -w0)"
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
-# xrayebator subscription-links --name NAME — все готовые ссылки профиля (JSON).
-subscription_links_command() {
-  export TERM=dumb
-  export XRAYEBATOR_NONINTERACTIVE=1
-
-  local name=""
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --name) name="${2:-}"; shift 2 ;;
-      *) shift ;;
-    esac
-  done
-  if [[ -z "$name" || ! "$name" =~ ^[a-zA-Z0-9_-]{1,48}$ ]]; then
-    echo '{"ok":false,"error":"Укажите --name профиля"}'
-    return 1
-  fi
-  local profile_file="$PROFILES_DIR/$name.json"
-  if [[ ! -f "$profile_file" ]]; then
-    echo '{"ok":false,"error":"Профиль не найден"}'
-    return 1
-  fi
-  local token url
-  token=$(jq -r '.sub_token // ""' "$profile_file" 2>/dev/null)
-  if [[ ! "$token" =~ ^[a-f0-9]{32}$ ]]; then
-    echo '{"ok":false,"error":"У профиля нет валидного sub_token (перевыпустите подписку)"}'
-    return 1
-  fi
-  url="$(_subscription_base_url)/sub/${token}"
-
-  local happ_link="" v2rayng_link=""
-  happ_link=$(_deeplink_pure happ "$url" 2>/dev/null || true)
-  v2rayng_link=$(_deeplink_pure v2rayng "$url" 2>/dev/null || true)
-
-  jq -n --arg name "$name" --arg url "$url" \
-    --arg happ "$happ_link" --arg v2rayng "$v2rayng_link" \
-    '{ok:true, name:$name,
-      urls:{happ:$url, v2ray:($url + "?target=v2ray"),
-            clash:($url + "?target=clash"), singbox:($url + "?target=singbox")},
-      deeplinks:{happ_add:$happ, v2rayng_install_sub:$v2rayng}}'
-  return 0
-}
-
 # ═══════════════════════════════════════════════════════════
 # Subscription base URL builder (Phase 7, Plan 7.2 / REQ-C03)
 # ═══════════════════════════════════════════════════════════
@@ -17292,10 +17226,6 @@ if [[ "$XRAYEBATOR_SOURCED" -eq 0 ]]; then
       shift
       dns01_status_command "$@"
       ;;
-    subscription-links)
-      shift
-      subscription_links_command "$@"
-      ;;
     fp-change)
       shift
       fp_change_command "$@"
@@ -17395,7 +17325,6 @@ if [[ "$XRAYEBATOR_SOURCED" -eq 0 ]]; then
       echo -e "  ${CYAN}sudo xrayebator dns01-setup --domain sub.example.com --provider cloudflare|route53${NC}"
       echo -e "                               — HTTPS-подписка по домену без порта 80 (DNS-01) (JSON)"
       echo -e "  ${CYAN}sudo xrayebator dns01-status${NC} — состояние DNS-01, домен, срок сертификата (JSON)"
-      echo -e "  ${CYAN}sudo xrayebator subscription-links --name N${NC} — все ссылки профиля: 4 формата + deep-link'и (JSON)"
       echo -e "  ${CYAN}sudo xrayebator sni-list${NC} — список допустимых SNI (JSON)"
       echo -e "  ${CYAN}sudo xrayebator sni-change --name N [--route R] --sni S${NC} — сменить SNI (JSON; обновит все профили на порту)"
       echo -e "  ${CYAN}sudo xrayebator port-change --name N [--route R] --port P|random${NC} — сменить порт (JSON; reconnect клиентов)"
