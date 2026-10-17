@@ -14564,6 +14564,23 @@ _migrate_traffic_stats_2026() {
     changed=true
   fi
 
+  # Per-user счётчики Xray регистрирует ТОЛЬКО при statsUserUplink/Downlink
+  # уровня клиента (app/dispatcher: p.Stats.UserUplink → "user>>>EMAIL>>>traffic
+  # >>>uplink"): policy.system.statsInbound* даёт лишь статистику инбаунда, и
+  # расход по профилям остался бы нулевым. Уровень нигде не задаётся, значит все
+  # клиенты менеджера — уровня 0, и флаги нужны именно ему.
+  if [[ "$(jq -r '(.policy.levels["0"].statsUserUplink == true) and (.policy.levels["0"].statsUserDownlink == true)' "$CONFIG_FILE" 2>/dev/null)" != "true" ]]; then
+    if ! safe_jq_write '
+      .policy = ((.policy // {}) + {levels: ((.policy.levels // {}) + {"0": ((.policy.levels["0"] // {}) + {
+        statsUserUplink: true,
+        statsUserDownlink: true
+      })})})
+    ' "$CONFIG_FILE"; then
+      return 2
+    fi
+    changed=true
+  fi
+
   # email клиентам: ключ учёта трафика = имя профиля.
   local profile_file name uuid need_email
   for profile_file in "$PROFILES_DIR"/*.json; do

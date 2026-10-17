@@ -1002,7 +1002,9 @@ if ! cat > "$config_tmp" << EOF
         "connIdle": 300,
         "uplinkOnly": 2,
         "downlinkOnly": 5,
-        "bufferSize": 4
+        "bufferSize": 4,
+        "statsUserUplink": true,
+        "statsUserDownlink": true
       }
     }
   }

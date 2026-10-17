@@ -289,6 +289,13 @@ jq -e '.routing.rules[0] == {"type": "field", "inboundTag": ["api"], "outboundTa
   || fail "api routing rule must be first"
 jq -e '.policy.system.statsInboundUplink == true and .policy.system.statsInboundDownlink == true' "$MIG_CFG" >/dev/null \
   || fail "policy.system stats flags missing"
+# Регрессия: Xray регистрирует per-user счётчики ("user>>>EMAIL>>>traffic>>>uplink")
+# только при policy.levels.<level>.statsUserUplink/Downlink (app/dispatcher:
+# p.Stats.UserUplink); statsInbound* даёт лишь статистику инбаунда. Без флагов
+# уровня 0 расход по профилям всегда 0 и лимиты никогда не срабатывают, а тест
+# этого не видит, потому что statsquery здесь застабан.
+jq -e '.policy.levels["0"].statsUserUplink == true and .policy.levels["0"].statsUserDownlink == true' "$MIG_CFG" >/dev/null \
+  || fail "policy.levels.0 user stats flags missing (per-user traffic would stay zero)"
 jq -e --arg f "$FRIEND_UUID" --arg o "$OTHER_UUID" '
   (all(.inbounds[].settings.clients[]? | select(.id == $f); .email == "friend")) and
   (all(.inbounds[].settings.clients[]? | select(.id == $o); .email == "other")) and
@@ -296,6 +303,18 @@ jq -e --arg f "$FRIEND_UUID" --arg o "$OTHER_UUID" '
 ' "$MIG_CFG" >/dev/null || fail "client emails not set by migration"
 rc=0; _migrate_traffic_stats_2026 >/dev/null 2>&1 || rc=$?
 [[ "$rc" == "1" ]] || fail "traffic_stats_2026 second run must be no-op (1), got $rc"
+
+# Существующие настройки уровня 0 не перетираются: флаги статистики добавляются к ним.
+KEEP_CFG="$WORKDIR/keep-levels.json"
+jq '.policy = {levels: {"0": {handshake: 7, bufferSize: 8}}}' "$MIG_CFG" > "$KEEP_CFG"
+jq 'del(.inbounds[] | select(.tag == "api"))' "$KEEP_CFG" > "$KEEP_CFG.tmp" && mv "$KEEP_CFG.tmp" "$KEEP_CFG"
+CONFIG_FILE="$KEEP_CFG"
+rc=0; _migrate_traffic_stats_2026 >/dev/null 2>&1 || rc=$?
+[[ "$rc" == "0" ]] || fail "keep-levels migration must return 0 (changed), got $rc"
+jq -e '.policy.levels["0"].handshake == 7 and .policy.levels["0"].bufferSize == 8 and
+       .policy.levels["0"].statsUserUplink == true and .policy.levels["0"].statsUserDownlink == true' \
+  "$KEEP_CFG" >/dev/null || fail "migration must keep existing level-0 settings while adding stats flags"
+CONFIG_FILE="$MIG_CFG"
 
 # Порт 10085 занят другим inbound → миграция обязана найти 10086.
 MIG2_CFG="$WORKDIR/mig2-config.json"
@@ -334,6 +353,12 @@ grep -q 'total=\${traffic_limit}' xrayebator || fail "subscription-userinfo tota
 grep -q 'ExecStart=/usr/local/bin/xrayebator traffic-check' xrayebator || fail "нет unit-а traffic-check"
 grep -q 'OnUnitActiveSec=5min' xrayebator || fail "таймер трафика не 5 минут"
 grep -q 'xrayebator-traffic.timer' uninstall.sh || fail "uninstall не снимает traffic-timer"
+# Свежая установка обязана получить те же user-level флаги статистики, что и
+# миграция: иначе на новом сервере расход по профилям будет нулевым.
+awk '/"policy": \{/,/^  \}/' install.sh | grep -q '"statsUserUplink": true' \
+  || fail "install.sh: policy без statsUserUplink уровня 0"
+awk '/"policy": \{/,/^  \}/' install.sh | grep -q '"statsUserDownlink": true' \
+  || fail "install.sh: policy без statsUserDownlink уровня 0"
 for name in traffic_stats_2026 traffic_timer_2026 subhttp_traffic_2026; do
   count=$(grep -c "run_migration \"$name\"" xrayebator || true)
   [[ "$count" -ge 3 ]] || fail "migration $name зарегистрирована меньше 3 раз (main/quickstart/happ-setup): $count"
