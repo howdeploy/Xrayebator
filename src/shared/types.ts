@@ -250,6 +250,12 @@ export interface ServerProfile {
   multi_route: boolean
   routes: number
   pq_enabled: boolean
+  /**
+   * Сколько маршрутов профиля помечены pq_enabled (VLESS Encryption). Top-level
+   * pq_enabled описывает только первый маршрут, поэтому GUI показывает чип по
+   * этому счётчику; серверы без поддержки поля его не отдают.
+   */
+  pq_routes?: number
   subscription_url: string
   /**
    * Тот же токен, другое тело ответа (content negotiation в subhttp): Clash/mihomo YAML

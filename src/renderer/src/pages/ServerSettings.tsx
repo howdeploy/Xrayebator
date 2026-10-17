@@ -1273,7 +1273,7 @@ export function ServerSettings({
                     <div className={styles.profileNameRow}>
                       <span className={styles.profileName}>{profile.name}</span>
                       {profile.multi_route && <Chip size="sm" color="accent">{t('settings.happ')}</Chip>}
-                      {profile.pq_enabled && <Chip size="sm" color="default">PQ</Chip>}
+                      {(profile.pq_enabled || (profile.pq_routes ?? 0) > 0) && (<Chip size="sm" color="default">{(profile.pq_routes ?? 0) > 1 ? `PQ ×${profile.pq_routes}` : 'PQ'}</Chip>)}
                     </div>
                     <div className={styles.profileMeta}>
                       <Chip size="sm" color="default">{transportLabel(profile)}</Chip>
