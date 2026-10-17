@@ -95,7 +95,26 @@ if systemctl list-unit-files 'xrayebator-expire.*' > /dev/null 2>&1; then
     rm -f /etc/systemd/system/xrayebator-expire.service
     rm -f /etc/systemd/system/xrayebator-expire.timer
 fi
+# Таймер учёта трафика профилей: та же причина — дёргал бы удалённый
+# xrayebator traffic-check каждые 5 минут.
+if systemctl list-unit-files 'xrayebator-traffic.*' > /dev/null 2>&1; then
+    systemctl disable --now xrayebator-traffic.timer > /dev/null 2>&1 || true
+    systemctl stop xrayebator-traffic.service > /dev/null 2>&1 || true
+    rm -f /etc/systemd/system/xrayebator-traffic.service
+    rm -f /etc/systemd/system/xrayebator-traffic.timer
+fi
+# Таймер мониторинга сервера (Telegram-алерты): дёргал бы удалённый
+# xrayebator monitor-check каждые 15 минут.
+if systemctl list-unit-files 'xrayebator-monitor.*' > /dev/null 2>&1; then
+    systemctl disable --now xrayebator-monitor.timer > /dev/null 2>&1 || true
+    systemctl stop xrayebator-monitor.service > /dev/null 2>&1 || true
+    rm -f /etc/systemd/system/xrayebator-monitor.service
+    rm -f /etc/systemd/system/xrayebator-monitor.timer
+fi
 rm -rf /usr/local/etc/xray
+# Нейтральный корень мультипротокольных бэкендов и алертов (registry, секреты
+# Hysteria/AWG, токен Telegram-бота) — вне /usr/local/etc/xray, чистим отдельно.
+rm -rf /usr/local/etc/xrayebator
 rm -rf /var/log/xray
 echo -e "${GREEN}✓ Конфигурации и логи удалены${NC}\n"
 
@@ -164,6 +183,11 @@ if command -v certbot > /dev/null 2>&1 && [[ -n "$CERTBOT_SNAPSHOT" && -f "$CERT
 fi
 rm -f /tmp/xrayebator-certbot-owned.?????? 2>/dev/null || true
 rm -rf /var/www/xrayebator-ip-acme /var/www/xrayebator-selfsteal-acme 2>/dev/null
+# DNS-01: credentials провайдера (Cloudflare API-token / AWS-ключи) — секреты,
+# созданные Xrayebator, поэтому уходят вместе с ним. Сами сертификаты уже сняты
+# через манифест certbot выше.
+rm -f /etc/letsencrypt/xrayebator-dns01-cloudflare.ini \
+      /etc/letsencrypt/xrayebator-dns01-aws.ini 2>/dev/null || true
 # Убираем и webroot и защищаем: certbot delete уже удалил certs/keys/accounts.
 # UFW ownership определяется только root-owned манифестом. Порт в Xray config
 # ничего не говорит о том, кто создал firewall rule. Формат новых записей:

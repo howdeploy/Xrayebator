@@ -23,14 +23,21 @@ Dashboard displays the saved server cards. Each card shows the title with its lo
 
 ### Add server
 
-Add server accepts the VPS host and SSH port, SSH access details, and an explicit email choice for `quickstart`: either **Provide an email** (default, shown as a field) or **Continue without email** (a warning explains that Let's Encrypt renewal notices and ACME account recovery are unavailable). The deployment progress is shown as these steps:
+Add server accepts the VPS host and SSH port, SSH access details, and an explicit email choice for `quickstart`: either **Provide an email** (default, shown as a field) or **Continue without email** (a warning explains that Let's Encrypt renewal notices and ACME account recovery are unavailable).
+
+Below them are two optional blocks, both off by default:
+
+- **PQ route** — adds `--pq`: the profile receives a post-quantum VLESS Encryption route on a dedicated port. The GUI honestly warns that the route does not make it into the regular v2ray subscription and requires a client with ML-KEM (HAPP, Xray 25.6+). If the server does not have ML-KEM keys yet, the deploy does not fail — the profile simply stays without PQ.
+- **DNS-01** — adds `--dns01-domain/--dns01-provider/--dns01-token` (Cloudflare) or `--dns01-aws-*` (Route53). This is a fallback: if the hoster filters port 80 and http-01 does not pass, the certificate is issued through a TXT record and the subscription stays on HTTPS (`domain_tls`) instead of degrading to `http_tls`. The deploy button stays disabled while the set is incomplete: the server would reject such a request after Xray has already been installed. The entered credentials are never stored locally.
+
+The deployment progress is shown as these steps:
 
 1. connect over SSH and verify elevated access;
 2. inspect `/etc/os-release`;
 3. create a temporary `/tmp/xrayebator-<token>` directory and upload `install.sh` and `xrayebator`;
 4. run `bash install.sh` with the selected privileges;
 5. install the uploaded manager binary at `/usr/local/bin/xrayebator`;
-6. run `xrayebator quickstart --email <email>` or `xrayebator quickstart --without-email` — the second form passes `--register-unsafely-without-email` to Certbot and never substitutes a fake address;
+6. run `xrayebator quickstart --email <email>` or `xrayebator quickstart --without-email` — plus `--pq` and `--dns01-*` when the operator enabled those blocks; the second form passes `--register-unsafely-without-email` to Certbot and never substitutes a fake address;
 7. read the JSON result, including `subscription_url`, fetch the subscription, and save the server metadata and keys locally.
 
 The GUI shows deployment logs and step status, but it does not provide a cancellation channel for an in-flight deployment.
@@ -43,20 +50,25 @@ The wizard shows a step index and a live console of the work actually performed:
 
 ### Server keys
 
-Server keys refreshes the subscription from the saved `subscription_url` and displays the returned VLESS routes. Each VLESS link can be copied or rendered as a QR code; the subscription URL can also be copied, and the page offers a copy-all action. This page does not create a separate server-side subscription or rotate a subscription token (rotation lives on the profile cards in Server settings).
+Server keys refreshes the subscription from the saved `subscription_url` and displays the returned VLESS routes. Each VLESS link can be copied or rendered as a QR code; the subscription URL can also be copied, and the page offers a copy-all action. This page does not create a separate server-side subscription or rotate a subscription token (rotation lives on the profile cards in Server settings). When the server has multi-protocol backends, the page also shows their keys from the persistent local store: one Hysteria 2 card per granted profile with the `hysteria2://` link (copy + QR) — the card chip names the owning profile (`HYSTERIA2 · <profile> · UDP :<port>`), and one AmneziaWG card per granted profile with the client `.conf` — the `Endpoint`/`Address` values are surfaced as key fields, and the full `.conf` (service comment header stripped) is available as text and QR for import into AmneziaVPN/AmneziaWG. Backend cards paint immediately from the persisted store and refresh in parallel with the VLESS routes; a per-card spinner shows only while that card's data is being fetched. The AWG card carries two QR codes: the plain one for the standalone AmneziaWG client and «QR · AmneziaVPN» — the app-native compressed `vpn://` shape (`amnezia-awg2` container, server-side junk fields, `protocol_version` 3.1), which is the recommended import path for the full AmneziaVPN app.
 
 ### Server settings
 
 Server settings first authenticates over SSH. When the card already has a keychain-backed SSH password or a persisted private key, the page attempts to connect automatically and then shows only the profile panel — the access form appears only when there is no saved secret or after a failed connection. The access summary and the "Change access" action live on the server card in the dashboard, not inside the profile page. Once connected, the page can:
 
 - list existing profiles;
-- create one or more profiles and delete profiles;
-- choose `xhttp`, `tcp`, `tcp-utls`, `tcp-xudp`, `tcp-mux`, or `grpc` transports;
+- create one or more profiles and delete profiles (profile names are unique: the GUI pre-checks a name collision before creating — deletion is per-profile, so unique names keep it precise);
+- choose `xhttp`, `tcp`, `tcp-utls`, `tcp-xudp`, `tcp-mux`, or `grpc` transports — or select one of the two multi-protocol backends (Hysteria 2 / AmneziaWG 3.1 cards below the transport grid). Clicking a backend card only selects the protocol (selected VLESS transports deselect it and vice versa); the profile is created by the «Create profile» button, and only the selected backend issues its key — the underlying VLESS profile uses the recommended `xhttp` transport;
 - change a profile fingerprint, choose an SNI from `sni-list`, or enter an SNI;
 - change a profile route's port or choose a random port;
-- update the server installation;
+- update the server installation (a branch menu: "As pinned on the server" — `.current_branch`, otherwise main; **main is the latest stable release**; **dev is the latest build with every feature but may be unstable**; switch back from dev by updating to main);
 - uninstall the server installation after confirmation;
-- reset the pinned SSH host key after explicit confirmation.
+- reset the pinned SSH host key after explicit confirmation;
+- manage the multi-protocol backends (menu parity with items 11–13): the combined panel "additional protocols" (they are in development — the interface and behavior may change) shows the Hysteria 2 and AmneziaWG state (version, port, TLS mode / interface, junk summary) with install/uninstall, the subscription kill switch for `hysteria2://` lines and the AWG 3.1 toggle — the last two with explicit confirmation;
+- per-profile backend boxes in the profiles list, titled by the profile name with the protocol in the subtitle and a green status line (`Active · SNI …` or `Active · UDP <port>`): QR (plus «QR · AmneziaVPN» for AmneziaWG), Expiry, Revoke and Delete. Deleting a profile revokes its backend keys immediately — the AWG peer is removed from `awg0.conf` and the Hysteria password from `server.yaml` (no orphaned credentials) — and the name becomes free for reuse. Full key copying lives on the Server keys page.
+- add a PQ route to a profile: the "PQ" button next to a profile opens a dialog with a transport choice and calls `profile-pq`; the response carries a ready VLESS link with a copy action. The "PQ"/"PQ ×N" chip in the profile row shows how many post-quantum routes it already has (`pq_routes`);
+- the **"Subscription and TLS"** card: subscription mode, domain, provider and certificate days left from `dns01-status`. If the subscription degraded to `http_tls`, the card explains why (Let's Encrypt could not validate http-01, usually because port 80 is filtered) and offers **"Fix with DNS-01"** — that is `repair-dns01`. In the other modes the button is called "Set up DNS-01" and calls `dns01-setup`. The provider is chosen explicitly (Cloudflare — a token with the DNS:Edit right, Route53 — AWS keys); the credentials travel to the server and are not kept locally;
+- the **"Notifications"** card: the state of the Telegram alerts (`alerts-status`) — whether sending is on, the chat_id, the bot name and whether the monitoring timer is active; the actions are enable/disable (`alerts-enable`/`alerts-disable`) and a test message (`alerts-test`). The bot token is deliberately not entered through the GUI: it lives in `alerts.json` (0600 root) and is configured with `alerts-setup` in the terminal, so the secret is not duplicated in the renderer.
 
 SNI and port are inbound-level settings: changing them can affect every profile sharing that inbound. Fingerprint is different: it is a client-side value stored per profile/route and does not change the other routes. The server command reports the result and whether reconnecting is required.
 
@@ -84,6 +96,8 @@ xrayebator profile-create --name NAME [--transport T] [--port P] [--count N] [--
 xrayebator profile-delete --name NAME
 xrayebator profile-revoke --name NAME [--full]
 xrayebator profile-expire --name NAME --expire DATE|epoch|none
+xrayebator profile-limit --name NAME --limit LIMIT|none [--reset]
+xrayebator profile-pq --name NAME [--transport T]
 xrayebator fp-change --name NAME [--route R] --fp FINGERPRINT
 xrayebator sni-change --name NAME [--route R] --sni SNI
 xrayebator sni-list
@@ -91,11 +105,28 @@ xrayebator port-change --name NAME [--route R] --port PORT|random
 xrayebator bypass list|add --domain D|remove --domain D|reset|bundle [--group a,b,c]
 ```
 
+Backend management additionally invokes:
+
+```text
+xrayebator backend-status
+xrayebator hysteria2-install [--port P] [--grant-all] / hysteria2-uninstall / hysteria2-grant --name N / hysteria2-subbody --on|--off / hysteria2-link --name N
+xrayebator awg-install [--grant-all] / awg-uninstall / awg-grant --name N / awg-conf --name N / awg-31 --on|--off
+```
+
 Deployment additionally invokes:
 
 ```text
-xrayebator quickstart --email EMAIL
-xrayebator quickstart --without-email
+xrayebator quickstart --email EMAIL [--pq] [--dns01-domain D --dns01-provider P --dns01-token T | --dns01-aws-access-key-id K --dns01-aws-secret-access-key S]
+xrayebator quickstart --without-email [--pq] [--dns01-*]
+```
+
+Subscription and monitoring are served by:
+
+```text
+xrayebator dns01-status
+xrayebator dns01-setup --domain D --provider cloudflare|route53 [--token T | --aws-access-key-id K --aws-secret-access-key S] [--email E|--without-email] [--port P]
+xrayebator repair-dns01 --domain D --provider cloudflare|route53 [--token T | --aws-*] [--email E] [--port P]
+xrayebator alerts-status / alerts-test / alerts-enable / alerts-disable
 ```
 
 Import invokes exactly one read-only command:
@@ -123,6 +154,7 @@ Server settings additionally provides:
 
 - **Subscription revocation** — a per-profile button opens a menu with two modes. "New link only" reissues the `sub_token` (the previous URL stops working; routes and keys stay the same). "Full revocation" also rotates the uuid in every inbound of the profile, so devices that already downloaded the config are cut off immediately — the only way to actually close access through a leaked link.
 - **Profile expiry** — the date travels to the client in the subscription header and is enforced server-side: the `xrayebator-expire.timer` systemd timer runs `xrayebator expire-check` every 10 minutes and removes the client from the inbounds once the expiry timestamp passes. A date selected without a time is inclusive through `23:59:59` in the server's local timezone. The GUI displays the server's calendar date from `expire_date`, so it stays correct even when the desktop and VPS use different timezones. Extending the date restores the same client. The profile chip shows the expiry date, turns warning-toned within three days before the cutoff and danger-toned after it passes. An expiry can also be set at profile-creation time; dates are chosen with an in-theme calendar widget (past days disabled) with +7/+30/+90/+365 presets. If the connected server is older and does not report expiry support, the GUI warns about the outdated server instead of pretending profiles are unlimited.
+- **Profile traffic limit** — the server does the accounting (`xrayebator-traffic.timer` reads the Stats API counters every 5 minutes), and the GUI shows it as a "used / limit" chip: neutral tone up to 80% of the limit, warning from 80%, danger when exhausted ("limit exhausted"). The "Limit" dialog follows the expiry model: `10GB`–`1TB` presets, a custom value with validation (`500MB`, `1.5GB`, `2TB`, `none`), a counter-reset toggle and a separate clear-the-limit action. Values come from `profiles` (`traffic_used`, `traffic_limit`, `traffic_disabled`) and are applied through the `profile-limit` CLI; an exhausted limit removes the client from the inbounds on the server — the profile stays in the list, but the subscription answers `410`. If the server is older and does not report `traffic_supported`, the limit controls are not shown at all.
 - **Error surfacing** — CLI failures are shown with a human-readable reason taken from stderr, falling back to stdout; an unknown command on an outdated server comes with an update hint instead of a bare exit code.
 
 ## Deployment protocol
@@ -137,7 +169,7 @@ SSH connect + host-key verification
         ├─ SFTP upload: install.sh, xrayebator
         ├─ elevated `bash install.sh`
         ├─ elevated install → /usr/local/bin/xrayebator
-        ├─ elevated `xrayebator quickstart --email EMAIL` or `--without-email`
+        ├─ elevated `xrayebator quickstart --email EMAIL` or `--without-email` (plus `--pq` and `--dns01-*` when the operator enabled them)
         └─ parse `subscription_url` → fetch subscription → persist the server card, connection preferences, subscription URL, and fetched VLESS links
 
 For an existing installation, the import flow instead runs the read-only `xrayebator inspect --json`, fetches the subscription only when a public HTTPS endpoint is reported, and saves the detected state without repairing or updating the VPS.

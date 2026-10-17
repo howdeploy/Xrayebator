@@ -51,8 +51,8 @@ Bash-управлению, а не вторая реализация серве�
 └── xrayebator-uninstall          # точка входа удаления
 
 /usr/local/etc/xray/
-├── config.json                   # инбаунды, outbounds, routing и DNS
-├── profiles/<name>.json          # метаданные профиля, токен подписки, срок действия (.expire)
+├── config.json                   # инбаунды, outbounds, routing, DNS и api-inbound на loopback (Stats API)
+├── profiles/<name>.json          # метаданные профиля, токен подписки, срок (.expire), лимит и расход (.traffic), гранты бэкендов (.backends)
 ├── upstreams/cascade.json        # параметры upstream каскада
 ├── backups/                      # бэкапы конфига перед runtime-мутациями
 ├── .private_key / .public_key    # ключи Reality
@@ -62,10 +62,22 @@ Bash-управлению, а не вторая реализация серве�
 ├── .current_branch               # ветка менеджера для lifecycle-обновлений
 └── маркеры миграций              # записи выполненных одноразовых миграций
 
+/usr/local/etc/xrayebator/         # корень мультипротокольных бэкендов (нейтральный, пути Xray не трогает)
+├── backends.json                  # реестр бэкендов: installed/version/port/флаги (644, без секретов)
+├── alerts.json                    # Telegram-алерты мониторинга: токен бота и chat_id (0600)
+├── monitor-state.json             # состояние мониторинга: события, boot_id, последняя SNI-проба (0600)
+└── backends/
+    ├── hysteria2/                 # server.yaml (регенерируется из профилей), сертификаты
+    └── awg/                       # awg0.conf (0600), server-params.json (0600)
+
 /usr/local/share/xray/             # geoip.dat и geosite.dat
 /var/log/xray/                     # каталог логов, куда пишет сервис Xray
 /etc/systemd/system/xray.service.d/security.conf
 /etc/systemd/system/xrayebator-sub.service
+/etc/systemd/system/xrayebator-traffic.service + .timer   # учёт трафика профилей (5 минут)
+/etc/systemd/system/xrayebator-monitor.service + .timer   # мониторинг и алерты (15 минут)
+/etc/systemd/system/hysteria-server.service   # бэкенд Hysteria 2 (опционально)
+/etc/systemd/system/awg-quick@awg0.service    # бэкенд AmneziaWG (опционально, из amneziawg-tools)
 /etc/nginx/sites-available/xrayebator-sub
 ```
 
@@ -98,12 +110,17 @@ Fingerprint Reality — клиентское значение, хранящее�
 ```text
 https://<domain>/sub/<32-hex-token>       # public TLS на 443
 https://<domain>:8443/sub/<32-hex-token>  # public TLS на другом порту
+http://<IP>:8080/sub/<token>              # http_tls-fallback (LE не смог проверить http-01)
 http://127.0.0.1:8080/sub/<token>         # local-only запасной
 ```
 
 Интерактивная настройка HAPP может выбрать публичный порт, а `_subscription_base_url` сохраняет этот
 выбор. Нон-интерактивные IP-TLS пути `quickstart --email <address>` и `quickstart --without-email`
 создают nginx, сертификат и маркеры на `8443`, затем возвращают JSON с `subscription_url` для endpoint.
+Если Let's Encrypt не может проверить http-01 (хостер фильтрует порт 80 для зарубежных источников),
+quickstart деградирует в `http_tls`: маркеры получают этот режим, подписка публикуется по HTTP с
+loopback-хендлера, а JSON несёт `degraded:true`; повторный деплой после разблокировки :80 возвращает
+ip_tls.
 Без email Certbot регистрирует ACME-аккаунт без контактного адреса: уведомления о продлении и восстановление
 по email недоступны. Токен хранится в профиле как `sub_token`; revoke меняет его и аннулирует старый URL,
 а полный отзыв (`profile-revoke --full`) дополнительно меняет uuid во всех inbound'ах профиля, поэтому
@@ -124,7 +141,73 @@ PQ-маршрут остаётся доступен через raw/profile path.
 
 Handler также отдаёт защищённые токеном `geoip.dat` и `geosite.dat`, необходимые для управляемого
 HAPP routing profile. HAPP получает routing metadata, а v2rayNG и v2rayN — совместимое VLESS-тело
-без HAPP-only метаданных.
+без HAPP-only метаданных. Когда бэкенд Hysteria 2 установлен и у профиля есть грант, handler
+дополнительно добавляет одну строку `hysteria2://` в оба тела подписки (HAPP и generic) — под
+управлением флага `sub_body` в реестре; истёкший или отключённый профиль строки не получает.
+
+Тел теперь четыре, и все они строятся из одних и тех же ссылок профиля: HAPP, base64 для
+v2rayNG/v2rayN, Clash/mihomo YAML и sing-box JSON. Нормализацию ссылок делает
+`_subscription_links_json` (разбор `vless://`/`hysteria2://`, IPv6-скобки, percent-decoding,
+матрица поддержки транспортов клиентами), а сам формат собирают чистые билдеры
+`_subscription_render_clash_pure` и `_subscription_render_singbox_pure`. Формат выбирается по
+`?target=` или User-Agent, по умолчанию остаётся HAPP-тело. Маршруты, которые клиент не умеет
+(PQ VLESS Encryption, xhttp в sing-box, xhttp в Clash без `?xhttp=1`), пропускаются с пояснением —
+mihomo не грузит конфиг с неизвестным `network`, поэтому «нарисовать хоть что-нибудь» здесь хуже
+пропуска. `subscription-userinfo` отдаётся во всех форматах: его понимают и Clash-UI, и
+sing-box-клиенты.
+
+Режим TLS подписки (`ip_tls` / `domain_tls` / `http_tls` / `local_only`) определяет только базовый
+URL и способ проверки домена для Let's Encrypt: `dns01-setup` выпускает сертификат через DNS-01
+(Cloudflare/Route53), поэтому порт 80 не нужен, vhost содержит один TLS-сервер, а credentials
+провайдера лежат в `/etc/letsencrypt/xrayebator-dns01-*.ini` (0600 root) и передаются certbot как
+аргумент (Cloudflare) или через `AWS_SHARED_CREDENTIALS_FILE` (Route53); продление — штатный
+`certbot.timer` с deploy-hook на reload nginx.
+
+## Мультипротокольные бэкенды
+
+Помимо Xray, менеджер может установить на тот же VPS дополнительные транспорты. Всё состояние
+бэкендов живёт в нейтральном корне `/usr/local/etc/xrayebator/` (реестр `backends.json` + каталоги
+по бэкендам); пути Xray не затрагиваются. Клиентские креденшелы бэкендов хранятся в самом профиле
+(аддитивный объект `.backends`) — профиль является единственным источником правды: серверные
+конфиги (`backends/hysteria2/server.yaml`, `backends/awg/awg0.conf`) всегда регенерируются из
+профилей, а события жизненного цикла профиля (создание, удаление, revoke, истечение, продление)
+проходят через `_backend_apply_profile_lifecycle` в каждый установленный бэкенд.
+
+- **Hysteria 2** — быстрый UDP-транспорт. Собственный systemd-юнит `hysteria-server.service` от
+  выделенного пользователя `hysteria` с `CAP_NET_BIND_SERVICE`; UDP 443 по умолчанию; адаптивный
+  TLS (сертификат подписки Let's Encrypt + deploy-hook на продление, иначе self-signed);
+  `auth: userpass` — один credential на профиль и placeholder-пользователь, пока карта пуста
+  (Hysteria отвергает пустую карту).
+- **AmneziaWG 2.0** — системный VPN. Kernel-модуль через DKMS (основной путь — PPA `amnezia/ppa`,
+  фолбэк — сборка из исходников), интерфейс `awg0` через `awg-quick@awg0`, подсеть `10.8.1.0/24`,
+  peer-ы на профиль (ключевая пара + preshared key + адрес), `ip_forward` и MASQUERADE на
+  интерфейс default-route. Дистрибутивный юнит читает `/etc/amnezia/amneziawg/awg0.conf` — это
+  symlink на управляемый файл.
+- Оба бэкенда опциональны: ставятся и снимаются из меню (пункты `11`–`13`) или CLI-командами
+  `hysteria2-*` / `awg-*` и никогда не устанавливаются по умолчанию.
+
+## Учёт трафика и мониторинг
+
+Обе подсистемы — надстройки над одним принципом: состояние живёт в profile JSON, а таймер лишь
+применяет его.
+
+- **Учёт трафика.** `install.sh` добавляет в `config.json` api-инбаунд (`dokodemo-door` на
+  `127.0.0.1:10085`), `policy.system` со `statsInboundUplink/Downlink` и routing-правило `api → api`.
+  `email` каждого клиента равен имени профиля, поэтому Stats API (`xray api statsquery`) отдаёт
+  расход в разрезе профилей. `xrayebator-traffic.timer` (5 минут) вызывает `traffic-check`: тот
+  вычитает предыдущий снапшот (`.traffic.last`) и накапливает `.traffic.used`, а затем применяет
+  лимит — исчерпанный снимает клиентов с инбаундов, снимок уходит в `.traffic_clients`, профиль
+  получает `.traffic_disabled`, подписка отвечает `410`. Миграции: `traffic_stats_2026`,
+  `traffic_timer_2026`, `subhttp_traffic_2026`.
+- **Мониторинг.** `xrayebator-monitor.timer` (15 минут) вызывает `monitor-check`: сервисы и
+  установленные бэкенды, сроки и лимиты профилей, живость подписки и её TLS-режим, перезагрузка
+  (`boot_id`), а раз в сутки — SNI-проба по SNI, реально используемым профилями. Дедупликация живёт
+  в `monitor-state.json`: повтор события не чаще `ALERTS_REMIND_SEC`, восстановление — отдельным
+  сообщением, недоставленный алерт повторяется на следующем тике. Токен бота хранится в `0600`
+  `alerts.json` в нейтральном корне: это не состояние Xray, и путь `/usr/local/etc/xray` остаётся
+  Xray-only. Миграция: `alerts_monitor_2026`.
+
+Обе миграции зарегистрированы во всех трёх входных путях — `main_menu`, `quickstart` и `happ-setup`.
 
 ## Пути обновления
 

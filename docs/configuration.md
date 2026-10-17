@@ -93,12 +93,17 @@ The interactive menu uses these exact meanings:
 | `4` | Manage a profile: SNI, client fingerprint, port and advanced settings |
 | `5` | Upgrade a single profile to post-quantum XHTTP + Reality |
 | `6` | HAPP subscription: provision public/local publishing, URL/QR, revoke and HAPP settings; the managed profile has 7 routes and the published list has 6 |
+| `7` | Bypass routing: send selected domains (banks, marketplaces, Steam…) direct instead of through the tunnel |
 | `8` | Cascade and upstream nodes |
 | `9` | Custom domain and self-steal stub |
 | `10` | Set up an outbound server so another VPS can use this server as a foreign cascade node |
+| `11` | Hysteria 2 backend: install/status/client link/uninstall (fast UDP transport) |
+| `12` | AmneziaWG 2.0 backend: install/status/client conf/uninstall (system VPN) |
+| `13` | Status of all multi-protocol backends |
+| `14` | Telegram alerts: setup, test, enable/disable, monitoring state |
 | `0` | Exit |
 
-Actions are numbered consecutively from `1` to `10`; `0` exits the program. SNI and port are
+Actions are numbered consecutively from `1` to `14`; `0` exits the program. SNI and port are
 shared inbound settings, so changing either can affect other profiles on that port. The fingerprint
 is a client-side profile/route setting; changing it does not restart Xray or alter other routes.
 
@@ -110,25 +115,50 @@ is a client-side profile/route setting; changing it does not restart Xray or alt
 | `sudo xrayebator update` | Update only the Xray-core binary |
 | `sudo xrayebator update <branch>` | Self-update the manager from the canonical raw repository branch, continue with the new script, then update Xray-core; the branch is pinned in `.current_branch` for later GUI updates |
 | `sudo xrayebator probe-test` | Check SNI reachability from the VPS before switching |
-| `sudo xrayebator quickstart --email <address>` | One-shot deploy path used by the desktop GUI: runs the broad setup/migration path, provisions the current IP-TLS endpoint on `8443`, and creates a standard HAPP profile with `schema_version: 3` and 7 routes; emits JSON with `subscription_url` |
+| `sudo xrayebator quickstart --email <address>` | One-shot deploy path used by the desktop GUI: runs the broad setup/migration path, provisions the current IP-TLS endpoint on `8443`, and creates a standard HAPP profile with `schema_version: 3` and 7 routes; emits JSON with `subscription_url`. Optional flags: `--pq` — add a PQ route on tcp to the profile (OFF by default: a client without ML-KEM cannot connect to the PQ port; the result lands in the JSON as `pq_route`), `--without-pq` — disable it explicitly, `--dns01-domain D --dns01-provider cloudflare\|route53 (--dns01-token T \| --dns01-aws-access-key-id K --dns01-aws-secret-access-key S)` — deploy-time DNS-01 fallback. DNS-01 parameters are validated **before** any system change: an incomplete set returns `{"ok":false,…}` and touches nothing |
 | `sudo xrayebator quickstart --without-email` | Same new-server path without an ACME contact email; Certbot uses `--register-unsafely-without-email`, so no renewal notices or email-based account recovery are available |
 | `sudo xrayebator inspect --json` | Read-only GUI import probe: reports manager, Xray, profile and subscription markers without installing, migrating or changing services/configuration |
 | `sudo xrayebator happ-setup` | Reduced existing-install HAPP path: ensures the subscription service and a usable multi-route profile, but does not replace the endpoint prerequisite; when `.subscription_domain` or `.subscription_port` is missing, it verifies a real public TLS endpoint before writing markers and otherwise fails |
+| `quickstart` http_tls mode | Last-resort fallback, when neither http-01 nor DNS-01 worked: if Let's Encrypt cannot validate the IP over http-01 (`Connection reset by peer` from validation hosts — usually the hoster filters port 80 for foreign sources) **and** DNS-01 was not requested, the deploy does not fail: the subscription is published over HTTP (port 8080 outbound, token gate and 404 without token preserved), a self-signed certificate is generated for future backends, and the result JSON carries `degraded:true`, `tls_mode:"http_tls"` and the Certbot reason. The GUI stores the server as *Partially configured* and loads keys over SSH from the loopback handler; the ACME challenge location on port 80 stays in place — rerunning quickstart after the port is unblocked issues the LE certificate and switches the subscription back to HTTPS |
 | `sudo xrayebator profiles` | Print all server profiles as a JSON array for the desktop GUI Server Settings page; expiry includes both epoch seconds (`expire`) for enforcement and the server-local calendar date (`expire_date`) for display, so clients in another timezone still see the selected date |
-| `sudo xrayebator profile-create --name NAME [--transport tcp\|tcp-utls\|tcp-xudp\|tcp-mux\|grpc\|xhttp] [--port P] [--count N] [--expire DATE]` | Create one or more profiles non-interactively; `--expire` accepts `YYYY-MM-DD[ HH:MM]`, epoch seconds or 13-digit milliseconds. A date without time is inclusive through `23:59:59` in the server's local timezone; an explicit time uses that server-local time. Past expiries are rejected; prints `{"ok":true,"names":[...],"errors":[...]}` |
-| `sudo xrayebator profile-delete --name NAME` | Delete a profile non-interactively; prints `{"ok":true,"name":"..."}` |
+| `sudo xrayebator profile-create --name NAME [--transport tcp\|tcp-utls\|tcp-xudp\|tcp-mux\|grpc\|xhttp] [--port P] [--count N] [--expire DATE]` | Create one or more profiles non-interactively; `--expire` accepts `YYYY-MM-DD[ HH:MM]`, epoch seconds or 13-digit milliseconds. A date without time is inclusive through `23:59:59` in the server's local timezone; an explicit time uses that server-local time. Past expiries are rejected; existing names are never overwritten — they are reported in `errors` (the GUI also pre-checks a name collision before creating, since deletion is per-profile and unique names keep it precise); prints `{"ok":true,"names":[...],"errors":[...]}` |
+| `sudo xrayebator profile-delete --name NAME` | Delete a profile non-interactively; the deleted profile's backend grants are revoked immediately (the AWG peer is dropped from `awg0.conf`, the Hysteria password from `server.yaml` — no orphaned credentials) and the name is free for reuse; prints `{"ok":true,"name":"..."}` |
 | `sudo xrayebator profile-revoke --name NAME [--full]` | Reissue the subscription link: new `sub_token`; with `--full` also a new uuid in every inbound of the profile (already-downloaded configs are cut off); prints JSON |
 | `sudo xrayebator profile-expire --name NAME --expire DATE\|epoch\|none` | Set, extend or remove a profile expiry; a date without time is inclusive through `23:59:59` in the server's local timezone, while an explicit time is used as given in that timezone; applied immediately (a passed expiry removes the client, an extension restores it); prints JSON |
 | `sudo xrayebator expire-check` | Apply every due expiry in one batch; idempotent and never restarts Xray without changes. Driven by the `xrayebator-expire.timer` unit every 10 minutes |
+| `sudo xrayebator profile-limit --name NAME --limit 100GB\|none [--reset]` | Set a profile traffic limit (`500MB`, `1.5GB`, `2TB`, a plain byte count, `none` for unlimited; case-insensitive) and/or reset the counter (`--reset`); prints JSON |
+| `sudo xrayebator traffic-check` | Read the Stats API counters, accumulate per-profile usage and apply the limits (an exhausted limit removes the client from the inbound). Driven by the `xrayebator-traffic.timer` unit every 5 minutes; idempotent — it never touches the config without changes |
+| `sudo xrayebator profile-pq --name NAME [--transport tcp\|tcp-utls\|tcp-xudp\|tcp-mux\|grpc\|xhttp]` | Add a post-quantum VLESS Encryption route to a profile (`mlkem768x25519plus`): the server reserves a free port and creates a dedicated inbound for the route (the keys are shared server-wide, from `.vless_decryption`); the JSON carries `port` and a ready-made `link`. The keys are generated by the `mlkem_keys` migration (Xray-core 25.9.5+); without them the command returns an error with a hint |
 | `sudo xrayebator fp-change --name NAME [--route R] --fp FINGERPRINT` | Change the client fingerprint for one profile route; prints JSON |
 | `sudo xrayebator sni-change --name NAME [--route R] --sni SNI` | Change the shared inbound SNI and synchronise profiles on that port; prints JSON |
-| `sudo xrayebator sni-list` | Print SNI candidates grouped by category for the GUI SNI dialog; prints JSON |
+| `sudo xrayebator sni-list` | Print SNI candidates grouped by category for the GUI SNI dialog; prints JSON. The first uncommented line of `sni_list.txt` is the default SNI for new profiles (`www.cloudflare.com`) |
 | `sudo xrayebator port-change --name NAME [--route R] --port PORT\|random` | Change the inbound port, firewall and subscription metadata; reconnect the client; prints JSON |
 | `sudo xrayebator bypass list` | Print current bypass domain rules as JSON |
 | `sudo xrayebator bypass add --domain D` | Add a domain to bypass rules |
 | `sudo xrayebator bypass remove --domain D` | Remove a domain from bypass rules |
 | `sudo xrayebator bypass reset` | Clear all custom bypass rules |
 | `sudo xrayebator bypass bundle [--group a,b,c]` | Apply the default bypass groups; without `--group`, apply all groups |
+| `sudo xrayebator backend-status` | Print the multi-protocol backend registry status as JSON (`{"ok":true,"backends":{…}}`) |
+| `sudo xrayebator hysteria2-install [--port P] [--grant-all]` | Install the Hysteria 2 UDP backend: binary from `HyNetworks/hysteria` releases (SHA-256 verified), dedicated `hysteria` service user, own systemd unit with `CAP_NET_BIND_SERVICE`, QUIC sysctl buffers, adaptive TLS (subscription Let's Encrypt cert with a renewal deploy-hook, otherwise self-signed); default UDP port 443; prints JSON (`already: true` when installed) |
+| `sudo xrayebator hysteria2-uninstall` | Remove the Hysteria 2 backend (service, config, certs, firewall rule); prints JSON |
+| `sudo xrayebator hysteria2-status` | Hysteria 2 backend status as JSON |
+| `sudo xrayebator hysteria2-grant --name N` | Issue a per-profile Hysteria 2 credential (stored in the profile's `.backends.hysteria2`); the server config is regenerated from all profiles; prints JSON |
+| `sudo xrayebator hysteria2-subbody --on\|--off` | Kill switch for the `hysteria2://` lines in both subscription bodies: the flag lives in the backend registry and the handler re-reads it on every request, no service restart; prints JSON |
+| `sudo xrayebator hysteria2-link --name N` | Print the `hysteria2://` link of a profile with a grant as JSON `{ok, name, link}` (naming mirrors the VLESS routes, with the country flag) |
+| `sudo xrayebator awg-install [--grant-all]` | Install the AmneziaWG 2.0 system-VPN backend: kernel module via DKMS (PPA `amnezia/ppa`, source-build fallback), `awg0` interface with a random high UDP port, junk parameters matching the Amnezia defaults, `ip_forward` + MASQUERADE; prints JSON |
+| `sudo xrayebator awg-uninstall` | Remove the AmneziaWG backend (interface, config, symlink, firewall rule; packages/module stay in the system); prints JSON |
+| `sudo xrayebator awg-status` | AmneziaWG backend status as JSON |
+| `sudo xrayebator awg-grant --name N` | Issue a per-profile peer (keypair + preshared key + `10.8.1.x` address in the profile's `.backends.awg`); `awg0.conf` is regenerated; prints JSON |
+| `sudo xrayebator awg-conf --name N` | Print the client `.conf` for a profile peer as JSON `{ok, name, conf}` — full-tunnel AllowedIPs, server junk parameters, endpoint; import into the AmneziaWG/AmneziaVPN client |
+| `sudo xrayebator awg-31 --on\|--off` | Toggle the AWG 3.1 config format (`HeaderProtectionKey`, `RandomTrailers`, `S3`/`S4`); 3.1 is on by default for new installs, the toggle upgrades legacy server params in place, warns that every issued client `.conf` must be re-downloaded (AmneziaVPN ≥ 5.0.1.5) and regenerates the interface with rollback |
+| `sudo xrayebator dns01-setup --domain sub.example.com --provider cloudflare\|route53` | HTTPS subscription by domain through DNS-01: port 80 is not needed, ownership is proven by a TXT record. Writes `0600` credentials, issues the certbot certificate with a deploy-hook, brings up an nginx vhost without `listen 80` and switches the markers to `domain_tls`; prints JSON |
+| `sudo xrayebator dns01-status` | DNS-01 state: provider, mode, domain, port, presence of credentials, certificate lifetime in days and whether the deploy-hook is present; prints JSON |
+| `sudo xrayebator repair-dns01 --domain sub.example.com --provider cloudflare\|route53 [--token T \| --aws-*] [--email E] [--port P]` | Replace a degraded (`http_tls`) subscription with DNS-01: the same TXT-record issuance, the vhost is re-rendered with a TLS server only, and the markers become `domain_tls`. Idempotent: if the subscription is already on HTTPS (`ip_tls`/`domain_tls`) it returns `{"ok":true,"skipped":true}` and does nothing; prints JSON |
+| `sudo xrayebator alerts-setup --token T --chat-id C` | Connect Telegram notifications: validates the token through `getMe`, sends a test message and **only after successful delivery** saves `alerts.json` (0600) and enables `xrayebator-monitor.timer`; prints JSON |
+| `sudo xrayebator alerts-status` | Monitoring state: config, timer, last check time, events and the result of the last SNI probe (the bot token is never shown); prints JSON |
+| `sudo xrayebator alerts-test` | Send a test message to the configured chat (delivery check); prints JSON |
+| `sudo xrayebator alerts-enable\|alerts-disable` | Turn delivery on or off without deleting the settings (a kill switch that keeps the token); prints JSON |
+| `sudo xrayebator monitor-check [--force-sni]` | One monitoring iteration — the one `xrayebator-monitor.timer` runs every 15 minutes: services and backends, profile expiries and limits, subscription liveness and its TLS mode, server reboot, and a daily SNI probe (`--force-sni` runs it out of schedule); prints JSON |
 | `sudo xrayebator-update [branch]` | Run the full `update.sh` project lifecycle update; without a branch, display `.current_branch` and open the interactive branch selector; with a branch, use that explicit branch |
 | `sudo xrayebator-uninstall` | Remove the service and installation |
 
@@ -157,6 +187,19 @@ best-effort; verify markers, the profile JSON and service status after deploymen
 
 `quickstart --without-email` performs the same broad setup and endpoint provisioning as the email form, but registers the ACME account with `--register-unsafely-without-email`; Certbot renewal notices and email-based account recovery are unavailable.
 
+If Let's Encrypt cannot validate the IP over http-01 — the deployment log shows
+`Connection reset by peer` for the challenge fetch, typically because the hoster
+filters port 80 for foreign sources — quickstart does not fail: it degrades to
+`http_tls` mode. The subscription handler stays loopback-only: there is **no
+public subscription URL at all** — the GUI loads keys over SSH from
+`http://127.0.0.1:8080/sub/<token>` on the server itself. A self-signed
+certificate is generated for future backends, and the result JSON carries
+`degraded:true`, `tls_mode:"http_tls"` and the Certbot reason. The server stays
+in the panel as *Partially configured* with a degraded badge, and the ACME
+challenge location on port 80 stays in place — rerunning quickstart
+after the hoster unblocks port 80 issues the Let's Encrypt certificate and
+switches the subscription back to HTTPS (the path is idempotent).
+
 `inspect --json` is the GUI's read-only import probe. It reports whether this is an Xrayebator installation, Xray/profile/service markers and saved subscription metadata; it does not run migrations, create profiles, change configuration, restart services or edit firewall rules.
 
 `happ-setup` is the reduced path for an existing installation. It runs only the critical migrations,
@@ -171,11 +214,59 @@ with all standard labels or the current schema. Inspect the actual JSON; migrati
 routes into an existing profile. Use the menu or `quickstart` to re-provision/create a managed
 profile when `xhttp-legacy`, `xhttp-pq` or the expected seven-route shape is missing.
 
+## Subscription formats
+
+One token serves four different bodies: a separate subscription per client is not created, the
+format is chosen on the fly.
+
+| Format | For | How it is selected |
+|---|---|---|
+| HAPP | HAPP (and any unknown client) | no parameters or `?target=happ` |
+| v2ray/base64 | v2rayNG, v2rayN, Shadowrocket | `?target=v2ray` (synonym `base64`) or the `v2rayNG`/`v2rayN` User-Agent |
+| Clash/mihomo YAML | mihomo, Clash Verge, Stash, FlClash | `?target=clash` (synonym `mihomo`) or the `mihomo`/`clash`/`stash`/`flclash` User-Agent |
+| sing-box JSON | sing-box, Hiddify, NekoBox, Karing | `?target=singbox` (synonym `sing-box`) or the User-Agent of those clients |
+
+The bodies are built from the very same profile links, so the route set and the Reality parameters
+match in every format:
+
+- `tcp`, `tcp-utls`, `tcp-xudp` → TCP + `flow: xtls-rprx-vision` (plus
+  `packet-encoding: xudp` for XUDP), `client-fingerprint`, `reality-opts` (public-key/short-id);
+- `tcp-mux` → plain TCP without flow: mux is initiated by the client, the server does not depend on
+  it;
+- gRPC → `grpc-opts.grpc-service-name` (Clash) and `transport.type=grpc` (sing-box);
+- Hysteria 2 — when the backend is installed, the profile has a grant and `sub_body` is on in the
+  registry (the auth string is passed in full; for a self-signed certificate —
+  `skip-cert-verify: true`);
+- `subscription-userinfo` (usage, limit, expiry) is sent in every format: it is understood by
+  v2rayNG, HAPP, Clash UIs (Clash Verge, Mihomo Party) and sing-box clients (Hiddify, Karing).
+
+What these two formats deliberately do not have, and why:
+
+- **the PQ route (VLESS Encryption, `mlkem768x25519plus`)** — neither mihomo nor sing-box supports
+  it; the route is skipped and the reason goes into the YAML as a comment (`# skipped: …`);
+- **xhttp** — sing-box has no such transport at all; in Clash it is enabled explicitly with
+  `?xhttp=1` (mihomo ≥ 1.19 is required: on older builds the unknown `network` breaks loading of the
+  whole config, so by default the route is skipped).
+
+```bash
+# The profile subscription URL in every format — the token is the same
+sudo xrayebator profiles | jq -r '.[] | [.name, .subscription_url, .subscription_url_clash, .subscription_url_singbox] | @tsv'
+curl -s "$(sudo xrayebator profiles | jq -r '.[0].subscription_url_clash')" | head -20
+```
+
+If no format is requested explicitly and the User-Agent is unknown, the answer stays the HAPP body:
+the behaviour of links already issued to clients does not change. Existing installations get the new
+formats after the `subhttp_formats_2026` migration, which regenerates the subscription handler on
+the first menu entry.
+
 ## Desktop GUI
 
 The active Electron app is a CLI front-end over SSH, not a complete replacement for the terminal
 menu. It deploys with `quickstart`, refreshes the saved `subscription_url`, and exposes profile
-SNI, fingerprint, port, update and uninstall operations. `probe-test`, HAPP setup, cascade,
+SNI, fingerprint, port, update and uninstall operations plus the multi-protocol backend panel:
+backend install/uninstall and status, a per-profile keys dialog (Hysteria 2 link + QR, AmneziaWG
+client conf + QR), the subscription kill switch for `hysteria2://` lines and the AWG 3.1 toggle.
+`probe-test`, HAPP setup, cascade,
 self-steal, the interactive menu and service diagnostics remain server-side operations.
 
 See [Electron Desktop GUI](desktop-gui.md) for the complete command mapping, security boundary,
@@ -191,8 +282,10 @@ npm test
 npm run typecheck
 ```
 
+## Bypass routing
 
-VPN. The `domain -> direct` rules sit above the catch-all, so they keep working with the cascade
+Bypass routing sends selected domains around the tunnel: matched traffic goes `direct`, everything
+else keeps using the VPN. The `domain -> direct` rules sit above the catch-all, so they keep working with the cascade
 enabled.
 
 Default bundle groups:
@@ -208,6 +301,361 @@ Default bundle groups:
 | `mailru` | VK Group and Mail.ru |
 
 The menu is interactive: arrows move the selection, space toggles a group, Enter applies.
+
+## Multi-protocol backends
+
+Beyond Xray Reality, one VPS can run additional transports managed from the same CLI/menu. All
+backend state lives in a neutral root that does not touch `/usr/local/etc/xray/`:
+
+```text
+/usr/local/etc/xrayebator/
+├── backends.json                 # registry: per-backend installed/version/port/flags (644, no secrets)
+└── backends/
+    ├── hysteria2/                # server.yaml, certs, placeholder credential
+    └── awg/                      # awg0.conf, server-params.json (0600)
+```
+
+Per-profile credentials are stored in the profile JSON itself (`.backends.hysteria2`,
+`.backends.awg`) — the profile is the single source of truth, and backend server configs are always
+regenerated from profiles. Profile lifecycle events (create/delete/revoke/expire/restore) propagate
+to every installed backend automatically: revoking a profile rotates its Hysteria password and AWG
+peer keys; expiring it removes the grant from both server configs; extending restores both.
+
+### Hysteria 2 (fast UDP)
+
+`hysteria2-install` downloads the binary from the official `HyNetworks/hysteria` releases (SHA-256
+verified), creates the `hysteria` service user and a dedicated systemd unit, and listens on UDP 443
+by default (QUIC next to the TCP 443 Reality inbound). TLS is adaptive: when the subscription
+endpoint already has a Let's Encrypt certificate it is reused (clients connect with `insecure=0`),
+otherwise a self-signed cert is generated (`insecure=1`). While no profile has a grant the auth map
+carries a `_xrayebator_placeholder` user — Hysteria rejects an empty userpass map. Client links look
+like `hysteria2://user:pass@host:port/?sni=…&insecure=0|1#name` and are appended to both
+subscription bodies (HAPP and generic); the registry flag `sub_body` is the kill switch if a client
+parser objects.
+
+### AmneziaWG 2.0 (system VPN)
+
+`awg-install` builds the kernel module via DKMS (primary path: the `amnezia/ppa` PPA; fallback: a
+source build that needs the full `linux-source` tree on kernels ≥ 5.6) and brings up the `awg0`
+interface through `awg-quick@awg0` with a random high UDP port, subnet `10.8.1.0/24`, `ip_forward`
+and MASQUERADE on the default-route interface. Junk parameters mirror the Amnezia defaults — the
+dialect every official AmneziaVPN client (phone and desktop) applies reliably: `Jc` 5, `Jmin` 10,
+`Jmax` 50, `H1`–`H4` = 1..4 (the WireGuard magic headers), `S1`/`S2` random 12..150 and `S3`/`S4`
+random 12..64 (all unique, `S1+56 ≠ S2`). Each profile peer gets a keypair, a preshared key and the
+first free address; the
+client `.conf` (menu item 12 or `awg-conf --name N`) carries full-tunnel `AllowedIPs` and the
+server's junk parameters, and starts with a self-describing header noting that the profile runs
+through AmneziaVPN/AmneziaWG, not V2Ray clients (HAPP). In the desktop GUI the same keys are
+delivered per profile via the «Ключи» button in Server Settings: the Hysteria 2 link and the AWG
+`.conf` as text with QR codes and one-click grant issuance. The «QR · AmneziaVPN» code carries the
+config in the app-native `vpn://` shape (`amnezia-awg2` container, server-side junk fields,
+`protocol_version`, compressed payload) — a raw `.conf` pasted into AmneziaVPN does not reach its
+tunnel intact, so that code is the recommended delivery for this app; the plain QR stays for the
+standalone AmneziaWG client. Peer changes restart the interface with
+rollback — a brief tunnel blip for all peers, acceptable because grants and revokes are rare.
+
+### AWG 2.0 vs 3.x — and why 3.1 matters against DPI/ТСПУ
+
+Per the upstream protocol split, AmneziaWG parameters divide into two groups:
+
+| Must match byte-for-byte on server and client | Local per side |
+|---|---|
+| `S1`–`S4`, `H1`–`H4` | `PersistentKeepalive` (recommended 22–30) |
+| 3.0: `HeaderProtectionKey` | 3.0: `ContentPaddingAddition`, `Rekey*`, `Reject*`, `Keepalive*`, `MaxHandshakeAttempts` (integer or `"a-b"` range) |
+| 3.1: `RandomTrailers` | 3.1: `DisableCookies` |
+
+Xrayebator implements the AWG 3.1 feature set: junk parameters plus `S1`–`S4` (≥ 12), a randomly
+generated `HeaderProtectionKey` shared between the server and every client `.conf`, and
+`RandomTrailers = on`. `DisableCookies` is available but off by default (it trades away the
+built-in anti-amplification defence). New installs get 3.1 immediately; for installs made before
+the 3.1 stage, menu item 12 → «Режим AWG 3.1» or `awg-31 --on|--off` generates the missing keys,
+switches the config format and regenerates the interface. The migration caveat is unchanged, and
+it is exactly what matters against Russian DPI/ТСПУ analysis: plain WireGuard handshakes have
+fixed packet lengths and plaintext header type bytes, so passive classification works without
+inspecting payloads — AWG 3.0 encrypts the header, 3.1 removes the fixed-length signature. The
+3.1 keys live in the must-match group, so after a switch **every previously issued client `.conf`
+must be re-downloaded**, and clients need AmneziaVPN ≥ 5.0.1.5 — older apps refuse to import the
+config at all. Verify by `awg show`: no `latest handshake` means the must-match group disagrees; a
+handshake without traffic points to `awg-quick`/routing/firewall instead.
+
+### HAPP client routing profile
+
+The subscription endpoint returns a client-side routing profile to HAPP in the `routing:` response
+header. The managed default, `xrayebator-default`, sets `GlobalProxy: "true"`, so every destination
+except private IPv4 ranges is tunnelled.
+
+That is a different knob from [Bypass routing](#bypass-routing). Bypass changes where **the server**
+sends a request; the client still tunnels it, so the destination sees the VPS address. On a node
+without a cascade the catch-all outbound is already `direct`, so bypass cannot change what a Russian
+site sees. Keeping domestic traffic out of the tunnel is only possible in the client profile.
+
+The profile travels to the client in a response header, so a large `DirectSites` list can outgrow
+nginx's default 4k proxy buffer. The generated subscription vhost raises it (`proxy_buffer_size 32k`)
+— in the domain-mode `location /sub/` and in the IP-mode (quickstart) vhost alike; if you run your own
+reverse proxy in front of the subscription, set `proxy_buffer_size` there too,
+otherwise nginx answers 502 and logs `upstream sent too big header`.
+
+### Generating it from the menu
+
+`HAPP subscription → 7) Маршрутизация клиента` writes a ready split profile built from the same
+bundles the server-side bypass uses. It keeps `GlobalProxy: "true"`, so anything unknown still
+tunnels, and moves the Russian bundles plus `geoip:ru` into `DirectSites` and `DirectIp`. The
+previous override is backed up next to the file, and removing the override restores the managed
+default. The profile uses placeholders (`{{GEOIP_URL}}`, `{{GEOSITE_URL}}`, `{{LAST_UPDATED}}`)
+resolved per subscriber at request time — no token is embedded in the shared file.
+
+### Override file
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `HAPP_ROUTING_ENABLED` | `true` | Set to `false` to stop sending the `routing:` header |
+| `HAPP_ROUTING_JSON_FILE` | `/usr/local/etc/xray/.happ_routing.json` | Operator override |
+
+If the override file exists and passes HAPP schema validation, it replaces the managed default for
+every subscriber. Malformed JSON is ignored in favour of the default rather than broadcast. Restart
+`xrayebator-sub.service` is not required: the file is read per request.
+
+Verdicts are evaluated per destination. `GlobalProxy: "false"` makes `direct` the default and sends
+only `ProxySites` and `ProxyIp` through the tunnel; `GlobalProxy: "true"` inverts that and treats
+`DirectSites` and `DirectIp` as the exceptions.
+
+### Placeholders
+
+The override is read per request, so three values can be left for the server to fill in:
+
+| Placeholder | Replaced with |
+|---|---|
+| `{{GEOIP_URL}}` | `<base url>/sub/<token>/geoip.dat` for the requesting subscriber |
+| `{{GEOSITE_URL}}` | `<base url>/sub/<token>/geosite.dat` for the requesting subscriber |
+| `{{LAST_UPDATED}}` | newest mtime among `xrayebator` and the two geo databases |
+
+Substitution runs before schema validation, so an unresolved placeholder fails the `https://` check
+and the managed default is served instead of a broken profile. `{{LAST_UPDATED}}` also removes the
+need to bump the value by hand after editing the geo databases.
+
+Three things are easy to get wrong:
+
+- **Telegram travels to IP addresses, not domains.** Domain rules never match it. Take the ranges
+  from <https://core.telegram.org/resources/cidr.txt> instead of writing them from memory; the list
+  changes, and a missing range silently degrades media downloads while chat still works.
+- **`LastUpdated` must grow.** HAPP re-imports a profile only when the value is higher than the one
+  it already stored.
+- **Geo databases must be reachable by the client.** The managed default points at
+  `/sub/<token>/geoip.dat`, which is per-subscriber. The placeholders above resolve this; without
+  them, host the databases somewhere every client can fetch them.
+- **The country in the base URL can be wrong.** ASN geolocation differs between providers: ipinfo.io
+  and ipwho.is/ip-api may place the same range in different countries (e.g. NODE HOST LIMITED:
+  Finland vs Germany/Frankfurt). The managed HAPP profile sends the client to fetch geo databases
+  through `{{GEOIP_URL}}`/`{{GEOSITE_URL}}` of the same subscription, so under the http_tls fallback
+  (public subscription unavailable) a client without pre-cached databases cannot download them and
+  HAPP shows "no data". Fix by hand-writing `/usr/local/etc/xray/.server_country`
+  (`code|country|city`) and importing keys over SSH, or by restoring the public subscription.
+
+While a client downloads new geo databases the previous profile keeps running, so a failed download
+leaves routing unchanged rather than broken.
+
+### One key — how many devices?
+
+VLESS, Hysteria 2 and AmneziaWG have different multi-device semantics:
+
+- **VLESS (subscription)** — the subscription hands out the profile's UUIDs, and UUIDs are not
+  exclusive: any number of devices can pull the same subscription in HAPP and connect
+  simultaneously, each opening its own Reality tunnels per route. The routes are transports, not
+  device slots.
+- **Hysteria 2** — auth is per connection (`userpass`), and the server does not lock a credential
+  to one session: **one `hysteria2://` link works from unlimited devices simultaneously**, each
+  with its own QUIC session. They share the server's bandwidth, nothing else.
+- **AmneziaWG** — cryptokey routing binds a peer to its keypair, and the interface keeps a single
+  endpoint per peer (last authenticated sender wins). **One key = one device reliably.** Two
+  devices on the same `.conf` fight over the endpoint and reconnect in turns; behind one NAT it
+  limps along, across networks it breaks. A second device needs its own profile/key — it gets its
+  own peer and `10.8.1.x` address.
+- **nginx** serves only the subscription endpoint on 8443 (key delivery). Hysteria (UDP 443) and
+  AmneziaWG (their UDP port) bypass nginx entirely, and nothing load-balances between the
+  backends — they are independent services on separate ports; every device simply adds its own
+  session to whichever protocol it uses.
+
+## Per-profile traffic accounting and limits
+
+Xray counts traffic per client (the client `email` equals the profile name), and the manager turns
+those counters into per-profile usage:
+
+- on a new installation `install.sh` adds the `dokodemo-door` api inbound on `127.0.0.1:10085`,
+  `policy.system.statsInboundUplink/Downlink`, the level `0` `statsUserUplink/Downlink` and the
+  first routing rule `api → api` to `config.json`, so accounting works right after installation.
+  The level flags are mandatory: Xray registers the `user>>>name>>>traffic>>>uplink` counters only
+  from them (`policy.system.statsInbound*` gives inbound statistics, not per-user ones), and on
+  older configs the `traffic_stats_2026` migration adds them on the first menu launch. Servers that
+  already ran the earlier version of that migration (its marker was already in place while the
+  flags were missing) are repaired by a separate idempotent migration `traffic_user_stats_2026` —
+  it runs on the next menu launch;
+- `xrayebator-traffic.timer` runs `xrayebator traffic-check` every 5 minutes: it reads the Stats API
+  counters (`xray api statsquery`) and accumulates the usage into the profile (`.traffic.used`),
+  subtracting the previous snapshot (`.traffic.last`) — an Xray restart does not "eat" gigabytes
+  that were already counted;
+- the limit is stored in the profile (`.traffic.limit`, bytes), `none` means unlimited. When the
+  limit is exhausted the client is removed from the inbound (snapshot — `.traffic_clients`), the
+  profile gets `.traffic_disabled: true` and the subscription answers `410 Gone`. Clearing or
+  raising the limit restores the very same client, so devices do not need to re-import the
+  subscription;
+- `subscription-userinfo` in the subscription reports the real `download` (accumulated usage) and
+  `total` (the limit), so clients with userinfo support show the remainder themselves;
+- accounting covers the profile's Xray routes only: Hysteria 2 and AmneziaWG count their own traffic
+  separately (or do not count it at all), and it does not fall into the profile limit — a profile
+  with a Hysteria 2 grant can therefore exceed its limit when the client goes through the UDP
+  backend;
+- the expiry (`expire`) and the traffic limit are independent: clearing one restriction does not
+  restore the client while the other one is still in force.
+
+```bash
+sudo xrayebator profile-limit --name NAME --limit 1.5GB   # set a limit
+sudo xrayebator profile-limit --name NAME --reset         # reset the counter
+sudo xrayebator profile-limit --name NAME --limit none    # clear the limit
+sudo xrayebator profiles | jq '.[] | {name, traffic_used, traffic_limit, traffic_disabled}'
+```
+
+In the GUI the profile card shows a "used / limit" chip (yellow from 80%, red when exhausted), and
+the "Limit" dialog sets presets, a custom value, a counter reset and clearing the limit. Limit
+management is shown only where accounting is actually wired: `profiles` returns
+`traffic_supported: true` only when the api inbound and the level `0` user-level flags are present;
+otherwise (an older server, or one updated but not yet migrated) the GUI honestly hides the
+feature.
+
+## Monitoring and Telegram alerts
+
+Monitoring is an optional layer: every 15 minutes `xrayebator-monitor.timer` runs
+`xrayebator monitor-check` and writes only state changes to Telegram (a repeat about the same event
+is sent no more than once a day, a recovery is a separate message).
+
+| What is watched | Event |
+|---|---|
+| `xray.service`, `xrayebator-sub.service` and `nginx.service` (if enabled) | service is down / is back up |
+| Hysteria 2 (`hysteria-server.service`) and the AWG interface (`awg show awg0`) | installed backends only (per the registry) |
+| Profile expiries | expiring within the next 3 days; disabled by a passed expiry |
+| Traffic limits | profiles disabled by an exhausted limit |
+| Subscription | the loopback handler does not answer (`:8080/sub/<token>`); the mode degraded to `http_tls`/`local_only` — Let's Encrypt did not validate http-01 and the subscription has no HTTPS |
+| SNI | once a day, `probe-test` over the SNIs profiles actually use: full or partial unreachability |
+| Server reboot | edge-triggered by `boot_id`: a message after a restart (repeated if the previous one was not delivered) |
+
+Setup happens from the menu (`14`) or the CLI. The bot token is issued by `@BotFather`, the
+`chat_id` by `@userinfobot` (for groups it is negative):
+
+```bash
+sudo xrayebator alerts-setup --token 123456:AA... --chat-id -1001234567890
+sudo xrayebator alerts-status                # timer, last check, events, SNI
+sudo xrayebator alerts-test                  # test message
+sudo xrayebator alerts-disable               # pause without losing the settings
+sudo xrayebator monitor-check --force-sni    # run a check and the SNI probe right now
+```
+
+Files: `/usr/local/etc/xrayebator/alerts.json` (0600 — bot token and chat_id) and `monitor-state.json`
+(deduplication state: events, `boot_id`, the result of the last SNI probe). The token is never
+printed to CLI stdout. If Telegram is unreachable, the event state is not recorded — the send is
+retried on the next tick, while the SNI probe is not repeated (its result is already saved in the
+state). The thresholds are configured by the unit's environment variables: `ALERTS_REMIND_SEC`
+(reminder, 86400), `ALERTS_EXPIRE_WARN_SEC` (the "expiring" horizon, 259200),
+`ALERTS_SNI_INTERVAL_SEC` (86400), `ALERTS_SNI_TIMEOUT` (8 seconds per SNI).
+
+## PQ: VLESS Encryption on any transport
+
+`mlkem768x25519plus` is the post-quantum layer of VLESS: an application-level key on top of
+Reality/XHTTP that protects traffic even if the outer TLS layer is ever broken ("record now, decrypt
+later"). It used to exist only on the `xhttp-pq` route; now PQ is a property of any transport.
+
+```bash
+sudo xrayebator profile-pq --name NAME                    # tcp + Vision, dedicated port
+sudo xrayebator profile-pq --name NAME --transport grpc   # grpc
+sudo xrayebator profiles | jq '.[] | select(.name == "NAME") | .routes'
+```
+
+On the server: a free port is taken, a dedicated inbound of the requested transport is created, its
+`settings.decryption` is switched to the key from `/usr/local/etc/xray/.vless_decryption` (the keys
+are shared server-wide), and a `<transport>-pq` route with `pq_enabled: true` is appended to the
+profile. The dedicated inbound is mandatory: `decryption` is an inbound-level property, so a PQ port
+cannot share clients with regular routes.
+
+Consequences:
+
+- the client needs ML-KEM (HAPP or Xray 25.6+) — an old client cannot connect to the PQ port;
+- in the v2rayNG/base64 subscription PQ routes are **hidden**, in the HAPP subscription they are
+  visible, and in Clash/mihomo and sing-box they are skipped with a reason in the YAML;
+- the regular routes of the profile stay `encryption=none` and work on every client — PQ is added
+  next to them, not instead of them;
+- the keys are generated by the `mlkem_keys` migration (Xray-core 25.9.5+); without them `profile-pq`
+  returns a JSON error with a hint;
+- the cost is fractions of a millisecond of CPU and a few KB in the config; regular routes lose
+  nothing.
+
+At deployment time PQ is added with the `quickstart --pq` flag (off by default) and the "PQ route"
+toggle in the GUI wizard; in Server settings the "PQ" button next to a profile calls the same command
+and shows the ready-made link. If the server has no ML-KEM keys, the deploy does not fail: the profile
+simply stays without PQ, and the JSON reports `pq_route:false`.
+
+## DNS-01: certificate and subscription domain without port 80
+
+The usual subscription modes (`ip_tls`, `domain_tls`) obtain the Let's Encrypt certificate over
+http-01, that is through an externally reachable port 80. Some hosters filter it — the subscription
+then degrades to `http_tls` (HTTP without a certificate). DNS-01 proves domain ownership with a TXT
+record, so port 80 is not needed at all, and the subscription lives on its own domain:
+`https://sub.example.com/sub/<token>`.
+
+```bash
+# Cloudflare: an API token with the DNS:Edit right on the zone
+sudo xrayebator dns01-setup --domain sub.example.com --provider cloudflare \
+  --token CF_API_TOKEN --email admin@example.com
+
+# Route53: keys with the Route53:ChangeResourceRecordSets right
+sudo xrayebator dns01-setup --domain sub.example.com --provider route53 \
+  --aws-access-key-id AKIA... --aws-secret-access-key ... --without-email
+
+sudo xrayebator dns01-status   # provider, domain, port, certificate lifetime, deploy-hook
+```
+
+What the command does:
+
+1. installs `certbot` and the provider plugin (`python3-certbot-dns-cloudflare` or
+   `python3-certbot-dns-route53`);
+2. writes a `0600` root credentials file — `/etc/letsencrypt/xrayebator-dns01-cloudflare.ini`
+   (`dns_cloudflare_api_token = …`) or `xrayebator-dns01-aws.ini` (profile `[default]`, handed to
+   certbot through `AWS_SHARED_CREDENTIALS_FILE`);
+3. issues the certificate with `certbot certonly --dns-cloudflare|--dns-route53 -d <domain>` plus
+   `--deploy-hook "systemctl reload nginx"` (renewal is the stock `certbot.timer`; the certificate
+   is reissued without stopping the subscription);
+4. writes an nginx vhost **with a TLS server only** (no `listen 80` and no ACME location — they are
+   not needed in this mode) and opens only the public subscription port in UFW (`443` by default);
+5. switches the subscription markers to `domain_tls`, so `_subscription_base_url` and the GUI return
+   `https://<domain>`.
+
+Requirements and caveats:
+
+- the domain must be delegated and its A/AAAA record must point at this VPS (no DNS check is
+  performed: split DNS and proxied zones produce false positives);
+- without an email the certificate is issued with `--register-unsafely-without-email` — renewal
+  notices and email-based account recovery are unavailable (as in `quickstart`);
+- the credentials files are removed by `xrayebator-uninstall`; certificates follow the root-owned
+  `.certbot_owned` manifest, so foreign domains are not touched;
+- switching to DNS-01 does not invalidate already-issued links: only the subscription base URL
+  changes.
+
+### DNS-01 as a deployment fallback
+
+`quickstart` tries to obtain the certificate through the chain "existing certificate → http-01 for
+the IP → DNS-01 → `http_tls`". DNS-01 is enabled with the same data as `dns01-setup`, but with the
+`--dns01-` prefix:
+
+```bash
+sudo xrayebator quickstart --email admin@example.com --pq \
+  --dns01-domain sub.example.com --dns01-provider cloudflare --dns01-token CF_API_TOKEN
+```
+
+If http-01 does not pass (the hoster filters port 80) but DNS-01 did issue the certificate, the mode
+becomes `domain_tls`: `_dns01_install` renders the vhost with a single TLS server itself, so quickstart
+neither re-renders nginx with the IP template nor overwrites the subscription markers with the IP
+address (otherwise the GUI would receive a dead `https://<ip>:8443`). Renewal is the stock
+`certbot.timer` with the deploy hook; the IP timer for shortlived certificates is installed only in
+`ip_tls`. If DNS-01 did not work, the deploy honestly falls back to `http_tls` with `degraded:true` —
+the subscription can then be fixed later with the `repair-dns01` command or the "Fix with DNS-01"
+button in Server settings.
 
 ## Cascade and upstream nodes
 

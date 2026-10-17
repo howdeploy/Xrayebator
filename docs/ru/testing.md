@@ -1,120 +1,136 @@
-# Тесты
+# РўРµСЃС‚С‹
 
-[← Назад к README](../../README.ru.md) · [English](../testing.md) · [简体中文](../zh-CN/testing.md)
+[в†ђ РќР°Р·Р°Рґ Рє README](../../README.ru.md) В· [English](../testing.md) В· [з®ЂдЅ“дё­ж–‡](../zh-CN/testing.md)
 
 ---
 
-## Локальная проверка чекаута
+## Р›РѕРєР°Р»СЊРЅР°СЏ РїСЂРѕРІРµСЂРєР° С‡РµРєР°СѓС‚Р°
 
 ```bash
 bash -n xrayebator install.sh update.sh uninstall.sh
 for test_file in validation/*.sh; do bash "$test_file" || exit; done
 ```
 
-Две команды — минимальный гейт локальной проверки. `shellcheck` дополнительно рекомендуется, но не является
-обязательным для CI (см. раздел ниже).
+Р”РІРµ РєРѕРјР°РЅРґС‹ вЂ” РјРёРЅРёРјР°Р»СЊРЅС‹Р№ РіРµР№С‚ Р»РѕРєР°Р»СЊРЅРѕР№ РїСЂРѕРІРµСЂРєРё. `shellcheck` РґРѕРїРѕР»РЅРёС‚РµР»СЊРЅРѕ СЂРµРєРѕРјРµРЅРґСѓРµС‚СЃСЏ, РЅРѕ РЅРµ СЏРІР»СЏРµС‚СЃСЏ
+РѕР±СЏР·Р°С‚РµР»СЊРЅС‹Рј РґР»СЏ CI (СЃРј. СЂР°Р·РґРµР» РЅРёР¶Рµ).
 
-## Что покрывают тесты
+## Р§С‚Рѕ РїРѕРєСЂС‹РІР°СЋС‚ С‚РµСЃС‚С‹
 
-В `validation/` лежат 28 статических и локальных регрессионных тестов:
+Р’ `validation/` Р»РµР¶Р°С‚ 39 СЃС‚Р°С‚РёС‡РµСЃРєРёС… Рё Р»РѕРєР°Р»СЊРЅС‹С… СЂРµРіСЂРµСЃСЃРёРѕРЅРЅС‹С… С‚РµСЃС‚РѕРІ:
 
-| Тест | Что проверяет |
+| РўРµСЃС‚ | Р§С‚Рѕ РїСЂРѕРІРµСЂСЏРµС‚ |
 |---|---|
-| `test-transaction-safety.sh` | Транзакционную безопасность операций с конфигом |
-| `test-project-update-rollback.sh` | Откат неудачного обновления проекта |
-| `test-xhttp-route-path-repair.sh` | Починку путей XHTTP-маршрутов при миграции |
-| `test-multiroute-argument-preservation.sh` | Сохранение transport-аргументов multiroute-профиля |
-| `test-happ-subscription-static.sh` | Обработчик HAPP-подписки |
-| `test-subscription-server-name.sh` | Имя сервера подписки в клиенте |
-| `test-fingerprint-subscription-sync.sh` | Синхронность маршрутов и подписки при смене fingerprint |
-| `test-dead-stealth-route-pruning.sh` | Отсечение мёртвых stealth-маршрутов |
+| `test-transaction-safety.sh` | РўСЂР°РЅР·Р°РєС†РёРѕРЅРЅСѓСЋ Р±РµР·РѕРїР°СЃРЅРѕСЃС‚СЊ РѕРїРµСЂР°С†РёР№ СЃ РєРѕРЅС„РёРіРѕРј |
+| `test-project-update-rollback.sh` | РћС‚РєР°С‚ РЅРµСѓРґР°С‡РЅРѕРіРѕ РѕР±РЅРѕРІР»РµРЅРёСЏ РїСЂРѕРµРєС‚Р° |
+| `test-xhttp-route-path-repair.sh` | РџРѕС‡РёРЅРєСѓ РїСѓС‚РµР№ XHTTP-РјР°СЂС€СЂСѓС‚РѕРІ РїСЂРё РјРёРіСЂР°С†РёРё |
+| `test-multiroute-argument-preservation.sh` | РЎРѕС…СЂР°РЅРµРЅРёРµ transport-Р°СЂРіСѓРјРµРЅС‚РѕРІ multiroute-РїСЂРѕС„РёР»СЏ |
+| `test-happ-subscription-static.sh` | РћР±СЂР°Р±РѕС‚С‡РёРє HAPP-РїРѕРґРїРёСЃРєРё (РїР»РµР№СЃС…РѕР»РґРµСЂС‹ routing, РїРѕСЂСЏРґРѕРє РІР°Р»РёРґР°С†РёРё) |
+| `test-happ-client-routing.sh` | HAPP РєР»РёРµРЅС‚СЃРєРёР№ split-РїСЂРѕС„РёР»СЊ: РіРµРЅРµСЂР°С‚РѕСЂ РёР· bypass-РЅР°Р±РѕСЂРѕРІ (258 РґРѕРјРµРЅРѕРІ, РїР»РµР№СЃС…РѕР»РґРµСЂС‹, `geoip:ru`), nginx-Р±СѓС„РµСЂС‹, РїСЂРѕРІРѕРґРєР° РјРµРЅСЋ |
+| `test-legacy-profile-port-sync.sh` | Р›РµРіР°СЃРё-РїСЂРѕС„РёР»Рё Р±РµР· `routes` РїРѕР»СѓС‡Р°СЋС‚ РѕР±РЅРѕРІР»РµРЅРёСЏ SNI/РїРѕСЂС‚Р° |
+| `test-subscription-server-name.sh` | РРјСЏ СЃРµСЂРІРµСЂР° РїРѕРґРїРёСЃРєРё РІ РєР»РёРµРЅС‚Рµ |
+| `test-fingerprint-subscription-sync.sh` | РЎРёРЅС…СЂРѕРЅРЅРѕСЃС‚СЊ РјР°СЂС€СЂСѓС‚РѕРІ Рё РїРѕРґРїРёСЃРєРё РїСЂРё СЃРјРµРЅРµ fingerprint |
+| `test-dead-stealth-route-pruning.sh` | РћС‚СЃРµС‡РµРЅРёРµ РјС‘СЂС‚РІС‹С… stealth-РјР°СЂС€СЂСѓС‚РѕРІ |
 | `test-cascade-routing.sh` | Cascade routing |
-| `test-cascade-upstream-import.sh` | Импорт upstream каскада из ссылки |
-| `test-update-branch-pinning.sh` | `update <branch>` закрепляет ветку в `.current_branch`; GUI-обновление не откатывает сервер на другую ветку |
-| `test-update-xray-core-sync.sh` | Синхронность обновления Xray-core |
-| `test-vless-url-generation.sh` | Генерацию ссылок `vless://` |
-| `test-installer-network-fallbacks.sh` | Сетевые fallback'и установщика |
-| `test-bbr-removal-migration.sh` | Безопасное удаление удалённого BBR/TCP tuning на всех путях |
-| `test-legacy-udp443-migration.sh` | Одноразовое удаление legacy правила блокировки UDP/443 |
-| `test-main-menu-numbering.sh` | Нумерацию пунктов меню и их соответствие обработчикам |
-| `test-main-readiness-regressions.sh` | Регрессии readyness после аудита: certbot-manifest, UFW manifest, nginx rollback, привилегии, SSH-порт |
-| `test-sni-change-cli.sh` | CLI `sni-change`: JSON stdout, Reality, XHTTP host, синхронизацию, rollback |
-| `test-bypass-cli.sh` | CLI `bypass`: JSON stdout, routing-правила, add с проверкой SNI |
-| `test-port-change-cli.sh` | CLI `port-change`: сценарии unit/shared/move, неверный порт, multi-route `--route` |
-| `test-profile-revoke-expire-cli.sh` | CLI `profile-revoke` (только токен / ротация uuid с сохранением чужих клиентов на общем порту) и сроки профилей (отключение, возврат из снимка, rebuild без снимка, идемпотентный `expire-check`) |
-| `test-apt-lock-race.sh` | Гонка apt-lock: `DPkg::Lock::Timeout` при установках, учёт воркера `unattended-upgrade` и бюджет 12 минут в quickstart |
-| `test-quickstart-email-and-inspect.sh` | Явный email-режим `quickstart` (`--without-email` без фиктивного адреса) и read-only инварианты `inspect --json` |
-| `test-quickstart-migration-parity.sh` | `quickstart` гоняет те же критичные миграции, что и `main_menu` |
-| `test-quickstart-subscription-port.sh` | `quickstart` использует canonical helper базы подписки и не возвращается к несвязанному hardcode URL |
-| `test-audit-functional.sh` | Функциональные regression-проверки аудита HowDeploy (P0/P1) |
-| `test-audit-privilege-regressions.sh` | Regression границ привилегий |
+| `test-cascade-upstream-import.sh` | РРјРїРѕСЂС‚ upstream РєР°СЃРєР°РґР° РёР· СЃСЃС‹Р»РєРё |
+| `test-update-branch-pinning.sh` | `update <branch>` Р·Р°РєСЂРµРїР»СЏРµС‚ РІРµС‚РєСѓ РІ `.current_branch`; GUI-РѕР±РЅРѕРІР»РµРЅРёРµ РЅРµ РѕС‚РєР°С‚С‹РІР°РµС‚ СЃРµСЂРІРµСЂ РЅР° РґСЂСѓРіСѓСЋ РІРµС‚РєСѓ |
+| `test-update-xray-core-sync.sh` | РЎРёРЅС…СЂРѕРЅРЅРѕСЃС‚СЊ РѕР±РЅРѕРІР»РµРЅРёСЏ Xray-core |
+| `test-vless-url-generation.sh` | Р“РµРЅРµСЂР°С†РёСЋ СЃСЃС‹Р»РѕРє `vless://` |
+| `test-installer-network-fallbacks.sh` | РЎРµС‚РµРІС‹Рµ fallback'Рё СѓСЃС‚Р°РЅРѕРІС‰РёРєР° |
+| `test-bbr-removal-migration.sh` | Р‘РµР·РѕРїР°СЃРЅРѕРµ СѓРґР°Р»РµРЅРёРµ СѓРґР°Р»С‘РЅРЅРѕРіРѕ BBR/TCP tuning РЅР° РІСЃРµС… РїСѓС‚СЏС… |
+| `test-legacy-udp443-migration.sh` | РћРґРЅРѕСЂР°Р·РѕРІРѕРµ СѓРґР°Р»РµРЅРёРµ legacy РїСЂР°РІРёР»Р° Р±Р»РѕРєРёСЂРѕРІРєРё UDP/443 |
+| `test-main-menu-numbering.sh` | РќСѓРјРµСЂР°С†РёСЋ РїСѓРЅРєС‚РѕРІ РјРµРЅСЋ Рё РёС… СЃРѕРѕС‚РІРµС‚СЃС‚РІРёРµ РѕР±СЂР°Р±РѕС‚С‡РёРєР°Рј (1..14 СЃ Р±СЌРєРµРЅРґ-РїСѓРЅРєС‚Р°РјРё Рё РјРѕРЅРёС‚РѕСЂРёРЅРіРѕРј) |
+| `test-backend-registry.sh` | Р РµРµСЃС‚СЂ Р±СЌРєРµРЅРґРѕРІ (РјСѓР»СЊС‚РёРїСЂРѕС‚РѕРєРѕР»СЊРЅС‹Р№ СЌС‚Р°Рї): source-mode CRUD С‡РµСЂРµР· `safe_jq_write`, С‡С‚РµРЅРёРµ installed/field, lifecycle-С‚РѕС‡РєР° РєР°Рє Р±РµР·РѕРїР°СЃРЅС‹Р№ no-op, С„РѕСЂРјР° JSON `backend-status` |
+| `test-hysteria2-lifecycle.sh` | Р‘СЌРєРµРЅРґ Hysteria 2: СЂРµРЅРґРµСЂ `server.yaml` (userpass-РєР°СЂС‚Р°, placeholder-fallback), РјРѕРґРµР»СЊ Р±РµР·РѕРїР°СЃРЅРѕСЃС‚Рё СЋРЅРёС‚Р°, arch-РјР°РїРїРёРЅРі, TLS-РґРµС‚РµРєС‚, СЃРѕР±С‹С‚РёСЏ РіСЂР°РЅС‚РѕРІ/revoke/expire-restore, СЂРµРіРµРЅ deleted РїСЂРё Р·Р°СЂР°РЅРµРµ СѓРґР°Р»С‘РЅРЅРѕРј С„Р°Р№Р»Рµ РїСЂРѕС„РёР»СЏ, created = no-op (Р±РµР· Р°РІС‚Рѕ-РІС‹РґР°С‡Рё), pure-СЃС‚СЂРѕРёС‚РµР»СЊ `hysteria2://`, РїСЂРѕРІРѕРґРєР° РґРёСЃРїРµС‚С‡РµСЂР° Рё РїРѕРґРїРёСЃРєРё |
+| `test-awg-lifecycle.sh` | Р‘СЌРєРµРЅРґ AmneziaWG: junk-РґРёР°Р»РµРєС‚ РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ Amnezia (Jc=5, Jmin=10, Jmax=50, H1вЂ“H4=1..4, S1вЂ“S4 СѓРЅРёРєР°Р»СЊРЅС‹Рµ), РіРµРЅРµСЂР°С†РёСЏ РєР»СЋС‡РµР№, СЂРµРЅРґРµСЂ СЃРµСЂРІРµСЂРЅРѕРіРѕ РєРѕРЅС„РёРіР° (PostUp MASQUERADE, Р±РµР· peer-РѕРІ РїСЂРё СѓСЃС‚Р°РЅРѕРІРєРµ), Р°Р»Р»РѕРєР°С†РёСЏ Р°РґСЂРµСЃРѕРІ, СЃРѕРґРµСЂР¶РёРјРѕРµ РєР»РёРµРЅС‚СЃРєРѕРіРѕ `.conf`, СЃРѕР±С‹С‚РёСЏ revoke/expire/restore, СЂРµРіРµРЅ deleted РїСЂРё Р·Р°СЂР°РЅРµРµ СѓРґР°Р»С‘РЅРЅРѕРј С„Р°Р№Р»Рµ РїСЂРѕС„РёР»СЏ, created = no-op (Р±РµР· Р°РІС‚Рѕ-РІС‹РґР°С‡Рё), РґРёСЃРїРµС‚С‡РµСЂ CLI |
+| `test-main-readiness-regressions.sh` | Р РµРіСЂРµСЃСЃРёРё readyness РїРѕСЃР»Рµ Р°СѓРґРёС‚Р°: certbot-manifest, UFW manifest, nginx rollback, РїСЂРёРІРёР»РµРіРёРё, SSH-РїРѕСЂС‚ |
+| `test-sni-change-cli.sh` | CLI `sni-change`: JSON stdout, Reality, XHTTP host, СЃРёРЅС…СЂРѕРЅРёР·Р°С†РёСЋ, rollback |
+| `test-bypass-cli.sh` | CLI `bypass`: JSON stdout, routing-РїСЂР°РІРёР»Р°, add СЃ РїСЂРѕРІРµСЂРєРѕР№ SNI |
+| `test-port-change-cli.sh` | CLI `port-change`: СЃС†РµРЅР°СЂРёРё unit/shared/move, РЅРµРІРµСЂРЅС‹Р№ РїРѕСЂС‚, multi-route `--route` |
+| `test-profile-revoke-expire-cli.sh` | CLI `profile-revoke` (С‚РѕР»СЊРєРѕ С‚РѕРєРµРЅ / СЂРѕС‚Р°С†РёСЏ uuid СЃ СЃРѕС…СЂР°РЅРµРЅРёРµРј С‡СѓР¶РёС… РєР»РёРµРЅС‚РѕРІ РЅР° РѕР±С‰РµРј РїРѕСЂС‚Сѓ) Рё СЃСЂРѕРєРё РїСЂРѕС„РёР»РµР№ (РѕС‚РєР»СЋС‡РµРЅРёРµ, РІРѕР·РІСЂР°С‚ РёР· СЃРЅРёРјРєР°, rebuild Р±РµР· СЃРЅРёРјРєР°, РёРґРµРјРїРѕС‚РµРЅС‚РЅС‹Р№ `expire-check`) |
+| `test-apt-lock-race.sh` | Р“РѕРЅРєР° apt-lock: `DPkg::Lock::Timeout` РїСЂРё СѓСЃС‚Р°РЅРѕРІРєР°С…, СѓС‡С‘С‚ РІРѕСЂРєРµСЂР° `unattended-upgrade` Рё Р±СЋРґР¶РµС‚ 12 РјРёРЅСѓС‚ РІ quickstart |
+| `test-quickstart-email-and-inspect.sh` | РЇРІРЅС‹Р№ email-СЂРµР¶РёРј `quickstart` (`--without-email` Р±РµР· С„РёРєС‚РёРІРЅРѕРіРѕ Р°РґСЂРµСЃР°) Рё read-only РёРЅРІР°СЂРёР°РЅС‚С‹ `inspect --json` |
+| `test-quickstart-migration-parity.sh` | `quickstart` РіРѕРЅСЏРµС‚ С‚Рµ Р¶Рµ РєСЂРёС‚РёС‡РЅС‹Рµ РјРёРіСЂР°С†РёРё, С‡С‚Рѕ Рё `main_menu` |
+| `test-quickstart-subscription-port.sh` | `quickstart` РёСЃРїРѕР»СЊР·СѓРµС‚ canonical helper Р±Р°Р·С‹ РїРѕРґРїРёСЃРєРё Рё РЅРµ РІРѕР·РІСЂР°С‰Р°РµС‚СЃСЏ Рє РЅРµСЃРІСЏР·Р°РЅРЅРѕРјСѓ hardcode URL |
+| `test-quickstart-tls-fallback.sh` | Р’РµС‚РєСѓ graceful-degradation `http_tls`: РїРµСЂРµРєР»СЋС‡РµРЅРёРµ SUB_TLS_MODE, HTTP-only vhost (Р±РµР· ssl Рё proxy), РјР°СЂРєРµСЂС‹ СЃ СѓС‡С‘С‚РѕРј СЂРµР¶РёРјР°, renew-С‚Р°Р№РјРµСЂ С‚РѕР»СЊРєРѕ РІ ip_tls Рё degraded-РјРµС‚Р°РґР°РЅРЅС‹Рµ JSON |
+| `test-audit-functional.sh` | Р¤СѓРЅРєС†РёРѕРЅР°Р»СЊРЅС‹Рµ regression-РїСЂРѕРІРµСЂРєРё Р°СѓРґРёС‚Р° HowDeploy (P0/P1) |
+| `test-audit-privilege-regressions.sh` | Regression РіСЂР°РЅРёС† РїСЂРёРІРёР»РµРіРёР№ |
+| `test-traffic-limit-cli.sh` | РЈС‡С‘С‚ С‚СЂР°С„РёРєР° РїСЂРѕС„РёР»РµР№: РЅРѕСЂРјР°Р»РёР·Р°С†РёСЋ РµРґРёРЅРёС† Р»РёРјРёС‚Р°, РЅР°РєРѕРїР»РµРЅРёРµ РґРµР»СЊС‚ Рё СЃР±СЂРѕСЃ watermark, РјРіРЅРѕРІРµРЅРЅС‹Р№ Р±Р°РЅ/СЂР°Р·Р±Р°РЅ СЃ СЃРѕС…СЂР°РЅРµРЅРёРµРј flow, РєСЂРѕСЃСЃ-РіР°СЂРґС‹ `expire` Г— С‚СЂР°С„РёРє, РјРёРіСЂР°С†РёСЋ Stats-РёРЅР±Р°СѓРЅРґР° СЃ РєРѕР»Р»РёР·РёРµР№ РїРѕСЂС‚Р°, С‚СЂР°С„РёРє-РїРѕР»СЏ РІС‹РІРѕРґР° `profiles`, СЂРµРіРёСЃС‚СЂР°С†РёСЋ РјРёРіСЂР°С†РёР№ |
+| `test-alerts-monitor.sh` | Telegram-Р°Р»РµСЂС‚С‹ РјРѕРЅРёС‚РѕСЂРёРЅРіР°: `alerts-setup/status/enable/disable/test`, РѕС‚СЃСѓС‚СЃС‚РІРёРµ СЃРѕС…СЂР°РЅРµРЅРёСЏ РєРѕРЅС„РёРіР° РїСЂРё РЅРµРґРѕСЃС‚Р°РІР»РµРЅРЅРѕРј С‚РµСЃС‚Рµ, unit'С‹ Рё РјРёРіСЂР°С†РёСЋ С‚Р°Р№РјРµСЂР°, РґРµС‚РµРєС†РёСЋ СЃРµСЂРІРёСЃРѕРІ Рё Р±СЌРєРµРЅРґРѕРІ (hysteria2, AWG), РїРѕРґРїРёСЃРєСѓ Рё РµС‘ РґРµРіСЂР°РґР°С†РёСЋ РґРѕ `http_tls`, SNI-РїСЂРѕР±Сѓ (С‡Р°СЃС‚РёС‡РЅР°СЏ/РїРѕР»РЅР°СЏ РЅРµРґРѕСЃС‚СѓРїРЅРѕСЃС‚СЊ, РІРѕСЃСЃС‚Р°РЅРѕРІР»РµРЅРёРµ, РёРЅС‚РµСЂРІР°Р», retry Р±РµР· РїРѕРІС‚РѕСЂРЅРѕР№ РїСЂРѕР±С‹), edge-С‚СЂРёРіРіРµСЂ РїРµСЂРµР·Р°РіСЂСѓР·РєРё |
+| `test-subscription-formats.sh` | Р¤РѕСЂРјР°С‚С‹ РїРѕРґРїРёСЃРєРё: РЅРѕСЂРјР°Р»РёР·Р°С†РёСЋ `vless://` (7 С‚СЂР°РЅСЃРїРѕСЂС‚РѕРІ) Рё `hysteria2://`, IPv6/percent-decoding, Clash/mihomo YAML (reality-opts, flow, packet-encoding, grpc-opts, hysteria2, РІР°Р»РёРґР°С†РёСЏ PyYAML РїСЂРё РЅР°Р»РёС‡РёРё), sing-box JSON С‡РµСЂРµР· `jq`, РїСЂРѕРїСѓСЃРє PQ Рё xhttp СЃ РїРѕСЏСЃРЅРµРЅРёРµРј, edge-cases (РЅРµС‚ Р¶РёРІС‹С… РјР°СЂС€СЂСѓС‚РѕРІ, С‚РѕР»СЊРєРѕ PQ), content negotiation РІ heredoc'Рµ С…РµРЅРґР»РµСЂР°, СЂРµРіРёСЃС‚СЂР°С†РёСЋ РјРёРіСЂР°С†РёРё Рё CLI-РєРѕРЅС‚СЂР°РєС‚ `profiles` |
+| `test-pq-routes.sh` | PQ-маршруты: отдельный инбаунд с `decryption` из `.vless_decryption`, обычный инбаунд остаётся `encryption=none`, PQ-ссылка несёт `encryption=mlkem768x25519plus`, дубль и отсутствие ключей дают JSON-ошибку, фильтр v2ray-тела выкидывает PQ любого транспорта.
+| `test-dns01-certbot.sh` | DNS-01 (Cloudflare/Route53): РІР°Р»РёРґР°С†РёСЋ РґРѕРјРµРЅР° (IP Рё Р»РѕРєР°Р»СЊРЅС‹Рµ РёРјРµРЅР° РѕС‚РєР»РѕРЅСЏСЋС‚СЃСЏ) Рё РїСЂРѕРІР°Р№РґРµСЂР°, СЃР±РѕСЂРєСѓ Р°СЂРіСѓРјРµРЅС‚РѕРІ certbot (РїР»Р°РіРёРЅ, credentials, propagation, deploy-hook, `-m` РёР»Рё СЂРµРіРёСЃС‚СЂР°С†РёСЏ Р±РµР· email), Р·Р°РїРёСЃСЊ credentials `0600` СЃ СЃРѕРґРµСЂР¶РёРјС‹Рј РїРѕ РїСЂРѕРІР°Р№РґРµСЂСѓ, nginx-vhost **Р±РµР·** `listen 80` Рё ACME-location, CLI-РѕС€РёР±РєРё Р±РµР· Р·Р°РїРёСЃРё РЅР° РґРёСЃРє Рё РїСЂРѕРІРѕРґРєСѓ (РґРёСЃРїР°С‚С‡РµСЂ, РїСѓРЅРєС‚ РјРµРЅСЋ, РїР°РєРµС‚С‹ РїР»Р°РіРёРЅРѕРІ, UFW-РїРѕСЂС‚, РјР°СЂРєРµСЂС‹ `domain_tls`, manifest certbot, cleanup РІ uninstall) |
 
-> Статические тесты не заменяют проверку на disposable VPS: создание и удаление профиля, валидацию
-> конфига, рестарт сервисов, rollback и реальное подключение клиента.
+> РЎС‚Р°С‚РёС‡РµСЃРєРёРµ С‚РµСЃС‚С‹ РЅРµ Р·Р°РјРµРЅСЏСЋС‚ РїСЂРѕРІРµСЂРєСѓ РЅР° disposable VPS: СЃРѕР·РґР°РЅРёРµ Рё СѓРґР°Р»РµРЅРёРµ РїСЂРѕС„РёР»СЏ, РІР°Р»РёРґР°С†РёСЋ
+> РєРѕРЅС„РёРіР°, СЂРµСЃС‚Р°СЂС‚ СЃРµСЂРІРёСЃРѕРІ, rollback Рё СЂРµР°Р»СЊРЅРѕРµ РїРѕРґРєР»СЋС‡РµРЅРёРµ РєР»РёРµРЅС‚Р°.
 
-## Ручные проверки на живом сервере
+## Р СѓС‡РЅС‹Рµ РїСЂРѕРІРµСЂРєРё РЅР° Р¶РёРІРѕРј СЃРµСЂРІРµСЂРµ
 
 ```bash
-sudo xrayebator probe-test                                    # доступность SNI с VPS
+sudo xrayebator probe-test                                    # РґРѕСЃС‚СѓРїРЅРѕСЃС‚СЊ SNI СЃ VPS
 sudo /usr/local/bin/xray run -test -config /usr/local/etc/xray/config.json
 sudo systemctl status xray --no-pager -l
 sudo systemctl status xrayebator-sub --no-pager -l
-curl -sS -i http://127.0.0.1:8080/sub/                        # ожидается 404
+curl -sS -i http://127.0.0.1:8080/sub/                        # РѕР¶РёРґР°РµС‚СЃСЏ 404
 jq -r '.routes[] | [.label,.transport,.port,(.pq_enabled // false)] | @tsv' \
   /usr/local/etc/xray/profiles/<profile>.json
 ```
 
-Если UFW уже активен, сравните numbered rules до и после операции: установка не должна повторно
-включать firewall или менять политику по умолчанию.
+Р•СЃР»Рё UFW СѓР¶Рµ Р°РєС‚РёРІРµРЅ, СЃСЂР°РІРЅРёС‚Рµ numbered rules РґРѕ Рё РїРѕСЃР»Рµ РѕРїРµСЂР°С†РёРё: СѓСЃС‚Р°РЅРѕРІРєР° РЅРµ РґРѕР»Р¶РЅР° РїРѕРІС‚РѕСЂРЅРѕ
+РІРєР»СЋС‡Р°С‚СЊ firewall РёР»Рё РјРµРЅСЏС‚СЊ РїРѕР»РёС‚РёРєСѓ РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ.
 
-## Десктоп-GUI
+## Р”РµСЃРєС‚РѕРї-GUI
 
-У GUI (`src/`) свои Vitest unit-тесты в `tests/`.
+РЈ GUI (`src/`) СЃРІРѕРё Vitest unit-С‚РµСЃС‚С‹ РІ `tests/`.
 
 ```bash
-npm run typecheck     # проверка TypeScript: main, preload, renderer, shared
-npm test              # Vitest unit-тесты
+npm run typecheck     # РїСЂРѕРІРµСЂРєР° TypeScript: main, preload, renderer, shared
+npm test              # Vitest unit-С‚РµСЃС‚С‹
 ```
 
-Файлы тестов:
+Р¤Р°Р№Р»С‹ С‚РµСЃС‚РѕРІ:
 
-| Тест | Что проверяет |
+| РўРµСЃС‚ | Р§С‚Рѕ РїСЂРѕРІРµСЂСЏРµС‚ |
 |---|---|
-| `tests/unit/subscription.test.ts` | Извлечение ссылки подписки и ключей профиля |
-| `tests/unit/probe-ports.test.ts` | Зондажи доступности для статусной точки Dashboard |
-| `tests/unit/extractJson.test.ts` | Разбор JSON из вывода `xrayebator` |
-| `tests/unit/countryFlag.test.ts` | Флаг страны для карточек серверов |
-| `tests/unit/vless.test.ts` | Парсинг `vless://` URL |
-| `tests/unit/shell-command.test.ts` | POSIX-безопасное quoting аргументов shell |
-| `tests/unit/ssh-access.test.ts` | Валидация параметров SSH-доступа и порядок разрешения ключа из keychain |
-| `tests/unit/ssh-client.test.ts` | SSH-соединение и host-key verification |
-| `tests/unit/ssh-keychain.test.ts` | Сохранение/чтение/удаление ключей в системном keychain с guard'ами размера (mock keytar) |
-| `tests/unit/server-manager.test.ts` | Валидация безопасных веток для обновления |
-| `tests/unit/server-store.test.ts` | Идемпотентный импорт upsert по host+port, подсчёт ссылок на credential |
-| `tests/unit/server-inspector.test.ts` | Нормализация диагностики: публичная vs local-only/unreachable подписка, partial- и refuse-import состояния |
-| `tests/unit/deployer.test.ts` | Аргументы quickstart: режимы provided/without email без фиктивного адреса |
-| `tests/unit/ui-contracts.test.ts` | Готовность deployment и формирование payload при выборе email-режима |
+| `tests/unit/subscription.test.ts` | РР·РІР»РµС‡РµРЅРёРµ СЃСЃС‹Р»РєРё РїРѕРґРїРёСЃРєРё Рё РєР»СЋС‡РµР№ РїСЂРѕС„РёР»СЏ |
+| `tests/unit/probe-ports.test.ts` | Р—РѕРЅРґР°Р¶Рё РґРѕСЃС‚СѓРїРЅРѕСЃС‚Рё РґР»СЏ СЃС‚Р°С‚СѓСЃРЅРѕР№ С‚РѕС‡РєРё Dashboard |
+| `tests/unit/extractJson.test.ts` | Р Р°Р·Р±РѕСЂ JSON РёР· РІС‹РІРѕРґР° `xrayebator` |
+| `tests/unit/countryFlag.test.ts` | Р¤Р»Р°Рі СЃС‚СЂР°РЅС‹ РґР»СЏ РєР°СЂС‚РѕС‡РµРє СЃРµСЂРІРµСЂРѕРІ |
+| `tests/unit/vless.test.ts` | РџР°СЂСЃРёРЅРі `vless://` URL |
+| `tests/unit/shell-command.test.ts` | POSIX-Р±РµР·РѕРїР°СЃРЅРѕРµ quoting Р°СЂРіСѓРјРµРЅС‚РѕРІ shell |
+| `tests/unit/ssh-access.test.ts` | Р’Р°Р»РёРґР°С†РёСЏ РїР°СЂР°РјРµС‚СЂРѕРІ SSH-РґРѕСЃС‚СѓРїР° Рё РїРѕСЂСЏРґРѕРє СЂР°Р·СЂРµС€РµРЅРёСЏ РєР»СЋС‡Р° РёР· keychain |
+| `tests/unit/ssh-client.test.ts` | SSH-СЃРѕРµРґРёРЅРµРЅРёРµ Рё host-key verification |
+| `tests/unit/ssh-keychain.test.ts` | РЎРѕС…СЂР°РЅРµРЅРёРµ/С‡С‚РµРЅРёРµ/СѓРґР°Р»РµРЅРёРµ РєР»СЋС‡РµР№ РІ СЃРёСЃС‚РµРјРЅРѕРј keychain СЃ guard'Р°РјРё СЂР°Р·РјРµСЂР° (mock keytar) |
+| `tests/unit/server-manager.test.ts` | Р’Р°Р»РёРґР°С†РёСЏ Р±РµР·РѕРїР°СЃРЅС‹С… РІРµС‚РѕРє РґР»СЏ РѕР±РЅРѕРІР»РµРЅРёСЏ |
+| `tests/unit/server-store.test.ts` | РРґРµРјРїРѕС‚РµРЅС‚РЅС‹Р№ РёРјРїРѕСЂС‚ upsert РїРѕ host+port, РїРѕРґСЃС‡С‘С‚ СЃСЃС‹Р»РѕРє РЅР° credential |
+| `tests/unit/server-inspector.test.ts` | РќРѕСЂРјР°Р»РёР·Р°С†РёСЏ РґРёР°РіРЅРѕСЃС‚РёРєРё: РїСѓР±Р»РёС‡РЅР°СЏ vs local-only/unreachable РїРѕРґРїРёСЃРєР°, partial- Рё refuse-import СЃРѕСЃС‚РѕСЏРЅРёСЏ |
+| `tests/unit/deployer.test.ts` | РђСЂРіСѓРјРµРЅС‚С‹ quickstart: СЂРµР¶РёРјС‹ provided/without email Р±РµР· С„РёРєС‚РёРІРЅРѕРіРѕ Р°РґСЂРµСЃР° |
+| `tests/unit/ui-contracts.test.ts` | Р“РѕС‚РѕРІРЅРѕСЃС‚СЊ deployment Рё С„РѕСЂРјРёСЂРѕРІР°РЅРёРµ payload РїСЂРё РІС‹Р±РѕСЂРµ email-СЂРµР¶РёРјР° |
+| `tests/unit/awg-shared.test.ts` | РџР°СЂСЃРёРЅРі AWG `.conf`, СЃРЅСЏС‚РёРµ РєРѕРјРјРµРЅС‚Р°СЂРёРµРІ, СЃР±РѕСЂРєР° `vpn://` Рё qCompress |
+| `tests/unit/backend-manager.test.ts` | Р Р°Р·Р±РѕСЂ backend-СЃС‚Р°С‚СѓСЃР° Рё AWG-РєРѕРЅС„РёРіРѕРІ (hysteria2/awg, С„Р»Р°РіРё 3.1) |
+| `tests/unit/calendar.test.ts` | РљР°Р»РµРЅРґР°СЂСЊ: Р»РѕРєР°Р»СЊРЅС‹Рµ ISO-РґР°С‚С‹ Р±РµР· UTC-СЃРґРІРёРіР°, СЃРµС‚РєР° РјРµСЃСЏС†Р°, РіСЂР°РЅРёС†С‹ РЅР°РІРёРіР°С†РёРё |
+| `tests/unit/expire.test.ts` | РЎС‚Р°С‚СѓСЃС‹ СЃСЂРѕРєР° РґРµР№СЃС‚РІРёСЏ, РґР°С‚Р° РїРѕ С‡Р°СЃРѕРІРѕРјСѓ РїРѕСЏСЃСѓ СЃРµСЂРІРµСЂР°, РїСЂРёРѕСЂРёС‚РµС‚ С„Р»Р°РіР° РѕС‚РєР»СЋС‡РµРЅРёСЏ |
+| `tests/unit/traffic.test.ts` | РҐРµР»РїРµСЂС‹ Р»РёРјРёС‚Р° С‚СЂР°С„РёРєР°: СЂР°Р·Р±РѕСЂ Рё РІР°Р»РёРґР°С†РёСЏ РІРІРѕРґР° (`500MB`/`1.5GB`/`2TB`/`none`), С„РѕСЂРјР°С‚РёСЂРѕРІР°РЅРёРµ СЂР°СЃС…РѕРґР° Рё Р»РёРјРёС‚Р°, РѕРїРёСЃР°РЅРёРµ С‡РёРїР° (С‚РѕРЅР° 80% Рё РёСЃС‡РµСЂРїР°РЅРёСЏ), РїСЂРµРѕР±СЂР°Р·РѕРІР°РЅРёРµ Р»РёРјРёС‚Р° РІ РїРѕР»Рµ РІРІРѕРґР° |
 
-`npm run typecheck` дополнительно проверяет `tsconfig.contracts.json` — он компилирует строгие onboarding-контракты из `tests/type-contracts/` (обязательный `emailMode`, keychain-ссылка в выборщике ключа, открытый import API); Vitest-транспиляция такие регрессии типов не ловит.
+`npm run typecheck` РґРѕРїРѕР»РЅРёС‚РµР»СЊРЅРѕ РїСЂРѕРІРµСЂСЏРµС‚ `tsconfig.contracts.json` вЂ” РѕРЅ РєРѕРјРїРёР»РёСЂСѓРµС‚ СЃС‚СЂРѕРіРёРµ onboarding-РєРѕРЅС‚СЂР°РєС‚С‹ РёР· `tests/type-contracts/` (РѕР±СЏР·Р°С‚РµР»СЊРЅС‹Р№ `emailMode`, keychain-СЃСЃС‹Р»РєР° РІ РІС‹Р±РѕСЂС‰РёРєРµ РєР»СЋС‡Р°, РѕС‚РєСЂС‹С‚С‹Р№ import API); Vitest-С‚СЂР°РЅСЃРїРёР»СЏС†РёСЏ С‚Р°РєРёРµ СЂРµРіСЂРµСЃСЃРёРё С‚РёРїРѕРІ РЅРµ Р»РѕРІРёС‚.
 
-Примечание: `tests/unit/shell-command.test.ts` намеренно вызывает `/bin/sh` и завершается ошибкой
-(`status=null`) на Windows, где POSIX `/bin/sh` отсутствует. Полный suite следует запускать на Linux
-(включая CI Ubuntu в `release.yml`), где все тесты проходят.
+РџСЂРёРјРµС‡Р°РЅРёРµ: `tests/unit/shell-command.test.ts` РЅР°РјРµСЂРµРЅРЅРѕ РІС‹Р·С‹РІР°РµС‚ `/bin/sh` Рё Р·Р°РІРµСЂС€Р°РµС‚СЃСЏ РѕС€РёР±РєРѕР№
+(`status=null`) РЅР° Windows, РіРґРµ POSIX `/bin/sh` РѕС‚СЃСѓС‚СЃС‚РІСѓРµС‚. РџРѕР»РЅС‹Р№ suite СЃР»РµРґСѓРµС‚ Р·Р°РїСѓСЃРєР°С‚СЊ РЅР° Linux
+(РІРєР»СЋС‡Р°СЏ CI Ubuntu РІ `release.yml`), РіРґРµ РІСЃРµ С‚РµСЃС‚С‹ РїСЂРѕС…РѕРґСЏС‚.
 
 ## CI workflow
 
-Три независимых workflow:
+РўСЂРё РЅРµР·Р°РІРёСЃРёРјС‹С… workflow:
 
-- **ci-linux.yml** — Bash validation: `bash -n` всех скриптов + все 28 `validation/test-*.sh` на
-  ubuntu-24.04. Запускается на push в `main`, `dev`, `experimental` и на pull request.
-- **release.yml** — Electron сборка (Windows/macOS/Linux). Запускается только на теги `v*` и manual
-  dispatch. Сначала `preflight`: проверяет наличие текста релиза `docs/releases/<tag>.en.md` и
-  способность секрета `AP3X0` создавать релизы (пробным черновиком, который сразу удаляется), — чтобы
-  неприятность всплыла за секунды, а не после трёх сборок. Обе проверки предупреждающие: релиз выйдет
-  в любом случае. Затем `npm run typecheck`, `npm test`, `npm run build` на ubuntu и
-  `electron-builder --publish never` на всех трёх платформах. Если `preflight` подтвердил, что
-  `AP3X0` может публиковать, релиз выходит от владельца этого токена; иначе — от
-  `github-actions[bot]` через встроенный `GITHUB_TOKEN`: автор релиза фиксируется при создании и
-  назад не переключается.
-- **gui-release.yml** — legacy PySide6 GUI: ruff + pytest + wheel build. Запускается на PR и теги
+- **ci-linux.yml** вЂ” Bash validation: `bash -n` РІСЃРµС… СЃРєСЂРёРїС‚РѕРІ + РІСЃРµ 39 `validation/test-*.sh` РЅР°
+  ubuntu-24.04. Р—Р°РїСѓСЃРєР°РµС‚СЃСЏ РЅР° push РІ `main`, `dev`, `experimental` Рё РЅР° pull request.
+- **release.yml** вЂ” Electron СЃР±РѕСЂРєР° (Windows/macOS/Linux). Р—Р°РїСѓСЃРєР°РµС‚СЃСЏ С‚РѕР»СЊРєРѕ РЅР° С‚РµРіРё `v*` Рё manual
+  dispatch. РЎРЅР°С‡Р°Р»Р° `preflight`: РїСЂРѕРІРµСЂСЏРµС‚ РЅР°Р»РёС‡РёРµ С‚РµРєСЃС‚Р° СЂРµР»РёР·Р° `docs/releases/<tag>.en.md` Рё
+  СЃРїРѕСЃРѕР±РЅРѕСЃС‚СЊ СЃРµРєСЂРµС‚Р° `AP3X0` СЃРѕР·РґР°РІР°С‚СЊ СЂРµР»РёР·С‹ (РїСЂРѕР±РЅС‹Рј С‡РµСЂРЅРѕРІРёРєРѕРј, РєРѕС‚РѕСЂС‹Р№ СЃСЂР°Р·Сѓ СѓРґР°Р»СЏРµС‚СЃСЏ), вЂ” С‡С‚РѕР±С‹
+  РЅРµРїСЂРёСЏС‚РЅРѕСЃС‚СЊ РІСЃРїР»С‹Р»Р° Р·Р° СЃРµРєСѓРЅРґС‹, Р° РЅРµ РїРѕСЃР»Рµ С‚СЂС‘С… СЃР±РѕСЂРѕРє. РћР±Рµ РїСЂРѕРІРµСЂРєРё РїСЂРµРґСѓРїСЂРµР¶РґР°СЋС‰РёРµ: СЂРµР»РёР· РІС‹Р№РґРµС‚
+  РІ Р»СЋР±РѕРј СЃР»СѓС‡Р°Рµ. Р—Р°С‚РµРј `npm run typecheck`, `npm test`, `npm run build` РЅР° ubuntu Рё
+  `electron-builder --publish never` РЅР° РІСЃРµС… С‚СЂС‘С… РїР»Р°С‚С„РѕСЂРјР°С…. Р•СЃР»Рё `preflight` РїРѕРґС‚РІРµСЂРґРёР», С‡С‚Рѕ
+  `AP3X0` РјРѕР¶РµС‚ РїСѓР±Р»РёРєРѕРІР°С‚СЊ, СЂРµР»РёР· РІС‹С…РѕРґРёС‚ РѕС‚ РІР»Р°РґРµР»СЊС†Р° СЌС‚РѕРіРѕ С‚РѕРєРµРЅР°; РёРЅР°С‡Рµ вЂ” РѕС‚
+  `github-actions[bot]` С‡РµСЂРµР· РІСЃС‚СЂРѕРµРЅРЅС‹Р№ `GITHUB_TOKEN`: Р°РІС‚РѕСЂ СЂРµР»РёР·Р° С„РёРєСЃРёСЂСѓРµС‚СЃСЏ РїСЂРё СЃРѕР·РґР°РЅРёРё Рё
+  РЅР°Р·Р°Рґ РЅРµ РїРµСЂРµРєР»СЋС‡Р°РµС‚СЃСЏ.
+- **gui-release.yml** вЂ” legacy PySide6 GUI: ruff + pytest + wheel build. Р—Р°РїСѓСЃРєР°РµС‚СЃСЏ РЅР° PR Рё С‚РµРіРё
   `gui-v*`.

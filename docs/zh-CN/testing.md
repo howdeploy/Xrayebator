@@ -15,7 +15,7 @@ for test_file in validation/*.sh; do bash "$test_file" || exit; done
 
 ## 测试覆盖范围
 
-`validation/` 中有 28 个静态与本地回归测试：
+`validation/` 中有 38 个静态与本地回归测试：
 
 | 测试 | 检查内容 |
 |---|---|
@@ -23,7 +23,9 @@ for test_file in validation/*.sh; do bash "$test_file" || exit; done
 | `test-project-update-rollback.sh` | 项目更新失败后的回滚 |
 | `test-xhttp-route-path-repair.sh` | 迁移过程中 XHTTP 路径的修复 |
 | `test-multiroute-argument-preservation.sh` | 多线路配置档传输参数的保留 |
-| `test-happ-subscription-static.sh` | HAPP 订阅处理器 |
+| `test-happ-subscription-static.sh` | HAPP 订阅处理器（routing 占位符、校验顺序） |
+| `test-happ-client-routing.sh` | HAPP 客户端分流配置：基于 bypass 集合的生成器（258 个域名、占位符、`geoip:ru`）、nginx 缓冲区、菜单接线 |
+| `test-legacy-profile-port-sync.sh` | 无 `routes` 的旧版配置档仍能收到 SNI/端口同步 |
 | `test-subscription-server-name.sh` | 客户端中显示的订阅服务器名 |
 | `test-fingerprint-subscription-sync.sh` | 更换指纹时线路与订阅的同步 |
 | `test-dead-stealth-route-pruning.sh` | 失效 stealth 线路的清理 |
@@ -35,7 +37,10 @@ for test_file in validation/*.sh; do bash "$test_file" || exit; done
 | `test-installer-network-fallbacks.sh` | 安装脚本网络回退 |
 | `test-bbr-removal-migration.sh` | 已删除 BBR/TCP 调优在所有路径上的安全清理 |
 | `test-legacy-udp443-migration.sh` | 一次性清理旧版 UDP/443 阻断规则 |
-| `test-main-menu-numbering.sh` | 主菜单条目编号连续并与处理函数一致 |
+| `test-main-menu-numbering.sh` | 主菜单条目编号连续并与处理函数一致（含后端条目与监控的 1..14） |
+| `test-backend-registry.sh` | 后端注册表（多协议阶段）：source-mode 下的注册表 CRUD（经 `safe_jq_write`）、installed/field 读取、生命周期入口的安全 no-op、`backend-status` JSON 结构 |
+| `test-hysteria2-lifecycle.sh` | Hysteria 2 后端：`server.yaml` 渲染（userpass 映射、占位回退）、systemd 单元安全模型、架构映射、TLS 探测、授权/吊销/过期-恢复事件、预删除配置档后的 deleted 重生成、created 为无操作（不自动签发）、纯函数 `hysteria2://` 构造器、CLI 分发与订阅接线 |
+| `test-awg-lifecycle.sh` | AmneziaWG 后端：Amnezia 默认 junk 方言（Jc=5、Jmin=10、Jmax=50、H1–H4=1..4、S1–S4 互不相同）、密钥生成、服务端配置渲染（PostUp MASQUERADE、安装时无 peer）、peer 地址分配、客户端 `.conf` 内容、revoke/expire/restore 事件、预删除配置档后的 deleted 重生成、created 为无操作（不自动签发）、CLI 分发 |
 | `test-main-readiness-regressions.sh` | 审计后的 readiness 回归：certbot manifest、UFW manifest、nginx 回滚、权限与 SSH 端口 |
 | `test-sni-change-cli.sh` | `sni-change` CLI：JSON 输出、Reality、XHTTP host、配置档同步与回滚 |
 | `test-bypass-cli.sh` | `bypass` CLI：JSON 输出、路由规则更新、带 SNI 探测的 add |
@@ -45,8 +50,13 @@ for test_file in validation/*.sh; do bash "$test_file" || exit; done
 | `test-quickstart-email-and-inspect.sh` | `quickstart` 的显式 email 模式（`--without-email` 不使用虚假地址）以及 `inspect --json` 的只读不变量 |
 | `test-quickstart-migration-parity.sh` | `quickstart` 执行与 `main_menu` 相同的关键迁移 |
 | `test-quickstart-subscription-port.sh` | 确认 `quickstart` 使用规范的订阅基础地址 helper，不回退到无关的硬编码 URL |
+| `test-quickstart-tls-fallback.sh` | `http_tls` 优雅降级分支：SUB_TLS_MODE 切换、HTTP-only vhost（无 ssl/无 proxy）、按模式写入标记、仅 ip_tls 设置续期定时器以及 JSON 的 degraded 元数据 |
 | `test-audit-functional.sh` | HowDeploy 审计（P0/P1）的功能回归检查 |
 | `test-audit-privilege-regressions.sh` | 权限边界回归 |
+| `test-traffic-limit-cli.sh` | 配置档流量统计：限额单位归一化、增量累计与 watermark 重置、保留 flow 的即时封禁/解封、`expire` × 流量的交叉守卫、端口冲突下的 Stats 入站迁移、`profiles` 输出中的流量字段、迁移注册 |
+| `test-alerts-monitor.sh` | 监控的 Telegram 告警：`alerts-setup/status/enable/disable/test`、测试未投递时不保存配置、定时器单元与迁移、服务与后端（hysteria2、AWG）检测、订阅及其降级到 `http_tls`、SNI 探测（部分/完全不可达、恢复、间隔、重试时不重跑探测）、重启的边沿触发 |
+| `test-subscription-formats.sh` | 订阅格式：`vless://`（7 种传输方式）与 `hysteria2://` 的归一化、IPv6/percent-decoding、Clash/mihomo YAML（reality-opts、flow、packet-encoding、grpc-opts、hysteria2，有 PyYAML 时做校验）、通过 `jq` 校验 sing-box JSON、带说明地跳过 PQ 与 xhttp、边界情况（无存活线路、只有 PQ）、处理器 heredoc 中的内容协商、迁移注册与 `profiles` 的 CLI 契约 |
+| `test-dns01-certbot.sh` | DNS-01（Cloudflare/Route53）：域名与提供商校验（IP 与单标签名称会被拒绝）、按提供商组装 certbot 参数（插件、凭据、propagation、deploy-hook、`-m` 或免邮箱注册）、按提供商写入 `0600` 凭据内容、nginx vhost **不含** `listen 80` 与 ACME location、CLI 校验失败时不写盘，以及静态接线（分发器、菜单项、插件包、UFW 端口、`domain_tls` 标记、certbot 清单、uninstall 清理） |
 
 > 静态测试不能替代一次性 VPS 上的实测：创建与删除配置档、校验配置、重启服务、回滚以及真实客户端连接。
 
@@ -91,6 +101,11 @@ npm test              # Vitest 单元测试
 | `tests/unit/server-inspector.test.ts` | 诊断规范化：公网与仅本地/不可达订阅、partial 及拒绝导入状态 |
 | `tests/unit/deployer.test.ts` | quickstart 参数构建：provided/without email 模式，不使用虚假地址 |
 | `tests/unit/ui-contracts.test.ts` | email 模式选择下的部署就绪判断与 payload 构造 |
+| `tests/unit/awg-shared.test.ts` | AWG `.conf` 解析、注释剔除、`vpn://` 构建与 qCompress |
+| `tests/unit/backend-manager.test.ts` | 后端状态与 AWG 配置解析（hysteria2/awg、3.1 标志） |
+| `tests/unit/calendar.test.ts` | 日历：本地 ISO 日期（无 UTC 偏移）、月网格、导航边界 |
+| `tests/unit/expire.test.ts` | 有效期徽标状态、服务器时区日期与禁用标志优先级 |
+| `tests/unit/traffic.test.ts` | 流量限额辅助函数：输入解析与校验（`500MB`/`1.5GB`/`2TB`/`none`）、用量与限额格式化、标签描述（80% 提醒色与耗尽状态）、限额到输入框的转换 |
 
 `npm run typecheck` 还会检查 `tsconfig.contracts.json`，其中编译 `tests/type-contracts/` 中严格的 onboarding 契约（必需的 `emailMode`、keychain 引用密钥选择器、已暴露的 import API）；仅靠 Vitest 转译无法捕获这类类型回归。
 
@@ -102,7 +117,7 @@ npm test              # Vitest 单元测试
 
 三个独立 workflow：
 
-- **ci-linux.yml** — Bash validation：在 ubuntu-24.04 上对所有脚本执行 `bash -n`，并运行全部 28 个
+- **ci-linux.yml** — Bash validation：在 ubuntu-24.04 上对所有脚本执行 `bash -n`，并运行全部 38 个
   `validation/test-*.sh`；在 push 到 `main`、`dev`、`experimental` 以及 pull request 时运行。
 - **release.yml** — Electron 构建（Windows/macOS/Linux）。只在 `v*` tag 和手动触发时运行；先由
   `preflight` 检查发布说明 `docs/releases/<tag>.en.md` 是否存在，以及仓库密钥 `AP3X0`（若已设置）

@@ -42,4 +42,58 @@ describe('quickstart argument builder', () => {
     )
     expect(() => buildQuickstartArgs({ emailMode: 'provided' })).toThrow(/email/i)
   })
+
+  it('adds --pq only when the operator opted in', () => {
+    expect(buildQuickstartArgs({ emailMode: 'without', pq: true })).toEqual([
+      'quickstart',
+      '--without-email',
+      '--pq'
+    ])
+    expect(buildQuickstartArgs({ emailMode: 'without', pq: false })).toEqual([
+      'quickstart',
+      '--without-email'
+    ])
+  })
+
+  it('forwards DNS-01 parameters with the quickstart prefix', () => {
+    expect(
+      buildQuickstartArgs({
+        emailMode: 'provided',
+        email: 'a@example.com',
+        pq: true,
+        dns01: {
+          domain: 'sub.example.com',
+          provider: 'cloudflare',
+          token: 'abcdefghijklmnopqrst'
+        }
+      })
+    ).toEqual([
+      'quickstart',
+      '--email',
+      'a@example.com',
+      '--pq',
+      '--dns01-domain',
+      'sub.example.com',
+      '--dns01-provider',
+      'cloudflare',
+      '--dns01-token',
+      'abcdefghijklmnopqrst'
+    ])
+  })
+
+  it('refuses an incomplete DNS-01 set before touching the server', () => {
+    // Домен без токена: сервер отверг бы запрос, но SSH-раунд ради этого не нужен.
+    expect(() =>
+      buildQuickstartArgs({
+        emailMode: 'without',
+        dns01: { domain: 'sub.example.com', provider: 'cloudflare' }
+      })
+    ).toThrow(/DNS-01/)
+    expect(() =>
+      buildQuickstartArgs({
+        emailMode: 'without',
+        dns01: { domain: '203.0.113.10', provider: 'cloudflare', token: 'abcdefghijklmnopqrst' }
+      })
+    ).toThrow(/DNS-01/)
+  })
 })

@@ -1,3 +1,5 @@
+import type { Dns01Input, Dns01Provider } from './dns01'
+
 export type SshAuthMethod = 'password' | 'privateKey'
 
 export type SshPrivilegeMode = 'root' | 'sudo'
@@ -12,7 +14,19 @@ export type XrayState = 'running' | 'stopped' | 'missing' | 'unknown'
 
 export type ProfilesState = 'available' | 'empty' | 'missing' | 'unknown'
 
-export type SubscriptionState = 'public' | 'localOnly' | 'missing' | 'unreachable' | 'unknown'
+/**
+ * Состояние подписки с сервера (inspect/normalize):
+ * public — HTTPS endpoint работает; fallback — http_tls-режим (endpoint с
+ * server'а работает, из интернета может быть недоступен: hoster-фильтр :80);
+ * localOnly — только 127.0.0.1; missing/unreachable — проблемные.
+ */
+export type SubscriptionState =
+  | 'public'
+  | 'fallback'
+  | 'localOnly'
+  | 'missing'
+  | 'unreachable'
+  | 'unknown'
 
 export interface PrivateKeyReference {
   credentialId: string
@@ -91,6 +105,13 @@ export interface Server {
   routesCount: number | null
   subscriptionUrl: string
   keys: VlessLink[]
+  /**
+   * Мультипротокольный этап: hysteria2-ссылки из тела подписки — персистятся
+   * вместе с vless-ключами, чтобы страница «Ключи» открывалась мгновенно.
+   */
+  hysteria2Keys?: string[]
+  /** Кэш клиентских .conf AWG per-profile (имя профиля → конфиг). */
+  awgConfs?: Record<string, string>
   authMethod?: SshAuthMethod
   privilegeMode?: SshPrivilegeMode
   privateKeyPath?: string | null
@@ -102,6 +123,12 @@ export interface Server {
   setupStatus?: ServerSetupStatus
   diagnostics?: ServerDiagnostics | null
   hostKeyFingerprint?: string | null
+  /**
+   * http_tls-fallback (quickstart при hoster-блокировке http-01): подписка
+   * работает с server'а, но публичного HTTPS нет. Карточка помечается
+   * «Настроен частично», Keys грузит ключи по SSH.
+   */
+  degraded?: boolean
 }
 
 export interface VlessLink {
@@ -114,6 +141,103 @@ export interface SubscriptionResult {
   serverId: string
   subscriptionUrl: string
   keys: VlessLink[]
+  /** Строки hysteria2:// из тела подписки (UDP-бэкенд). */
+  hysteria2Links?: string[]
+}
+
+/** Грант Hysteria 2 в профиле (username = имя профиля, password = 32 hex). */
+export interface ProfileHysteria2Grant {
+  username: string
+  password: string
+  created?: string
+}
+
+/** Грант AmneziaWG peer-а в профиле (адрес 10.8.1.x, full-tunnel клиент). */
+export interface ProfileAwgGrant {
+  client_private_key: string
+  client_public_key: string
+  preshared_key: string
+  address: string
+  created?: string
+}
+
+/**
+ * Аддитивный объект бэкенд-грантов в профиле. Профиль — единственный источник
+ * правды: revoke/expire на сервере синхронно меняют эти креденшелы.
+ * Пометка для UI: AWG-грант работает через клиент AmneziaVPN, НЕ через V2Ray/HAPP.
+ */
+export interface ProfileBackends {
+  hysteria2?: ProfileHysteria2Grant
+  awg?: ProfileAwgGrant
+}
+
+/** Запись одного бэкенда в реестре сервера (backend-status). */
+export interface BackendEntry {
+  installed: boolean
+  /** active | inactive | unknown (unknown — юнит не задан). */
+  state: string
+  version?: string
+  port?: number
+  unit?: string
+  /** Hysteria 2: le | selfsigned. */
+  tls_mode?: string
+  sni?: string
+  masquerade?: string
+  /** Hysteria 2: строки hysteria2:// в телах подписки (kill-switch). */
+  sub_body?: boolean
+  /** AWG 3.1: HeaderProtectionKey + RandomTrailers. */
+  three_enabled?: boolean
+  /** AWG 3.1: локальный флаг отключения cookie-механизма. */
+  disable_cookies?: boolean
+  subnet?: string
+}
+
+export interface BackendStatusResult {
+  ok: boolean
+  backends: Record<string, BackendEntry>
+  error?: string
+}
+
+export interface BackendGrantResult {
+  ok: boolean
+  name?: string
+  error?: string
+}
+
+/** Результат install/uninstall бэкенда (rc=2 воркера → already). */
+export interface BackendSimpleResult {
+  ok: boolean
+  already?: boolean
+  error?: string
+}
+
+export interface Hysteria2SubbodyResult {
+  ok: boolean
+  sub_body?: boolean
+  error?: string
+}
+
+export interface Hysteria2LinkResult {
+  ok: boolean
+  name?: string
+  /** hysteria2://user:pass@host:port/?sni=…&insecure=…#🇩🇪 Country · name */
+  link?: string
+  error?: string
+}
+
+export interface AwgConfResult {
+  ok: boolean
+  name?: string
+  /** Полный текст клиентского .conf (секреты уровня оператора). */
+  conf?: string
+  error?: string
+}
+
+export interface BackendToggleResult {
+  ok: boolean
+  three_enabled?: boolean
+  disable_cookies?: boolean
+  error?: string
 }
 
 export interface ServerProfile {
@@ -128,7 +252,19 @@ export interface ServerProfile {
   multi_route: boolean
   routes: number
   pq_enabled: boolean
+  /**
+   * Сколько маршрутов профиля помечены pq_enabled (VLESS Encryption). Top-level
+   * pq_enabled описывает только первый маршрут, поэтому GUI показывает чип по
+   * этому счётчику; серверы без поддержки поля его не отдают.
+   */
+  pq_routes?: number
   subscription_url: string
+  /**
+   * Тот же токен, другое тело ответа (content negotiation в subhttp): Clash/mihomo YAML
+   * и sing-box JSON. Серверы без поддержки форматов поля не отдают — тогда кнопки скрыты.
+   */
+  subscription_url_clash?: string
+  subscription_url_singbox?: string
   /** epoch-секунды истечения; 0 = бессрочный. Принуждается серверным таймером. */
   expire: number
   /** Календарная дата истечения в локальной временной зоне сервера (YYYY-MM-DD). */
@@ -141,6 +277,22 @@ export interface ServerProfile {
    * показывал бы бессрочность там, где управление сроком недоступно.
    */
   expire_supported?: boolean
+  /** Накопленный сервером трафик профиля в байтах (Stats API). */
+  traffic_used?: number
+  /** Лимит трафика в байтах; 0 = без лимита. */
+  traffic_limit?: number
+  /** true — профиль отключён из-за исчерпания лимита (клиент снят с inbound'ов). */
+  traffic_disabled?: boolean
+  /**
+   * false/отсутствует — сервер старой версии не умеет учёт трафика.
+   * Как и expire_supported, отличает «лимита нет» от «сервер не умеет лимиты».
+   */
+  traffic_supported?: boolean
+  /**
+   * Мультипротокольный этап: гранты опциональных бэкендов. Пустой объект или
+   * отсутствие поля — профиль не имеет доступа к hysteria2/awg.
+   */
+  backends?: ProfileBackends
 }
 
 export interface ProfileCreateInput {
@@ -247,6 +399,26 @@ export interface ProfileExpireResult {
   error?: string
 }
 
+export interface ProfileLimitInput {
+  name: string
+  /** '100GB' / '1.5TB' / байты / 'none'; null/undefined — лимит не менять. */
+  limit?: string | number | null
+  /** true — обнулить накопленный счётчик (можно вместе со сменой лимита). */
+  reset?: boolean
+}
+
+export interface ProfileLimitResult {
+  ok: boolean
+  name?: string
+  /** Лимит в байтах после применения; 0 = без лимита. */
+  traffic_limit?: number
+  /** Накопленный трафик после применения (с учётом --reset). */
+  traffic_used?: number
+  /** true — профиль сейчас отключён из-за исчерпания лимита. */
+  traffic_disabled?: boolean
+  error?: string
+}
+
 export interface SniEntry {
   sni: string
   category: string
@@ -288,7 +460,96 @@ export interface DeployStartPayload {
   emailMode: EmailMode
   email?: string
   access: SshAccessInput
+  /**
+   * PQ-маршрут при развёртывании (`quickstart --pq`). По умолчанию ВЫКЛ: клиент без
+   * ML-KEM к PQ-порту не подключится, поэтому выбор делает оператор.
+   */
+  pq?: boolean
+  /**
+   * DNS-01-фолбэк развёртывания. Если сервер не может пройти http-01 (хостер фильтрует
+   * :80), сертификат выпускается по TXT-записи, и подписка не деградирует в http_tls.
+   */
+  dns01?: Dns01Input
 }
+
+/** Ответ `dns01-status`: состояние DNS-01-подписки и её сертификата. */
+export interface Dns01StatusResult {
+  ok: boolean
+  provider: string
+  tls_mode: string
+  domain: string
+  port: number
+  credentials_present: boolean
+  /** Epoch секунд истечения сертификата (0 — серта нет). */
+  cert_expiry: number
+  days_left: number
+  deploy_hook: boolean
+  error?: string
+}
+
+/** Ответ `dns01-setup` / `repair-dns01`. */
+export interface Dns01RepairResult {
+  ok: boolean
+  repaired?: boolean
+  /** true — подписка уже на HTTPS (ip_tls/domain_tls), ремонт не требовался. */
+  skipped?: boolean
+  domain?: string
+  provider?: string
+  port?: number
+  tls_mode?: string
+  subscription_url?: string
+  note?: string
+  error?: string
+}
+
+/** Ответ `alerts-status`: конфиг Telegram-алертов и состояние таймера мониторинга. */
+export interface AlertsStatusResult {
+  ok: boolean
+  /** true — alerts.json есть (токен и chat_id записаны через TUI/CLI). */
+  configured: boolean
+  enabled: boolean
+  chat_id: string
+  bot_username: string
+  timer_installed: boolean
+  timer_active: boolean
+  last_run: number
+  events: Record<string, unknown>
+  sni: Record<string, unknown>
+  error?: string
+}
+
+export interface AlertsToggleResult {
+  ok: boolean
+  enabled?: boolean
+  error?: string
+}
+
+export interface AlertsTestResult {
+  ok: boolean
+  sent?: boolean
+  error?: string
+}
+
+/** Ответ `profile-pq` — добавление пост-квантового маршрута профилю. */
+export interface ProfilePqResult {
+  ok: boolean
+  name?: string
+  transport?: string
+  port?: number
+  pq?: boolean
+  /** VLESS-ссылка PQ-маршрута (для клиентов с ML-KEM). */
+  link?: string
+  note?: string
+  error?: string
+}
+
+export interface ProfilePqInput {
+  name: string
+  transport: 'tcp' | 'tcp-utls' | 'tcp-xudp' | 'tcp-mux' | 'grpc' | 'xhttp'
+}
+
+/** Провайдер DNS-01 в payload'ах IPC (алиас для читаемости вызовов). */
+export type { Dns01Provider }
 
 export interface DeployDonePayload {
   serverId: string
@@ -363,15 +624,121 @@ export interface ElectronAPI {
       access: SshAccessInput,
       input: ProfileExpireInput
     ) => Promise<ProfileExpireResult>
+    setLimit: (
+      serverId: string,
+      access: SshAccessInput,
+      input: ProfileLimitInput
+    ) => Promise<ProfileLimitResult>
+    /** Добавить профилю пост-квантовый маршрут (VLESS Encryption, отдельный порт). */
+    addPq: (
+      serverId: string,
+      access: SshAccessInput,
+      input: ProfilePqInput
+    ) => Promise<ProfilePqResult>
+  }
+  dns01: {
+    /** Состояние DNS-01-подписки (провайдер, домен, серт, deploy-hook). */
+    status: (serverId: string, access: SshAccessInput) => Promise<Dns01StatusResult>
+    /** Включить DNS-01 на сервере, где подписки ещё нет/она на IP-серте. */
+    setup: (
+      serverId: string,
+      access: SshAccessInput,
+      input: Dns01Input
+    ) => Promise<Dns01RepairResult>
+    /** Заменить деградированную (http_tls) подписку на DNS-01. */
+    repair: (
+      serverId: string,
+      access: SshAccessInput,
+      input: Dns01Input
+    ) => Promise<Dns01RepairResult>
+  }
+  alerts: {
+    /** Конфиг Telegram-алертов + состояние таймера мониторинга. */
+    status: (serverId: string, access: SshAccessInput) => Promise<AlertsStatusResult>
+    /** Тестовое сообщение в настроенный чат. */
+    test: (serverId: string, access: SshAccessInput) => Promise<AlertsTestResult>
+    /** Включить/выключить отправку (конфиг с токеном остаётся на месте). */
+    toggle: (
+      serverId: string,
+      access: SshAccessInput,
+      on: boolean
+    ) => Promise<AlertsToggleResult>
   }
   server: {
+    /**
+     * Обновить менеджер на сервере. Без branch — закреплённая на сервере ветка
+     * (.current_branch) или main. Явная ветка (main | dev | experimental) —
+     * управляемая бета: обновиться с dev, не дожидаясь вливания в main.
+     */
     update: (
       serverId: string,
-      access: SshAccessInput
+      access: SshAccessInput,
+      branch?: 'main' | 'dev' | 'experimental'
     ) => Promise<ServerMaintenanceResult>
     uninstall: (
       serverId: string,
       access: SshAccessInput
     ) => Promise<ServerMaintenanceResult>
+  }
+  backends: {
+    /** Статус всех бэкендов из реестра сервера (backend-status). */
+    status: (
+      serverId: string,
+      access: SshAccessInput
+    ) => Promise<BackendStatusResult>
+    hysteria2Grant: (
+      serverId: string,
+      access: SshAccessInput,
+      name: string
+    ) => Promise<BackendGrantResult>
+    /** Установка Hysteria 2 (длинная операция). */
+    hysteria2Install: (
+      serverId: string,
+      access: SshAccessInput,
+      grantAll: boolean
+    ) => Promise<BackendSimpleResult>
+    hysteria2Uninstall: (
+      serverId: string,
+      access: SshAccessInput
+    ) => Promise<BackendSimpleResult>
+    /** Kill-switch hysteria2-строк в подписке. */
+    hysteria2Subbody: (
+      serverId: string,
+      access: SshAccessInput,
+      on: boolean
+    ) => Promise<Hysteria2SubbodyResult>
+    /** hysteria2:// ссылка профиля (требует грант и установленный бэкенд). */
+    hysteria2Link: (
+      serverId: string,
+      access: SshAccessInput,
+      name: string
+    ) => Promise<Hysteria2LinkResult>
+    awgGrant: (
+      serverId: string,
+      access: SshAccessInput,
+      name: string
+    ) => Promise<BackendGrantResult>
+    /** Установка AmneziaWG (может собирать kernel-модуль — минуты). */
+    awgInstall: (
+      serverId: string,
+      access: SshAccessInput,
+      grantAll: boolean
+    ) => Promise<BackendSimpleResult>
+    awgUninstall: (
+      serverId: string,
+      access: SshAccessInput
+    ) => Promise<BackendSimpleResult>
+    /** Клиентский .conf AWG peer-а для профиля ( AmneziaVPN, не V2Ray/HAPP ). */
+    awgConf: (
+      serverId: string,
+      access: SshAccessInput,
+      name: string
+    ) => Promise<AwgConfResult>
+    /** Тумблер AWG 3.1: включение/выключение требует перекачки .conf клиентов. */
+    awg31: (
+      serverId: string,
+      access: SshAccessInput,
+      on: boolean
+    ) => Promise<BackendToggleResult>
   }
 }

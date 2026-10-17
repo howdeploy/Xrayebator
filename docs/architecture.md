@@ -51,8 +51,8 @@ configuration and systemd unit form the HAPP subscription path. The active deskt
 └── xrayebator-uninstall          # removal entry point
 
 /usr/local/etc/xray/
-├── config.json                   # inbounds, outbounds, routing and DNS
-├── profiles/<name>.json          # profile metadata, subscription token, expiry (.expire)
+├── config.json                   # inbounds, outbounds, routing, DNS and the loopback api inbound (Stats API)
+├── profiles/<name>.json          # profile metadata, subscription token, expiry (.expire), limit and usage (.traffic), backend grants (.backends)
 ├── upstreams/cascade.json        # cascade upstream parameters
 ├── backups/                      # config backups made before runtime mutations
 ├── .private_key / .public_key    # Reality keys
@@ -62,10 +62,22 @@ configuration and systemd unit form the HAPP subscription path. The active deskt
 ├── .current_branch               # manager branch used by lifecycle updates
 └── migration markers             # records of completed one-time migrations
 
+/usr/local/etc/xrayebator/         # multi-protocol backend root (neutral, Xray paths untouched)
+├── backends.json                  # backend registry: installed/version/port/flags (644, no secrets)
+├── alerts.json                    # monitoring Telegram alerts: bot token and chat_id (0600)
+├── monitor-state.json             # monitoring state: events, boot_id, last SNI probe (0600)
+└── backends/
+    ├── hysteria2/                 # server.yaml (regenerated from profiles), certs, placeholder credential
+    └── awg/                       # awg0.conf (0600), server-params.json (0600)
+
 /usr/local/share/xray/             # geoip.dat and geosite.dat
 /var/log/xray/                     # runtime log directory written by the Xray service
 /etc/systemd/system/xray.service.d/security.conf
 /etc/systemd/system/xrayebator-sub.service
+/etc/systemd/system/xrayebator-traffic.service + .timer   # per-profile traffic accounting (5 minutes)
+/etc/systemd/system/xrayebator-monitor.service + .timer   # monitoring and alerts (15 minutes)
+/etc/systemd/system/hysteria-server.service   # Hysteria 2 backend (optional)
+/etc/systemd/system/awg-quick@awg0.service    # AmneziaWG backend (optional, from amneziawg-tools)
 /etc/nginx/sites-available/xrayebator-sub
 ```
 
@@ -102,13 +114,17 @@ The base is built from the saved subscription markers:
 ```text
 https://<domain>/sub/<32-hex-token>       # public TLS on 443
 https://<domain>:8443/sub/<32-hex-token>  # public TLS on another port
+http://<IP>:8080/sub/<token>              # http_tls fallback (LE could not validate http-01)
 http://127.0.0.1:8080/sub/<token>         # local-only fallback
 ```
 
 The interactive HAPP setup can select the public port and `_subscription_base_url` preserves that
 choice. The non-interactive `quickstart --email <address>` and `quickstart --without-email` IP-TLS paths
 provision nginx, certificate and markers on `8443`, then emit JSON containing `subscription_url` for that
-endpoint. Without an email, Certbot is explicitly told to register without an ACME contact; renewal
+endpoint. When Let's Encrypt cannot validate http-01 (the hoster filters port 80 for foreign sources),
+quickstart degrades to `http_tls`: the markers switch to that mode, the subscription is published over
+HTTP from the loopback handler and the JSON carries `degraded:true`; rerunning the deploy after port 80
+is unblocked restores ip_tls. Without an email, Certbot is explicitly told to register without an ACME contact; renewal
 notices and email-based recovery are unavailable. The token is stored in the profile as `sub_token`;
 revoke rotates it and invalidates the previous URL, while a full revoke (`profile-revoke --full`) also
 changes the uuid in every inbound of the profile so already-downloaded configurations stop connecting.
@@ -132,7 +148,74 @@ or quickstart when the required routes are absent. A profile with no live inboun
 
 The handler also serves the token-protected `geoip.dat` and `geosite.dat` resources required by the
 managed HAPP routing profile. HAPP receives its routing metadata, while v2rayNG and v2rayN receive
-the compatible VLESS body without HAPP-only metadata.
+the compatible VLESS body without HAPP-only metadata. When the Hysteria 2 backend is installed and
+the profile has a grant, the handler additionally appends one `hysteria2://` line to both the HAPP
+and the generic subscription bodies, gated by the registry flag `sub_body`; expired or disabled
+profiles never get the line.
+
+There are now four bodies, and all of them are built from the same profile links: HAPP, base64 for
+v2rayNG/v2rayN, Clash/mihomo YAML and sing-box JSON. Link normalization is done by
+`_subscription_links_json` (parsing `vless://`/`hysteria2://`, IPv6 brackets, percent-decoding, the
+client transport-support matrix), while the format itself is assembled by the pure builders
+`_subscription_render_clash_pure` and `_subscription_render_singbox_pure`. The format is selected by
+`?target=` or User-Agent, and by default the HAPP body remains. Routes the client cannot handle
+(PQ VLESS Encryption, xhttp in sing-box, xhttp in Clash without `?xhttp=1`) are skipped with an
+explanation — mihomo refuses to load a config with an unknown `network`, so "draw something anyway"
+is worse than skipping here. `subscription-userinfo` is served in every format: both Clash UIs and
+sing-box clients understand it.
+
+The subscription TLS mode (`ip_tls` / `domain_tls` / `http_tls` / `local_only`) defines only the base
+URL and how Let's Encrypt validates the domain: `dns01-setup` issues the certificate through DNS-01
+(Cloudflare/Route53), so port 80 is not needed, the vhost contains a single TLS server, and provider
+credentials live in `/etc/letsencrypt/xrayebator-dns01-*.ini` (0600 root) and are passed to certbot
+as an argument (Cloudflare) or through `AWS_SHARED_CREDENTIALS_FILE` (Route53); renewal is the stock
+`certbot.timer` with a deploy-hook that reloads nginx.
+
+## Multi-protocol backends
+
+Beyond Xray, the manager can install additional transports on the same VPS. All backend state lives
+in the neutral root `/usr/local/etc/xrayebator/` (registry `backends.json` plus per-backend
+directories); the Xray state paths are untouched. Per-profile backend credentials live in the
+profile's additive `.backends` object, which makes the profile JSON the single source of truth:
+server-side configs (`backends/hysteria2/server.yaml`, `backends/awg/awg0.conf`) are always
+regenerated from profiles, and profile lifecycle events (create, delete, revoke, expire, restore)
+propagate through `_backend_apply_profile_lifecycle` to every installed backend.
+
+- **Hysteria 2** — fast UDP transport. Own systemd unit `hysteria-server.service` running as the
+  dedicated `hysteria` user with `CAP_NET_BIND_SERVICE`; UDP 443 by default; adaptive TLS (the
+  subscription Let's Encrypt certificate plus a renewal deploy-hook, or a self-signed certificate);
+  `auth: userpass` with one credential per profile and a placeholder user while the map would
+  otherwise be empty (Hysteria rejects an empty map).
+- **AmneziaWG 2.0** — system VPN. Kernel module via DKMS (PPA `amnezia/ppa` primary, source build
+  fallback), interface `awg0` through `awg-quick@awg0`, subnet `10.8.1.0/24`, per-profile peers
+  (keypair + preshared key + address), `ip_forward` and MASQUERADE on the default-route interface.
+  The distro unit reads `/etc/amnezia/amneziawg/awg0.conf`, which is a symlink to the managed file.
+- Both backends are optional, installed and removed from menu items `11`–`13` or the `hysteria2-*`
+  / `awg-*` CLI commands, and are never installed by default.
+
+## Traffic accounting and monitoring
+
+Both traffic accounting and monitoring are add-ons over a single principle: state lives in the
+profile JSON, and the timer only applies it.
+
+- **Traffic accounting.** `install.sh` adds the api inbound (`dokodemo-door` on `127.0.0.1:10085`),
+  `policy.system` with `statsInboundUplink/Downlink` and the routing rule `api → api` to
+  `config.json`. The `email` of every client equals the profile name, which is why the Stats API
+  (`xray api statsquery`) returns usage broken down by profile. `xrayebator-traffic.timer`
+  (5 minutes) calls `traffic-check`: it subtracts the previous snapshot (`.traffic.last`) and
+  accumulates `.traffic.used`, then applies the limit — an exhausted one removes the clients from
+  the inbounds, the snapshot goes to `.traffic_clients`, the profile gets `.traffic_disabled`, and
+  the subscription answers `410`. Migrations: `traffic_stats_2026`, `traffic_timer_2026`,
+  `subhttp_traffic_2026`.
+- **Monitoring.** `xrayebator-monitor.timer` (15 minutes) calls `monitor-check`: services and
+  installed backends, profile expiries and limits, subscription liveness and its TLS mode, reboot
+  (`boot_id`), and once a day an SNI probe over the SNIs profiles actually use. Deduplication lives
+  in `monitor-state.json`: a repeat of an event no more often than `ALERTS_REMIND_SEC`, a recovery as
+  a separate message, and an undelivered alert is retried on the next tick. The bot token is stored
+  in a `0600` `alerts.json` in the neutral root: this is not Xray state, and the
+  `/usr/local/etc/xray` path stays Xray-only. Migration: `alerts_monitor_2026`.
+
+Both migrations are registered in all three entry paths — `main_menu`, `quickstart` and `happ-setup`.
 
 ## Update paths
 

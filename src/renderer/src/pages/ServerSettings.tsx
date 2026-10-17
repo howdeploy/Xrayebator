@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import QRCode from 'qrcode'
 import { Button, TextField, Label, Input, Chip, Spinner, AlertDialog } from '@heroui/react'
 import {
   Settings2,
@@ -15,16 +16,41 @@ import {
   Check,
   ShieldOff,
   CalendarClock,
-  CalendarX
+  CalendarX,
+  Gauge,
+  RefreshCw,
+  Zap,
+  ShieldCheck,
+  Bell,
+  Send
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import type { Server, ServerProfile, SniEntry, SshAccessInput } from '@shared/types'
+import type {
+  AlertsStatusResult,
+  BackendStatusResult,
+  Dns01StatusResult,
+  ProfilePqResult,
+  Server,
+  ServerProfile,
+  SniEntry,
+  SshAccessInput
+} from '@shared/types'
+import { isDns01Ready, type Dns01Input, type Dns01Provider } from '@shared/dns01'
 import { describeExpire, isFutureDate, presetDate } from '@shared/expire'
+import {
+  describeTraffic,
+  formatBytes,
+  isValidTrafficLimitInput,
+  trafficLimitToInput
+} from '@shared/traffic'
 import { todayIso } from '@shared/calendar'
+import { buildAwgVpnUrl, stripAwgComments } from '@shared/awg'
 import { isSshAccessReady, SshAccessForm } from '../components/SshAccessForm'
 import { CalendarPicker } from '../components/CalendarPicker'
 import { shouldAutoConnectServer } from './server-access'
 import styles from './ServerSettings.module.css'
+import hystLogo from '../assets/hysteria-logo.svg'
+import amneziaLogo from '../assets/amnezia-logo.jpg'
 
 interface ServerSettingsProps {
   server: Server
@@ -60,6 +86,9 @@ export const SNI_CATEGORIES = [
 
 export const PORT_PRESETS = [443, 8443, 2053, 2083, 2087, 2096, 9443, 8080] as const
 
+/** Пресеты лимита трафика для диалога профиля. */
+export const TRAFFIC_PRESETS = ['10GB', '50GB', '100GB', '500GB', '1TB'] as const
+
 export function ServerSettings({
   server,
   editingAccess = false,
@@ -83,6 +112,23 @@ export function ServerSettings({
   const [busy, setBusy] = useState(false)
   const autoConnectStarted = useRef(false)
   const [profiles, setProfiles] = useState<ServerProfile[] | null>(null)
+  const [backends, setBackends] = useState<BackendStatusResult | null>(null)
+  const [backendsLoading, setBackendsLoading] = useState(false)
+  const [backendsError, setBackendsError] = useState<string | null>(null)
+  const [backendBusy, setBackendBusy] = useState<string | null>(null)
+  const [confirmBackend, setConfirmBackend] = useState<
+    | 'hysteria2-uninstall'
+    | 'awg-uninstall'
+    | 'awg31-on'
+    | 'awg31-off'
+    | 'hysteria2-revoke-all'
+    | 'awg-revoke-all'
+    | null
+  >(null)
+  // QR-модалка выдачи ключей бэкенд-боксов. Диалог «Ключи» убран:
+  // полное копирование только на странице Ключей (решение 2026-10-06).
+  const [keysQrUrl, setKeysQrUrl] = useState<string | null>(null)
+  const [keysQrData, setKeysQrData] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [toast, setToast] = useState<string | null>(null)
   const [hostKeyFingerprint, setHostKeyFingerprint] = useState<string | null>(
@@ -95,10 +141,14 @@ export function ServerSettings({
   const [transport, setTransport] = useState('xhttp')
   const [count, setCount] = useState('1')
   const [creating, setCreating] = useState(false)
+  // Выбор мультипротокольного бэкенда в «Создать профиль»: клик по карточке
+  // = только выбор (как у VLESS-транспортов), создание — кнопкой «Создать профиль».
+  const [backendSel, setBackendSel] = useState<'hysteria2' | 'awg' | null>(null)
   const [createExpire, setCreateExpire] = useState('')
   const [createExpireOpen, setCreateExpireOpen] = useState(false)
 
   const [updating, setUpdating] = useState(false)
+  const [updateMenuOpen, setUpdateMenuOpen] = useState(false)
   const [uninstalling, setUninstalling] = useState(false)
   const [confirmUninstall, setConfirmUninstall] = useState(false)
   const [confirmRemove, setConfirmRemove] = useState<ServerProfile | null>(null)
@@ -128,11 +178,39 @@ export function ServerSettings({
   const [revokeStep, setRevokeStep] = useState<'choose' | 'confirm' | 'done'>('choose')
   const [revokeBusy, setRevokeBusy] = useState(false)
   const [revokeUrl, setRevokeUrl] = useState<string | null>(null)
+  const [revokeFullOnly, setRevokeFullOnly] = useState(false)
 
   const [expireTarget, setExpireTarget] = useState<ServerProfile | null>(null)
+  const [expireChooser, setExpireChooser] = useState<ServerProfile[] | null>(null)
   const [expireDate, setExpireDate] = useState('')
   const [expireBusy, setExpireBusy] = useState(false)
   const [expireDone, setExpireDone] = useState(false)
+
+  const [limitTarget, setLimitTarget] = useState<ServerProfile | null>(null)
+  const [limitValue, setLimitValue] = useState('')
+  const [limitReset, setLimitReset] = useState(false)
+  const [limitBusy, setLimitBusy] = useState(false)
+  const [limitDone, setLimitDone] = useState(false)
+
+  // Подписка (DNS-01) и мониторинг (Telegram): грузятся параллельно с профилями,
+  // best-effort — сервер со старым менеджером не должен ломать страницу.
+  const [dns01Status, setDns01Status] = useState<Dns01StatusResult | null>(null)
+  const [dns01Error, setDns01Error] = useState<string | null>(null)
+  const [dns01Open, setDns01Open] = useState(false)
+  const [dns01Provider, setDns01Provider] = useState<Dns01Provider>('cloudflare')
+  const [dns01Domain, setDns01Domain] = useState('')
+  const [dns01Token, setDns01Token] = useState('')
+  const [dns01AwsKeyId, setDns01AwsKeyId] = useState('')
+  const [dns01AwsSecret, setDns01AwsSecret] = useState('')
+  const [dns01Busy, setDns01Busy] = useState(false)
+  const [alertsStatus, setAlertsStatus] = useState<AlertsStatusResult | null>(null)
+  const [alertsError, setAlertsError] = useState<string | null>(null)
+  const [alertsBusy, setAlertsBusy] = useState(false)
+  const [pqTarget, setPqTarget] = useState<ServerProfile | null>(null)
+  const [pqTransport, setPqTransport] = useState<string>('tcp')
+  const [pqBusy, setPqBusy] = useState(false)
+  const [pqError, setPqError] = useState<string | null>(null)
+  const [pqResult, setPqResult] = useState<ProfilePqResult | null>(null)
 
   const connected = profiles !== null
   const accessReady = isSshAccessReady(access)
@@ -160,8 +238,43 @@ export function ServerSettings({
     setBusy(true)
     setError(null)
     try {
+      // Бэкенды грузятся ПАРАЛЛЕЛЬНО с профилями (фидбек: не заставлять ждать).
+      setBackendsLoading(true)
+      const backendsP = window.api.backends
+        .status(server.id, access)
+        .then((b) => {
+          setBackends(b)
+          setBackendsError(null)
+        })
+        .catch((err: unknown) => {
+          setBackends(null)
+          setBackendsError(err instanceof Error ? err.message : String(err))
+        })
+        .finally(() => setBackendsLoading(false))
       const result = await window.api.profiles.list(server.id, access)
       setProfiles(result.profiles ?? [])
+      await backendsP
+      // Состояние подписки и мониторинга — параллельно и best-effort: их отсутствие
+      // (старый менеджер на сервере) не должно ронять страницу профилей.
+      void window.api.dns01
+        .status(server.id, access)
+        .then((s) => {
+          setDns01Status(s)
+          setDns01Error(null)
+          if (s.domain) setDns01Domain(s.domain)
+        })
+        .catch((err: unknown) =>
+          setDns01Error(err instanceof Error ? err.message : String(err))
+        )
+      void window.api.alerts
+        .status(server.id, access)
+        .then((s) => {
+          setAlertsStatus(s)
+          setAlertsError(null)
+        })
+        .catch((err: unknown) =>
+          setAlertsError(err instanceof Error ? err.message : String(err))
+        )
       const refreshed = await window.api.servers.get(server.id)
       setHostKeyFingerprint(refreshed?.hostKeyFingerprint ?? null)
       if (refreshed) {
@@ -187,6 +300,133 @@ export function ServerSettings({
     if (shouldAutoConnectServer(server)) void load()
   }, [server.id])
 
+  useEffect(() => {
+    if (!keysQrUrl) return
+    const onEsc = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setKeysQrUrl(null)
+    }
+    document.addEventListener('keydown', onEsc)
+    return () => document.removeEventListener('keydown', onEsc)
+  }, [keysQrUrl])
+
+  const dns01Input = (): Dns01Input => ({
+    domain: dns01Domain.trim(),
+    provider: dns01Provider,
+    token: dns01Token,
+    awsKeyId: dns01AwsKeyId,
+    awsSecret: dns01AwsSecret
+  })
+
+  /**
+   * DNS-01: `setup` — поднять подписку по домену (порт 80 не нужен), `repair` —
+   * заменить деградированную http_tls-подписку. Креденшелы после успеха забываем:
+   * они уже лежат на сервере в 0600-root файле, в renderer'е им делать нечего.
+   */
+  const runDns01 = async (kind: 'setup' | 'repair'): Promise<void> => {
+    if (!accessReady) {
+      setError(t('settings.errorPassword'))
+      return
+    }
+    const input = dns01Input()
+    if (!isDns01Ready(input)) {
+      setDns01Error(t('settings.dns01Incomplete'))
+      return
+    }
+    setDns01Busy(true)
+    setDns01Error(null)
+    try {
+      const res =
+        kind === 'repair'
+          ? await window.api.dns01.repair(server.id, access, input)
+          : await window.api.dns01.setup(server.id, access, input)
+      if (!res.ok) {
+        setDns01Error(res.error ?? t('settings.dns01Failed'))
+        return
+      }
+      setDns01Status(await window.api.dns01.status(server.id, access))
+      setDns01Token('')
+      setDns01AwsSecret('')
+      setDns01Open(false)
+      toastText(res.skipped ? t('settings.dns01Skipped') : t('settings.dns01Done'))
+    } catch (err) {
+      setDns01Error(err instanceof Error ? err.message : String(err))
+    } finally {
+      setDns01Busy(false)
+    }
+  }
+
+  /** Вкл/выкл отправку алертов. Токен бота живёт на сервере и здесь не принимается. */
+  const toggleAlerts = async (on: boolean): Promise<void> => {
+    if (!accessReady) {
+      setError(t('settings.errorPassword'))
+      return
+    }
+    setAlertsBusy(true)
+    setAlertsError(null)
+    try {
+      const res = await window.api.alerts.toggle(server.id, access, on)
+      if (!res.ok) {
+        setAlertsError(res.error ?? t('settings.alertsFailed'))
+        return
+      }
+      setAlertsStatus(await window.api.alerts.status(server.id, access))
+      toastText(on ? t('settings.alertsOn') : t('settings.alertsOff'))
+    } catch (err) {
+      setAlertsError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setAlertsBusy(false)
+    }
+  }
+
+  const testAlerts = async (): Promise<void> => {
+    if (!accessReady) {
+      setError(t('settings.errorPassword'))
+      return
+    }
+    setAlertsBusy(true)
+    setAlertsError(null)
+    try {
+      const res = await window.api.alerts.test(server.id, access)
+      if (!res.ok) {
+        setAlertsError(res.error ?? t('settings.alertsFailed'))
+        return
+      }
+      toastText(t('settings.alertsTestSent'))
+    } catch (err) {
+      setAlertsError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setAlertsBusy(false)
+    }
+  }
+
+  /**
+   * PQ-маршрут профиля: VLESS Encryption живёт на отдельном порту (decryption —
+   * свойство инбаунда), поэтому клиенту нужен ML-KEM, а в обычной v2ray-подписке
+   * маршрут скрыт — иначе клиенты без PQ получили бы мёртвый ключ.
+   */
+  const addPqRoute = async (): Promise<void> => {
+    if (!pqTarget) return
+    setPqBusy(true)
+    setPqError(null)
+    try {
+      const res = await window.api.profiles.addPq(server.id, access, {
+        name: pqTarget.name,
+        transport: pqTransport as 'tcp'
+      })
+      if (!res.ok) {
+        setPqError(res.error ?? t('settings.pqFailed'))
+        return
+      }
+      setPqResult(res)
+      const fresh = await window.api.profiles.list(server.id, access)
+      setProfiles(fresh.profiles ?? [])
+    } catch (err) {
+      setPqError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setPqBusy(false)
+    }
+  }
+
   const create = async (): Promise<void> => {
     if (!accessReady) {
       setError(t('settings.errorPassword'))
@@ -194,6 +434,14 @@ export function ServerSettings({
     }
     if (!name.trim()) {
       setError(t('settings.errorName'))
+      return
+    }
+    // Pre-check коллизии имени (см. createBackendProfiles).
+    const nameCollision = futureNames.find((nm) =>
+      (profiles ?? []).some((p) => p.name === nm)
+    )
+    if (nameCollision) {
+      setError(t('settings.errorNameExists', { name: nameCollision }))
       return
     }
     setBusy(true)
@@ -376,9 +624,22 @@ export function ServerSettings({
     toastText(t('settings.copied'))
   }
 
-  const openRevoke = (profile: ServerProfile): void => {
+  // Тот же токен, другое тело ответа: сервер выбирает формат по ?target= (Clash/mihomo
+  // YAML и sing-box JSON). Старые серверы поля не отдают — кнопки тогда не рисуются.
+  const copyFormatUrl = async (
+    profile: ServerProfile,
+    format: 'clash' | 'singbox'
+  ): Promise<void> => {
+    const url = format === 'clash' ? profile.subscription_url_clash : profile.subscription_url_singbox
+    if (!url) return
+    await navigator.clipboard.writeText(url)
+    toastText(t('settings.copiedFormat', { format: format === 'clash' ? 'Clash/mihomo' : 'sing-box' }))
+  }
+
+  const openRevoke = (profile: ServerProfile, forceFull = false): void => {
     setRevokeTarget(profile)
-    setRevokeStep('choose')
+    setRevokeFullOnly(forceFull)
+    setRevokeStep(forceFull ? 'confirm' : 'choose')
     setRevokeUrl(null)
   }
 
@@ -493,13 +754,103 @@ export function ServerSettings({
    */
   const expireSupported = (profiles ?? []).some((p) => p.expire_supported === true)
 
-  const updateServer = async (): Promise<void> => {
+  const openLimit = (profile: ServerProfile): void => {
+    setLimitTarget(profile)
+    setLimitValue(trafficLimitToInput(profile.traffic_limit ?? 0))
+    setLimitReset(false)
+    setLimitDone(false)
+  }
+
+  const applyLimit = async (limit: string | null, reset: boolean): Promise<void> => {
+    if (!limitTarget || !accessReady) return
+    setLimitBusy(true)
+    setError(null)
+    try {
+      const result = await window.api.profiles.setLimit(server.id, access, {
+        name: limitTarget.name,
+        limit,
+        reset
+      })
+      if (result.ok) {
+        if (limit === 'none') {
+          toastText(t('settings.trafficCleared', { name: limitTarget.name }))
+        } else if (limit) {
+          toastText(t('settings.trafficChanged', { name: limitTarget.name, limit }))
+        } else {
+          toastText(t('settings.trafficResetDone', { name: limitTarget.name }))
+        }
+        const fresh = await window.api.profiles.list(server.id, access)
+        setProfiles(fresh.profiles ?? [])
+        setLimitDone(true)
+        setTimeout(() => {
+          setLimitTarget(null)
+          setLimitDone(false)
+        }, 400)
+      } else {
+        setError(result.error ?? t('settings.trafficFailed'))
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setLimitBusy(false)
+    }
+  }
+
+  /** Чип трафика в карточке профиля: «использовано / лимит» или «лимит исчерпан». */
+  const trafficChip = (profile: ServerProfile): React.JSX.Element | null => {
+    if (!profile.traffic_supported) return null
+    const used = profile.traffic_used ?? 0
+    const limit = profile.traffic_limit ?? 0
+    const info = describeTraffic(used, limit, profile.traffic_disabled === true)
+    if (info.status === 'none') return null
+    const danger = info.status === 'disabled' || info.status === 'exceeded'
+    const warn = info.status === 'warn'
+    const label = danger
+      ? t('settings.trafficChipExceeded')
+      : limit > 0
+        ? `${formatBytes(used)} / ${formatBytes(limit)}`
+        : formatBytes(used)
+    const title =
+      info.status === 'disabled'
+        ? t('settings.trafficDisabledTitle')
+        : info.status === 'exceeded'
+          ? t('settings.trafficChipExceededTitle')
+          : warn
+            ? t('settings.trafficChipWarnTitle')
+            : t('settings.trafficChipTitle')
+    return (
+      <Chip
+        size="sm"
+        color="default"
+        className={`${styles.expireChip} ${
+          danger ? styles.expireChipDanger : warn ? styles.expireChipWarn : ''
+        }`}
+        title={title}
+      >
+        {label}
+      </Chip>
+    )
+  }
+
+  /**
+   * Сервер старой версии не отдаёт traffic-поля: управление лимитом скрыто.
+   * Как и у expire, отличает «лимита нет» от «сервер не умеет лимиты».
+   */
+  const trafficSupported = (profiles ?? []).some((p) => p.traffic_supported === true)
+
+  const limitInputValue = limitValue.trim()
+  const limitInputValid =
+    limitInputValue === '' || isValidTrafficLimitInput(limitInputValue)
+  const canSaveLimit =
+    limitInputValue !== '' ? isValidTrafficLimitInput(limitInputValue) : limitReset
+
+  const updateServer = async (branch?: 'main' | 'dev' | 'experimental'): Promise<void> => {
     if (!accessReady) return
     setBusy(true)
     setUpdating(true)
     setError(null)
     try {
-      const result = await window.api.server.update(server.id, access)
+      const result = await window.api.server.update(server.id, access, branch)
       if (result.ok) {
         toastText(t('settings.updated'))
       } else {
@@ -510,7 +861,112 @@ export function ServerSettings({
     } finally {
       setBusy(false)
       setUpdating(false)
+      setUpdateMenuOpen(false)
     }
+  }
+
+  const reloadBackends = async (): Promise<void> => {
+    try {
+      setBackends(await window.api.backends.status(server.id, access))
+      setBackendsError(null)
+    } catch (err) {
+      setBackendsError(err instanceof Error ? err.message : String(err))
+    }
+    try {
+      const fresh = await window.api.profiles.list(server.id, access)
+      if (fresh.ok) setProfiles(fresh.profiles)
+    } catch {
+      // профили уже загружены ранее — молча оставляем как есть
+    }
+  }
+
+  const runBackendAction = async (
+    id: string,
+    action: () => Promise<unknown>
+  ): Promise<void> => {
+    if (!accessReady) return
+    setBusy(true)
+    setBackendBusy(id)
+    setError(null)
+    try {
+      await action()
+      await reloadBackends()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(false)
+      setBackendBusy(null)
+    }
+  }
+
+  const installHysteria2 = (): Promise<void> =>
+    runBackendAction('hysteria2-install', () =>
+      window.api.backends.hysteria2Install(server.id, access, true)
+    )
+  const uninstallHysteria2 = (): Promise<void> => {
+    setConfirmBackend(null)
+    return runBackendAction('hysteria2-uninstall', () =>
+      window.api.backends.hysteria2Uninstall(server.id, access)
+    )
+  }
+  const toggleSubbody = (): Promise<void> =>
+    runBackendAction('subbody', () =>
+      window.api.backends.hysteria2Subbody(
+        server.id,
+        access,
+        !(backends?.backends.hysteria2?.sub_body ?? false)
+      )
+    )
+  const installAwg = (): Promise<void> =>
+    runBackendAction('awg-install', () =>
+      window.api.backends.awgInstall(server.id, access, true)
+    )
+  const uninstallAwg = (): Promise<void> => {
+    setConfirmBackend(null)
+    return runBackendAction('awg-uninstall', () =>
+      window.api.backends.awgUninstall(server.id, access)
+    )
+  }
+  const toggle31 = (on: boolean): Promise<void> => {
+    setConfirmBackend(null)
+    return runBackendAction('awg31', () => window.api.backends.awg31(server.id, access, on))
+  }
+
+  // Revoke/Срок на карточках бэкендов: креденшелы per-profile, поэтому
+  // операции идут по всем профилям с грантом этого бэкенда.
+  const grantedBackendProfiles = (kind: 'hysteria2' | 'awg'): ServerProfile[] =>
+    (profiles ?? []).filter((p) => p.backends?.[kind])
+
+  const revokeBackendKeys = (kind: 'hysteria2' | 'awg'): Promise<void> => {
+    setConfirmBackend(null)
+    const targets = grantedBackendProfiles(kind)
+    return runBackendAction(`${kind}-revoke-all`, async () => {
+      for (const p of targets) {
+        if (kind === 'hysteria2') {
+          await window.api.backends.hysteria2Grant(server.id, access, p.name)
+        } else {
+          await window.api.backends.awgGrant(server.id, access, p.name)
+        }
+      }
+    })
+  }
+
+  const openBackendExpiry = (kind: 'hysteria2' | 'awg'): void => {
+    const granted = grantedBackendProfiles(kind)
+    if (granted.length === 0) return
+    if (granted.length === 1) {
+      setExpireChooser(null)
+      setExpireTarget(granted[0])
+    } else {
+      setExpireChooser(granted)
+    }
+  }
+
+  const showKeysQr = async (data: string): Promise<void> => {
+    setKeysQrUrl(data)
+    setKeysQrData(null)
+    const dataUrl = await QRCode.toDataURL(data, { width: 320, margin: 2 })
+    setKeysQrData(dataUrl)
   }
 
   const forgetHostKey = async (): Promise<void> => {
@@ -549,6 +1005,145 @@ export function ServerSettings({
     }
   }
 
+  // Создание профиля бэкенда из карточки в «Создать профиль»:
+  // тот же профиль (имя/количество/срок из общей формы), плюс сразу
+  // выдаётся ключ выбранного протокола (hysteria2/awg attach).
+  const createBackendProfiles = async (kind: 'hysteria2' | 'awg'): Promise<void> => {
+    if (!accessReady) {
+      setError(t('settings.errorPassword'))
+      return
+    }
+    if (!name.trim()) {
+      setError(t('settings.errorName'))
+      return
+    }
+    // Pre-check: удаление по имени снимает ВСЕ ключи профиля (маршруты +
+    // бэкенды), поэтому коллизию имени ловим до создания, а не после.
+    const nameCollision = futureNames.find((nm) =>
+      (profiles ?? []).some((p) => p.name === nm)
+    )
+    if (nameCollision) {
+      setError(t('settings.errorNameExists', { name: nameCollision }))
+      return
+    }
+    if (!backends?.backends[kind]?.installed) {
+      setError(t('settings.backendsCreateNotInstalled'))
+      return
+    }
+    setBusy(true)
+    setCreating(true)
+    setError(null)
+    const beforeNames = new Set((profiles ?? []).map((p) => p.name))
+    let createdNames: string[] = []
+    let failedMessage: string | null = null
+    try {
+      const result = await window.api.profiles.create(server.id, access, {
+        name: name.trim(),
+        transport: 'xhttp',
+        count: Math.min(Math.max(Number(count) || 1, 1), 50),
+        ...(createExpire && isFutureDate(createExpire, Date.now())
+          ? { expire: createExpire }
+          : {})
+      })
+      createdNames = result.ok ? result.names : []
+      if (!result.ok) failedMessage = result.errors[0] ?? t('settings.createFailed')
+    } catch (err) {
+      failedMessage = err instanceof Error ? err.message : String(err)
+    }
+    if (createdNames.length === 0 && failedMessage) {
+      // Профили могли создаться даже при ошибке парсинга — перечитываем список.
+      try {
+        const fresh = await window.api.profiles.list(server.id, access)
+        setProfiles(fresh.profiles ?? [])
+        const newlyAppeared = (fresh.profiles ?? []).filter(
+          (p) => futureNames.includes(p.name) && !beforeNames.has(p.name)
+        )
+        if (newlyAppeared.length > 0) {
+          createdNames = newlyAppeared.map((p) => p.name)
+          failedMessage = null
+        }
+      } catch {
+        // список не критичен, ошибку создания уже показываем
+      }
+    }
+    const grantErrors: string[] = []
+    for (const nm of createdNames) {
+      try {
+        if (kind === 'hysteria2') {
+          await window.api.backends.hysteria2Grant(server.id, access, nm)
+        } else {
+          await window.api.backends.awgGrant(server.id, access, nm)
+        }
+      } catch (err) {
+        grantErrors.push(`${nm}: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+    try {
+      const fresh = await window.api.profiles.list(server.id, access)
+      setProfiles(fresh.profiles ?? [])
+      await reloadBackends()
+    } catch {
+      // не критично — основной результат уже показан
+    }
+    if (createdNames.length > 0 && grantErrors.length === 0) {
+      toastText(t('settings.backendsCreated', { count: createdNames.length }))
+      setName('')
+      setBackendSel(null)
+    } else if (createdNames.length > 0) {
+      setError(t('settings.backendsCreatedPartial'))
+    } else if (failedMessage) {
+      setError(failedMessage)
+    }
+    setBusy(false)
+    setCreating(false)
+  }
+
+  // Ключи бэкенд-профиля: карточки в списке профилей (дубликаты стиля
+  // бэкенд-блока, разделённые по протоколам).
+  const profileHystLink = async (profile: ServerProfile): Promise<string> => {
+    const res = await window.api.backends.hysteria2Link(server.id, access, profile.name)
+    if (!res.ok || !res.link) throw new Error(res.error ?? t('settings.createFailed'))
+    return res.link
+  }
+
+  const qrProfileHyst = async (profile: ServerProfile): Promise<void> => {
+    try {
+      await showKeysQr(await profileHystLink(profile))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const profileAwgConf = async (profile: ServerProfile): Promise<string> => {
+    const res = await window.api.backends.awgConf(server.id, access, profile.name)
+    if (!res.ok || !res.conf) throw new Error(res.error ?? t('settings.createFailed'))
+    return res.conf
+  }
+
+  const qrProfileAwg = async (profile: ServerProfile): Promise<void> => {
+    try {
+      await showKeysQr(stripAwgComments(await profileAwgConf(profile)))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const qrProfileAwgVpn = async (profile: ServerProfile): Promise<void> => {
+    try {
+      const conf = await profileAwgConf(profile)
+      await showKeysQr(
+        await buildAwgVpnUrl(conf, profile.name, {
+          clientPubKey: profile.backends?.awg?.client_public_key
+        })
+      )
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  const hyst = backends?.backends.hysteria2
+  const awgEntry = backends?.backends.awg
+
   const transportLabel = (profile: ServerProfile): string =>
     profile.multi_route ? `${profile.transport} · ${profile.routes} ${t('settings.routes')}` : profile.transport
 
@@ -570,18 +1165,54 @@ export function ServerSettings({
         <span className={styles.serverName}>{server.name}</span>
         {connected && (
           <div className={styles.headerActions}>
-            <Button
-              variant="secondary"
-              size="sm"
-              isDisabled={busy}
-              onPress={updateServer}
-            >
-              <CloudDownload
-                size={16}
-                className={updating ? styles.iconDownloading : undefined}
-              />
-              {updating ? t('settings.updating') : t('settings.updateServer')}
-            </Button>
+            <div className={styles.updateMenuWrap}>
+              <Button
+                variant="secondary"
+                size="sm"
+                isDisabled={busy}
+                onPress={() => setUpdateMenuOpen((open) => !open)}
+              >
+                <CloudDownload
+                  size={16}
+                  className={updating ? styles.iconDownloading : undefined}
+                />
+                {updating ? t('settings.updating') : t('settings.updateServer')}
+              </Button>
+              {updateMenuOpen && (
+                <div className={styles.updateMenu}>
+                  <button
+                    className={styles.updateMenuItem}
+                    disabled={busy}
+                    onClick={() => void updateServer()}
+                  >
+                    {t('settings.updateBranchAuto')}
+                    <span className={styles.updateMenuHint}>
+                      {t('settings.updateBranchAutoHint')}
+                    </span>
+                  </button>
+                  <button
+                    className={styles.updateMenuItem}
+                    disabled={busy}
+                    onClick={() => void updateServer('main')}
+                  >
+                    {t('settings.updateBranchMain')}
+                    <span className={styles.updateMenuHint}>
+                      {t('settings.updateBranchMainHint')}
+                    </span>
+                  </button>
+                  <button
+                    className={`${styles.updateMenuItem} ${styles.updateMenuBeta}`}
+                    disabled={busy}
+                    onClick={() => void updateServer('dev')}
+                  >
+                    {t('settings.updateBranchDev')}
+                    <span className={styles.updateMenuHint}>
+                      {t('settings.updateBranchDevHint')}
+                    </span>
+                  </button>
+                </div>
+              )}
+            </div>
             <Button
               variant="danger-soft"
               size="sm"
@@ -627,6 +1258,18 @@ export function ServerSettings({
 
         {error && <div className={styles.error}>{t('settings.error')}: {error}</div>}
         {toast && <div className={styles.toast}>{toast}</div>}
+
+        {keysQrUrl && (
+          <div
+            className={styles.keysQrModal}
+            role="dialog"
+            aria-modal="true"
+            aria-label="QR"
+            onClick={() => setKeysQrUrl(null)}
+          >
+            {keysQrData ? <img src={keysQrData} alt="QR" /> : null}
+          </div>
+        )}
 
         {connected && (
           <>
@@ -679,7 +1322,10 @@ export function ServerSettings({
                   size="lg"
                   className={styles.createBtn}
                   isDisabled={busy || !accessReady || !name.trim()}
-                  onPress={create}
+                  onPress={() => {
+                    if (backendSel) void createBackendProfiles(backendSel)
+                    else void create()
+                  }}
                 >
                   {busy && <Spinner size="sm" />}
                   {t('settings.createBtn')}
@@ -706,7 +1352,7 @@ export function ServerSettings({
                 <p className={styles.sectionHint}>{t('settings.protocolPrompt')}</p>
                 <div className={styles.transportGrid}>
                   {PROTOCOLS.map((proto) => {
-                    const active = transport === proto.id
+                    const active = transport === proto.id && backendSel === null
                     return (
                       <button
                         key={proto.id}
@@ -715,7 +1361,10 @@ export function ServerSettings({
                           active ? styles.transportCardActive : ''
                         }`}
                         disabled={busy}
-                        onClick={() => setTransport(proto.id)}
+                        onClick={() => {
+                          setTransport(proto.id)
+                          setBackendSel(null)
+                        }}
                       >
                         <span className={styles.transportCardName}>
                           {proto.label}
@@ -733,6 +1382,48 @@ export function ServerSettings({
                   })}
                 </div>
               </div>
+              <div className={styles.backendCreate}>
+                <span className={styles.fieldLabel}>{t('settings.backendsTitle')}</span>
+                <p className={styles.sectionHint}>{t('settings.backendsCreateHint')}</p>
+                <div className={styles.backendCreateGrid}>
+                  <button
+                    type="button"
+                    className={`${styles.backendCreateCard} ${
+                      backendSel === 'hysteria2' ? styles.backendCreateCardActive : ''
+                    }`}
+                    disabled={busy || creating}
+                    onClick={() => setBackendSel(backendSel === 'hysteria2' ? null : 'hysteria2')}
+                  >
+                    <span className={`${styles.backendIcon} ${styles.backendIconHyst}`}>
+                      <img src={hystLogo} alt="Hysteria 2" className={styles.backendIconSvg} />
+                    </span>
+                    <span className={styles.backendCreateText}>
+                      <span className={styles.backendCreateName}>Hysteria 2</span>
+                      <span className={styles.backendCreateDesc}>
+                        {t('settings.backendsCreateHystDesc')}
+                      </span>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className={`${styles.backendCreateCard} ${
+                      backendSel === 'awg' ? styles.backendCreateCardActive : ''
+                    }`}
+                    disabled={busy || creating}
+                    onClick={() => setBackendSel(backendSel === 'awg' ? null : 'awg')}
+                  >
+                    <span className={`${styles.backendIcon} ${styles.backendIconAwg}`}>
+                      <img src={amneziaLogo} alt="AmneziaWG" className={styles.backendIconImg} />
+                    </span>
+                    <span className={styles.backendCreateText}>
+                      <span className={styles.backendCreateName}>AmneziaWG 3.1</span>
+                      <span className={styles.backendCreateDesc}>
+                        {t('settings.backendsCreateAwgDesc')}
+                      </span>
+                    </span>
+                  </button>
+                </div>
+              </div>
             </section>
 
             <section className={styles.listCard}>
@@ -742,18 +1433,20 @@ export function ServerSettings({
               )}
               {profiles!.length === 0 && <div className={styles.empty}>{t('settings.empty')}</div>}
               {profiles!.map((profile) => (
-                <div key={profile.name} className={styles.profileCard}>
+                <Fragment key={profile.name}>
+                <div className={styles.profileCard}>
                   <div className={styles.profileMain}>
                     <div className={styles.profileNameRow}>
                       <span className={styles.profileName}>{profile.name}</span>
                       {profile.multi_route && <Chip size="sm" color="accent">{t('settings.happ')}</Chip>}
-                      {profile.pq_enabled && <Chip size="sm" color="default">PQ</Chip>}
+                      {(profile.pq_enabled || (profile.pq_routes ?? 0) > 0) && (<Chip size="sm" color="default">{(profile.pq_routes ?? 0) > 1 ? `PQ ×${profile.pq_routes}` : 'PQ'}</Chip>)}
                     </div>
                     <div className={styles.profileMeta}>
                       <Chip size="sm" color="default">{transportLabel(profile)}</Chip>
                       <Chip size="sm" color="default">:{profile.port}</Chip>
                       <span className={styles.profileSni}>{profile.sni}</span>
                       {expireChip(profile)}
+                      {trafficChip(profile)}
                     </div>
                     {profile.subscription_url && (
                       <div className={styles.profileUrl} title={profile.subscription_url}>
@@ -803,10 +1496,48 @@ export function ServerSettings({
                       <EthernetPort size={14} />
                       {t('settings.portBtn')}
                     </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      isDisabled={busy}
+                      onPress={() => {
+                        setPqTarget(profile)
+                        setPqResult(null)
+                        setPqError(null)
+                        setPqTransport(
+                          PROTOCOLS.some((p) => p.id === profile.transport)
+                            ? profile.transport
+                            : 'tcp'
+                        )
+                      }}
+                    >
+                      <Zap size={14} />
+                      {t('settings.pqBtn')}
+                    </Button>
                     {profile.subscription_url && (
                       <Button size="sm" variant="secondary" onPress={() => copyUrl(profile)}>
                         <Copy size={13} />
                         {t('settings.copy')}
+                      </Button>
+                    )}
+                    {profile.subscription_url_clash && (
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onPress={() => copyFormatUrl(profile, 'clash')}
+                      >
+                        <Copy size={13} />
+                        {t('settings.copyClash')}
+                      </Button>
+                    )}
+                    {profile.subscription_url_singbox && (
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onPress={() => copyFormatUrl(profile, 'singbox')}
+                      >
+                        <Copy size={13} />
+                        {t('settings.copySingbox')}
                       </Button>
                     )}
                     <Button
@@ -818,6 +1549,17 @@ export function ServerSettings({
                       <CalendarClock size={14} />
                       {t('settings.expireBtn')}
                     </Button>
+                    {trafficSupported && (
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        isDisabled={busy}
+                        onPress={() => openLimit(profile)}
+                      >
+                        <Gauge size={14} />
+                        {t('settings.trafficBtn')}
+                      </Button>
+                    )}
                     {profile.subscription_url && (
                       <Button
                         size="sm"
@@ -847,11 +1589,629 @@ export function ServerSettings({
                     )}
                   </div>
                 </div>
+                  {profile.backends?.hysteria2 && (
+                    <div className={styles.backendProfileCard}>
+                      <div className={styles.backendProfileHead}>
+                        <span className={`${styles.backendIcon} ${styles.backendIconHyst}`}>
+                          <img src={hystLogo} alt="Hysteria 2" className={styles.backendIconSvg} />
+                        </span>
+                        <div className={styles.backendProfileTitle}>
+                          <div className={styles.backendName}>{profile.name}</div>
+                          <div className={styles.backendProfileSub}>
+                            {t('settings.backendsHyst')} · {t('settings.backendsHystSub')}
+                          </div>
+                          <div
+                            className={`${styles.backendState} ${
+                              hyst?.state === 'active' ? styles.backendStateOk : ''
+                            }`}
+                          >
+                            {hyst?.state === 'active'
+                              ? hyst.sni
+                                ? `${t('settings.backendsActive')} · SNI ${hyst.sni}`
+                                : `${t('settings.backendsActive')} · UDP ${hyst.port ?? '—'}`
+                              : t('settings.backendsNotInstalled')}
+                          </div>
+                        </div>
+                      </div>
+                      <div className={styles.backendActions}>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          isDisabled={busy || hyst?.state !== 'active'}
+                          onPress={() => void qrProfileHyst(profile)}
+                        >
+                          {t('keys.qr')}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          isDisabled={busy}
+                          onPress={() => openExpire(profile)}
+                        >
+                          <CalendarClock size={14} />
+                          {t('settings.backendsExpiryBtn')}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          isDisabled={busy || hyst?.state !== 'active'}
+                          onPress={() => openRevoke(profile, true)}
+                        >
+                          <ShieldOff size={14} />
+                          {t('settings.revokeBtn')}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="danger-soft"
+                          isDisabled={busy}
+                          onPress={() => setConfirmRemove(profile)}
+                        >
+                          <Trash2 size={14} />
+                          {t('settings.deleteKey')}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                  {profile.backends?.awg && (
+                    <div className={styles.backendProfileCard}>
+                      <div className={styles.backendProfileHead}>
+                        <span className={`${styles.backendIcon} ${styles.backendIconAwg}`}>
+                          <img src={amneziaLogo} alt="AmneziaWG" className={styles.backendIconImg} />
+                        </span>
+                        <div className={styles.backendProfileTitle}>
+                          <div className={styles.backendName}>{profile.name}</div>
+                          <div className={styles.backendProfileSub}>
+                            {t('settings.backendsAwg')} · {t('settings.backendsAwgSub')}
+                          </div>
+                          <div
+                            className={`${styles.backendState} ${
+                              awgEntry?.state === 'active' ? styles.backendStateOk : ''
+                            }`}
+                          >
+                            {awgEntry?.state === 'active'
+                              ? `${t('settings.backendsActive')} · UDP ${awgEntry.port ?? '—'}`
+                              : t('settings.backendsNotInstalled')}
+                          </div>
+                        </div>
+                      </div>
+                      <div className={styles.backendActions}>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          isDisabled={busy || awgEntry?.state !== 'active'}
+                          onPress={() => void qrProfileAwg(profile)}
+                        >
+                          {t('keys.qr')}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          isDisabled={busy || awgEntry?.state !== 'active'}
+                          onPress={() => void qrProfileAwgVpn(profile)}
+                        >
+                          {t('keys.backendsQrVpn')}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          isDisabled={busy}
+                          onPress={() => openExpire(profile)}
+                        >
+                          <CalendarClock size={14} />
+                          {t('settings.backendsExpiryBtn')}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          isDisabled={busy || awgEntry?.state !== 'active'}
+                          onPress={() => openRevoke(profile, true)}
+                        >
+                          <ShieldOff size={14} />
+                          {t('settings.revokeBtn')}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="danger-soft"
+                          isDisabled={busy}
+                          onPress={() => setConfirmRemove(profile)}
+                        >
+                          <Trash2 size={14} />
+                          {t('settings.deleteKey')}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </Fragment>
               ))}
             </section>
+
+            <section>
+              <div className={styles.listCard}>
+                <h2 className={styles.sectionTitle}>
+                  {t('settings.backendsTitle')}
+                  <Chip size="sm" color="default">{t('settings.backendsDevBadge')}</Chip>
+                </h2>
+                <p className={styles.sectionHint}>{t('settings.backendsHint')}</p>
+                <p className={styles.hint}>{t('settings.backendsDevNote')}</p>
+                {backendsError !== null ? (
+                  <p className={styles.hint}>{t('settings.backendsUnsupported')}</p>
+                ) : backendsLoading || backends === null ? (
+                  <>
+                    <div className={styles.backendSkeleton} />
+                    <div className={styles.backendSkeleton} />
+                  </>
+                ) : (
+                  <>
+                    <div className={styles.backendsInner}>
+                      <div className={styles.backendBlock}>
+                        <div className={styles.backendHead}>
+                          <div className={`${styles.backendIcon} ${styles.backendIconHyst}`}>
+                            <img src={hystLogo} alt="Hysteria" className={styles.backendIconSvg} />
+                          </div>
+                          <div className={styles.backendTitle}>
+                            <div className={styles.backendName}>{t('settings.backendsHyst')}</div>
+                            <div className={styles.backendSub}>{t('settings.backendsHystSub')}</div>
+                          </div>
+                        </div>
+                        <div
+                          className={`${styles.backendState} ${
+                            hyst?.state === 'active' ? styles.backendStateOk : ''
+                          }`}
+                        >
+                          {hyst?.installed
+                            ? `${t('settings.backendsActive')} · UDP ${hyst.port ?? '—'} · ${
+                                hyst.version ?? ''
+                              }`
+                            : t('settings.backendsNotInstalled')}
+                        </div>
+                        <p className={styles.backendNote}>{t('settings.backendsHystNote')}</p>
+                        <div className={styles.backendActions}>
+                          {hyst?.installed ? (
+                            <>
+                              <Button
+                                size="sm"
+                                variant={hyst.sub_body ? 'secondary' : 'primary'}
+                                isDisabled={busy}
+                                onPress={toggleSubbody}
+                              >
+                                {hyst.sub_body
+                                  ? t('settings.backendsSubBodyOn')
+                                  : t('settings.backendsSubBodyOff')}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                isDisabled={busy}
+                                onPress={() => openBackendExpiry('hysteria2')}
+                              >
+                                <CalendarClock size={14} />
+                                {t('settings.expireBtn')}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                isDisabled={busy}
+                                onPress={() => setConfirmBackend('hysteria2-revoke-all')}
+                              >
+                                <ShieldOff size={14} />
+                                {t('settings.revokeBtn')}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="danger-soft"
+                                isDisabled={busy}
+                                onPress={() => setConfirmBackend('hysteria2-uninstall')}
+                              >
+                                {backendBusy === 'hysteria2-uninstall'
+                                  ? t('settings.backendsUninstalling')
+                                  : t('settings.backendsUninstall')}
+                              </Button>
+                            </>
+                          ) : (
+                            <Button size="sm" variant="primary" isDisabled={busy} onPress={installHysteria2}>
+                              {backendBusy === 'hysteria2-install'
+                                ? t('settings.backendsInstalling')
+                                : t('settings.backendsInstall')}
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className={styles.backendBlock}>
+                        <div className={styles.backendHead}>
+                          <div className={`${styles.backendIcon} ${styles.backendIconAwg}`}>
+                            <img src={amneziaLogo} alt="Amnezia" className={styles.backendIconImg} />
+                          </div>
+                          <div className={styles.backendTitle}>
+                            <div className={styles.backendName}>{t('settings.backendsAwg')}</div>
+                            <div className={styles.backendSub}>{t('settings.backendsAwgSub')}</div>
+                          </div>
+                        </div>
+                        <div
+                          className={`${styles.backendState} ${
+                            awgEntry?.state === 'active' ? styles.backendStateOk : ''
+                          }`}
+                        >
+                          {awgEntry?.installed
+                            ? `${t('settings.backendsActive')} · UDP ${awgEntry.port ?? '—'} · ${
+                                awgEntry.three_enabled
+                                  ? t('settings.backends31On')
+                                  : t('settings.backends31Off')
+                              }`
+                            : t('settings.backendsNotInstalled')}
+                        </div>
+                        <p className={styles.backendNote}>{t('settings.backendsAwgNote')}</p>
+                        <div className={styles.backendActions}>
+                          {awgEntry?.installed ? (
+                            <>
+                              <Button
+                                size="sm"
+                                variant={awgEntry.three_enabled ? 'secondary' : 'primary'}
+                                isDisabled={busy}
+                                onPress={() => setConfirmBackend('awg31-on')}
+                              >
+                                {t(
+                                  awgEntry.three_enabled
+                                    ? 'settings.backends31Disable'
+                                    : 'settings.backends31Enable'
+                                )}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                isDisabled={busy}
+                                onPress={() => openBackendExpiry('awg')}
+                              >
+                                <CalendarClock size={14} />
+                                {t('settings.expireBtn')}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                isDisabled={busy}
+                                onPress={() => setConfirmBackend('awg-revoke-all')}
+                              >
+                                <ShieldOff size={14} />
+                                {t('settings.revokeBtn')}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="danger-soft"
+                                isDisabled={busy}
+                                onPress={() => setConfirmBackend('awg-uninstall')}
+                              >
+                                {backendBusy === 'awg-uninstall'
+                                  ? t('settings.backendsUninstalling')
+                                  : t('settings.backendsUninstall')}
+                              </Button>
+                            </>
+                          ) : (
+                            <Button size="sm" variant="primary" isDisabled={busy} onPress={installAwg}>
+                              {backendBusy === 'awg-install'
+                                ? t('settings.backendsInstalling')
+                                : t('settings.backendsInstall')}
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            </section>
+
+            <section className={styles.listCard}>
+              <h2 className={styles.sectionTitle}>
+                <Lock size={16} /> {t('settings.dns01Title')}
+              </h2>
+              <p className={styles.sectionHint}>{t('settings.dns01Hint')}</p>
+              {dns01Error && <p className={styles.error}>{dns01Error}</p>}
+              {dns01Status && (
+                <p className={styles.hint}>
+                  {t('settings.dns01Mode')}:{' '}
+                  {dns01Status.tls_mode || t('settings.dns01ModeUnknown')}
+                  {dns01Status.domain ? ` · ${dns01Status.domain}` : ''}
+                  {dns01Status.provider ? ` · ${dns01Status.provider}` : ''}
+                  {dns01Status.cert_expiry > 0
+                    ? ` · ${t('settings.dns01Cert')}: ${dns01Status.days_left} ${t('settings.dns01Days')}`
+                    : ''}
+                </p>
+              )}
+              {dns01Status?.tls_mode === 'http_tls' && (
+                <p className={styles.serverTooOld}>{t('settings.dns01Degraded')}</p>
+              )}
+
+              <div className={styles.profileActions}>
+                <Button
+                  size="sm"
+                  variant={dns01Open ? 'secondary' : 'primary'}
+                  isDisabled={dns01Busy}
+                  onPress={() => setDns01Open((v) => !v)}
+                >
+                  <ShieldCheck size={14} />
+                  {dns01Status?.tls_mode === 'http_tls'
+                    ? t('settings.dns01RepairBtn')
+                    : t('settings.dns01Btn')}
+                </Button>
+                {dns01Status?.tls_mode === 'domain_tls' && (
+                  <Chip size="sm" color="accent">
+                    {t('settings.dns01Active')}
+                  </Chip>
+                )}
+              </div>
+
+              {dns01Open && (
+                <>
+                  {/* Провайдер: креденшелы Cloudflare и Route53 не взаимозаменяемы,
+                      поэтому лишние поля не показываем и не отправляем. */}
+                  <span className={styles.fieldLabel}>{t('settings.dns01Provider')}</span>
+                  <div className={styles.profileActions}>
+                    {(['cloudflare', 'route53'] as const).map((p) => (
+                      <Button
+                        key={p}
+                        size="sm"
+                        variant={dns01Provider === p ? 'primary' : 'secondary'}
+                        isDisabled={dns01Busy}
+                        onPress={() => setDns01Provider(p)}
+                      >
+                        {p === 'cloudflare' ? 'Cloudflare' : 'Route53'}
+                      </Button>
+                    ))}
+                  </div>
+                  <TextField variant="secondary">
+                    <Label>{t('settings.dns01Domain')}</Label>
+                    <Input
+                      value={dns01Domain}
+                      placeholder="sub.example.com"
+                      disabled={dns01Busy}
+                      onChange={(e) => setDns01Domain(e.target.value)}
+                    />
+                  </TextField>
+                  <p className={styles.fpNote}>{t('settings.dns01DomainHint')}</p>
+                  {dns01Provider === 'cloudflare' ? (
+                    <TextField variant="secondary">
+                      <Label>{t('settings.dns01Token')}</Label>
+                      <Input
+                        type="password"
+                        value={dns01Token}
+                        disabled={dns01Busy}
+                        onChange={(e) => setDns01Token(e.target.value)}
+                      />
+                    </TextField>
+                  ) : (
+                    <>
+                      <TextField variant="secondary">
+                        <Label>{t('settings.dns01AwsKey')}</Label>
+                        <Input
+                          value={dns01AwsKeyId}
+                          disabled={dns01Busy}
+                          onChange={(e) => setDns01AwsKeyId(e.target.value)}
+                        />
+                      </TextField>
+                      <TextField variant="secondary">
+                        <Label>{t('settings.dns01AwsSecret')}</Label>
+                        <Input
+                          type="password"
+                          value={dns01AwsSecret}
+                          disabled={dns01Busy}
+                          onChange={(e) => setDns01AwsSecret(e.target.value)}
+                        />
+                      </TextField>
+                    </>
+                  )}
+                  <p className={styles.fpNote}>{t('settings.dns01SecretNote')}</p>
+                  <div className={styles.profileActions}>
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      isDisabled={dns01Busy || !isDns01Ready(dns01Input())}
+                      onPress={() =>
+                        void runDns01(dns01Status?.tls_mode === 'http_tls' ? 'repair' : 'setup')
+                      }
+                    >
+                      {dns01Busy ? t('settings.dns01Running') : t('settings.dns01Submit')}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      isDisabled={dns01Busy}
+                      onPress={() => setDns01Open(false)}
+                    >
+                      {t('dashboard.cancel')}
+                    </Button>
+                  </div>
+                </>
+              )}
+            </section>
+
+            <section className={styles.listCard}>
+              <h2 className={styles.sectionTitle}>
+                <Bell size={16} /> {t('settings.alertsTitle')}
+              </h2>
+              <p className={styles.sectionHint}>{t('settings.alertsHint')}</p>
+              {alertsError && <p className={styles.error}>{alertsError}</p>}
+              {alertsStatus && !alertsStatus.configured && (
+                <p className={styles.serverTooOld}>{t('settings.alertsNotConfigured')}</p>
+              )}
+              {alertsStatus?.configured && (
+                <p className={styles.hint}>
+                  {alertsStatus.enabled
+                    ? t('settings.alertsEnabled')
+                    : t('settings.alertsDisabled')}
+                  {alertsStatus.chat_id ? ` · chat ${alertsStatus.chat_id}` : ''}
+                  {alertsStatus.bot_username ? ` · @${alertsStatus.bot_username}` : ''}
+                  {` · ${t('settings.alertsTimer')}: ${
+                    alertsStatus.timer_active
+                      ? t('settings.alertsTimerActive')
+                      : t('settings.alertsTimerInactive')
+                  }`}
+                </p>
+              )}
+              <div className={styles.profileActions}>
+                {alertsStatus?.configured && (
+                  <>
+                    <Button
+                      size="sm"
+                      variant={alertsStatus.enabled ? 'secondary' : 'primary'}
+                      isDisabled={alertsBusy}
+                      onPress={() => void toggleAlerts(!alertsStatus.enabled)}
+                    >
+                      {alertsStatus.enabled
+                        ? t('settings.alertsDisable')
+                        : t('settings.alertsEnable')}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      isDisabled={alertsBusy || !alertsStatus.enabled}
+                      onPress={() => void testAlerts()}
+                    >
+                      <Send size={14} />
+                      {t('settings.alertsTest')}
+                    </Button>
+                  </>
+                )}
+                <Button size="sm" variant="secondary" isDisabled={busy} onPress={() => void load()}>
+                  <RefreshCw size={14} />
+                  {t('settings.alertsRefresh')}
+                </Button>
+              </div>
+            </section>
+
+            <AlertDialog.Root
+              isOpen={pqTarget !== null}
+              onOpenChange={(open) => {
+                if (!open) {
+                  setPqTarget(null)
+                  setPqResult(null)
+                  setPqError(null)
+                }
+              }}
+            >
+              <AlertDialog.Backdrop>
+                <AlertDialog.Container>
+                  <AlertDialog.Dialog className={styles.confirmDialog}>
+                    <AlertDialog.Header>
+                      <AlertDialog.Icon status="warning">
+                        <Zap size={20} />
+                      </AlertDialog.Icon>
+                      <AlertDialog.Heading>
+                        {t('settings.pqTitle')} — {pqTarget?.name ?? ''}
+                      </AlertDialog.Heading>
+                    </AlertDialog.Header>
+                    <AlertDialog.Body>
+                      <p className={styles.fpHint}>{t('settings.pqHint')}</p>
+                      {!pqResult && (
+                        <>
+                          <span className={styles.fieldLabel}>{t('settings.pqTransport')}</span>
+                          <div className={styles.profileActions}>
+                            {PROTOCOLS.map((p) => (
+                              <Button
+                                key={p.id}
+                                size="sm"
+                                variant={pqTransport === p.id ? 'primary' : 'secondary'}
+                                isDisabled={pqBusy}
+                                onPress={() => setPqTransport(p.id)}
+                              >
+                                {p.label}
+                              </Button>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                      {pqError && <p className={styles.error}>{pqError}</p>}
+                      {pqResult?.link && (
+                        <>
+                          <p className={styles.fpHint}>{pqResult.note ?? t('settings.pqNote')}</p>
+                          <div className={styles.profileActions}>
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              onPress={() => {
+                                void navigator.clipboard.writeText(pqResult.link ?? '')
+                                toastText(t('settings.copied'))
+                              }}
+                            >
+                              <Copy size={13} />
+                              {t('settings.pqCopy')}
+                            </Button>
+                          </div>
+                          <p className={styles.fpNote}>{pqResult.link}</p>
+                        </>
+                      )}
+                    </AlertDialog.Body>
+                    <AlertDialog.Footer>
+                      {!pqResult && (
+                        <Button variant="primary" isDisabled={pqBusy} onPress={() => void addPqRoute()}>
+                          {pqBusy ? t('settings.pqAdding') : t('settings.pqAdd')}
+                        </Button>
+                      )}
+                      <Button
+                        variant="secondary"
+                        onPress={() => {
+                          setPqTarget(null)
+                          setPqResult(null)
+                          setPqError(null)
+                        }}
+                      >
+                        {t('settings.done')}
+                      </Button>
+                    </AlertDialog.Footer>
+                  </AlertDialog.Dialog>
+                </AlertDialog.Container>
+              </AlertDialog.Backdrop>
+            </AlertDialog.Root>
           </>
         )}
       </div>
+
+      <AlertDialog.Root
+        isOpen={confirmBackend !== null}
+        onOpenChange={(open) => {
+          if (!open) setConfirmBackend(null)
+        }}
+      >
+        <AlertDialog.Backdrop>
+          <AlertDialog.Container>
+            <AlertDialog.Dialog className={styles.confirmDialog}>
+              <AlertDialog.Header>
+                <AlertDialog.Icon status="warning">
+                  <Zap size={20} />
+                </AlertDialog.Icon>
+                <AlertDialog.Heading>{t('settings.backendsConfirmTitle')}</AlertDialog.Heading>
+              </AlertDialog.Header>
+              <AlertDialog.Body>
+                {confirmBackend === 'hysteria2-uninstall' && t('settings.backendsConfirmHyst')}
+                {confirmBackend === 'awg-uninstall' && t('settings.backendsConfirmAwg')}
+                {confirmBackend === 'awg31-on' && t('settings.backendsConfirm31On')}
+                {confirmBackend === 'awg31-off' && t('settings.backendsConfirm31Off')}
+                {confirmBackend === 'hysteria2-revoke-all' &&
+                  t('settings.backendsConfirmRevokeHystAll')}
+                {confirmBackend === 'awg-revoke-all' && t('settings.backendsConfirmRevokeAwgAll')}
+              </AlertDialog.Body>
+              <AlertDialog.Footer>
+                <Button variant="secondary" onPress={() => setConfirmBackend(null)}>
+                  {t('dashboard.cancel')}
+                </Button>
+                <Button
+                  variant="danger"
+                  onPress={() => {
+                    if (confirmBackend === 'hysteria2-uninstall') void uninstallHysteria2()
+                    else if (confirmBackend === 'awg-uninstall') void uninstallAwg()
+                    else if (confirmBackend === 'awg31-on') void toggle31(true)
+                    else if (confirmBackend === 'awg31-off') void toggle31(false)
+                    else if (confirmBackend === 'hysteria2-revoke-all') void revokeBackendKeys('hysteria2')
+                    else if (confirmBackend === 'awg-revoke-all') void revokeBackendKeys('awg')
+                    setConfirmBackend(null)
+                  }}
+                >
+                  {t('settings.done')}
+                </Button>
+              </AlertDialog.Footer>
+            </AlertDialog.Dialog>
+          </AlertDialog.Container>
+        </AlertDialog.Backdrop>
+      </AlertDialog.Root>
 
       <AlertDialog.Root
         isOpen={confirmRemove !== null}
@@ -988,14 +2348,18 @@ export function ServerSettings({
                       variant="secondary"
                       isDisabled={revokeBusy}
                       onPress={() =>
-                        revokeStep === 'confirm' ? setRevokeStep('choose') : setRevokeTarget(null)
+                        revokeStep === 'confirm'
+                          ? (revokeFullOnly
+                              ? setRevokeTarget(null)
+                              : setRevokeStep('choose'))
+                          : setRevokeTarget(null)
                       }
                     >
                       {t('dashboard.cancel')}
                     </Button>
                     {revokeStep === 'confirm' && (
                       <Button
-                        variant="danger"
+                        variant="danger-soft"
                         isDisabled={revokeBusy}
                         onPress={() => void runRevoke('full')}
                       >
@@ -1013,9 +2377,12 @@ export function ServerSettings({
       </AlertDialog.Root>
 
       <AlertDialog.Root
-        isOpen={expireTarget !== null}
+        isOpen={expireTarget !== null || expireChooser !== null}
         onOpenChange={(open) => {
-          if (!open && !expireBusy) setExpireTarget(null)
+          if (!open && !expireBusy) {
+            setExpireTarget(null)
+            setExpireChooser(null)
+          }
         }}
       >
         <AlertDialog.Backdrop className={styles.blurBackdrop}>
@@ -1030,69 +2397,94 @@ export function ServerSettings({
                 </AlertDialog.Heading>
               </AlertDialog.Header>
               <AlertDialog.Body>
-                <p className={styles.fpHint}>{t('settings.expireHintBody')}</p>
-                {expireTarget && (
-                  <p className={styles.fpCurrent}>
-                    {t('settings.expireCurrent', {
-                      value: expireTarget.expire
-                        ? describeExpire(
-                            expireTarget.expire,
-                            false,
-                            Date.now(),
-                            expireTarget.expire_date
-                          ).date
-                        : t('settings.expireNever')
-                    })}
-                  </p>
+                {expireTarget === null && expireChooser !== null ? (
+                  <div>
+                    <p className={styles.fpHint}>{t('settings.backendsExpiryChoose')}</p>
+                    <div className={styles.revokeOptions}>
+                      {expireChooser.map((p) => (
+                        <Button
+                          key={p.name}
+                          className={styles.revokeOption}
+                          size="sm"
+                          variant="secondary"
+                          onPress={() => {
+                            setExpireTarget(p)
+                            setExpireChooser(null)
+                          }}
+                        >
+                          {p.name}
+                          {p.expire_date ? ` — ${p.expire_date}` : ''}
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <p className={styles.fpHint}>{t('settings.expireHintBody')}</p>
+                    {expireTarget && (
+                      <p className={styles.fpCurrent}>
+                        {t('settings.expireCurrent', {
+                          value: expireTarget.expire
+                            ? describeExpire(
+                                expireTarget.expire,
+                                false,
+                                Date.now(),
+                                expireTarget.expire_date
+                              ).date
+                            : t('settings.expireNever')
+                        })}
+                      </p>
+                    )}
+                    <div className={styles.fpField}>
+                      <span className={styles.fieldLabel}>{t('settings.expireSelect')}</span>
+                      <div className={styles.inlineRow}>
+                        {[7, 30, 90, 365].map((d) => (
+                          <Button
+                            key={d}
+                            size="sm"
+                            variant="secondary"
+                            isDisabled={expireBusy}
+                            onPress={() => setExpireDate(presetDate(d, Date.now()))}
+                          >
+                            {t('settings.expirePreset', { count: d })}
+                          </Button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className={styles.fpField}>
+                      <CalendarPicker
+                        value={expireDate}
+                        disabled={expireBusy}
+                        onChange={setExpireDate}
+                      />
+                      {expireDate && (
+                        <p className={styles.fpCurrent}>
+                          {t('settings.expirePicked', { date: expireDate })}
+                        </p>
+                      )}
+                    </div>
+                    <p className={styles.fpNote}>{t('settings.expireEnforced')}</p>
+                    {/* Снятие срока — отдельное осознанное действие в теле диалога:
+                        раньше оно жило в футере рядом с «Сохранить» и требовало
+                        второй кнопки «Готово», что путало (одно действие — два клика). */}
+                    {expireTarget?.expire ? (
+                      <div className={styles.expireClearRow}>
+                        <Button
+                          variant="danger-soft"
+                          size="sm"
+                          isDisabled={expireBusy}
+                          onPress={() => void applyExpire(null)}
+                        >
+                          <CalendarX size={14} />
+                          {t('settings.expireClear')}
+                        </Button>
+                        <span className={styles.expireClearHint}>
+                          {t('settings.expireClearHint')}
+                        </span>
+                      </div>
+                    ) : null}
+                  </>
                 )}
-                <div className={styles.fpField}>
-                  <span className={styles.fieldLabel}>{t('settings.expireSelect')}</span>
-                  <div className={styles.inlineRow}>
-                    {[7, 30, 90, 365].map((d) => (
-                      <Button
-                        key={d}
-                        size="sm"
-                        variant="secondary"
-                        isDisabled={expireBusy}
-                        onPress={() => setExpireDate(presetDate(d, Date.now()))}
-                      >
-                        {t('settings.expirePreset', { count: d })}
-                      </Button>
-                    ))}
-                  </div>
-                </div>
-                <div className={styles.fpField}>
-                  <CalendarPicker
-                    value={expireDate}
-                    disabled={expireBusy}
-                    onChange={setExpireDate}
-                  />
-                  {expireDate && (
-                    <p className={styles.fpCurrent}>
-                      {t('settings.expirePicked', { date: expireDate })}
-                    </p>
-                  )}
-                </div>
-                <p className={styles.fpNote}>{t('settings.expireEnforced')}</p>
-                {/* Снятие срока — отдельное осознанное действие в теле диалога:
-                    раньше оно жило в футере рядом с «Сохранить» и требовало
-                    второй кнопки «Готово», что путало (одно действие — два клика). */}
-                {expireTarget?.expire ? (
-                  <div className={styles.expireClearRow}>
-                    <Button
-                      variant="danger-soft"
-                      size="sm"
-                      isDisabled={expireBusy}
-                      onPress={() => void applyExpire(null)}
-                    >
-                      <CalendarX size={14} />
-                      {t('settings.expireClear')}
-                    </Button>
-                    <span className={styles.expireClearHint}>
-                      {t('settings.expireClearHint')}
-                    </span>
-                  </div>
-                ) : null}
               </AlertDialog.Body>
               <AlertDialog.Footer>
                 {/* Отмена — слева и всегда только закрывает диалог, без действий. */}
@@ -1119,6 +2511,122 @@ export function ServerSettings({
                   {expireDone
                     ? t('settings.done')
                     : t(expireBusy ? 'settings.expireSaving' : 'settings.expireSave')}
+                </Button>
+              </AlertDialog.Footer>
+            </AlertDialog.Dialog>
+          </AlertDialog.Container>
+        </AlertDialog.Backdrop>
+      </AlertDialog.Root>
+
+      <AlertDialog.Root
+        isOpen={limitTarget !== null}
+        onOpenChange={(open) => {
+          if (!open && !limitBusy) setLimitTarget(null)
+        }}
+      >
+        <AlertDialog.Backdrop className={styles.blurBackdrop}>
+          <AlertDialog.Container placement="top">
+            <AlertDialog.Dialog className={styles.confirmDialog}>
+              <AlertDialog.Header>
+                <AlertDialog.Heading>
+                  {t('settings.trafficTitle')} — {limitTarget?.name ?? ''}
+                </AlertDialog.Heading>
+              </AlertDialog.Header>
+              <AlertDialog.Body>
+                <p className={styles.fpHint}>{t('settings.trafficHintBody')}</p>
+                {limitTarget && (
+                  <p className={styles.fpCurrent}>
+                    {limitTarget.traffic_disabled
+                      ? t('settings.trafficDisabledNote')
+                      : (limitTarget.traffic_limit ?? 0) > 0
+                        ? t('settings.trafficUsedOf', {
+                            used: formatBytes(limitTarget.traffic_used ?? 0),
+                            limit: formatBytes(limitTarget.traffic_limit ?? 0)
+                          })
+                        : t('settings.trafficUsedOnly', {
+                            used: formatBytes(limitTarget.traffic_used ?? 0)
+                          })}
+                  </p>
+                )}
+                <div className={styles.fpField}>
+                  <span className={styles.fieldLabel}>{t('settings.trafficPresets')}</span>
+                  <div className={styles.inlineRow}>
+                    {TRAFFIC_PRESETS.map((preset) => (
+                      <Button
+                        key={preset}
+                        size="sm"
+                        variant="secondary"
+                        isDisabled={limitBusy}
+                        onPress={() => setLimitValue(preset)}
+                      >
+                        {preset.replace('GB', ' GB').replace('TB', ' TB')}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+                <div className={styles.fpField}>
+                  <span className={styles.fieldLabel}>{t('settings.trafficCustom')}</span>
+                  <TextField variant="secondary" className={styles.nameField}>
+                    <Input
+                      value={limitValue}
+                      disabled={limitBusy}
+                      placeholder={t('settings.trafficPlaceholder')}
+                      onChange={(e) => setLimitValue(e.target.value)}
+                    />
+                  </TextField>
+                  {limitInputValue !== '' && !limitInputValid && (
+                    <p className={styles.fpNote}>{t('settings.trafficInvalid')}</p>
+                  )}
+                </div>
+                <div className={styles.expireClearRow}>
+                  <Button
+                    size="sm"
+                    variant={limitReset ? 'primary' : 'secondary'}
+                    isDisabled={limitBusy}
+                    onPress={() => setLimitReset((value) => !value)}
+                  >
+                    <RefreshCw size={14} />
+                    {t('settings.trafficReset')}
+                  </Button>
+                  <span className={styles.expireClearHint}>{t('settings.trafficResetHint')}</span>
+                </div>
+                {limitTarget && (limitTarget.traffic_limit ?? 0) > 0 ? (
+                  <div className={styles.expireClearRow}>
+                    <Button
+                      variant="danger-soft"
+                      size="sm"
+                      isDisabled={limitBusy}
+                      onPress={() => void applyLimit('none', false)}
+                    >
+                      <Gauge size={14} />
+                      {t('settings.trafficClear')}
+                    </Button>
+                    <span className={styles.expireClearHint}>
+                      {t('settings.trafficClearHint')}
+                    </span>
+                  </div>
+                ) : null}
+              </AlertDialog.Body>
+              <AlertDialog.Footer>
+                <Button
+                  variant="secondary"
+                  isDisabled={limitBusy}
+                  onPress={() => setLimitTarget(null)}
+                >
+                  {t('dashboard.cancel')}
+                </Button>
+                <Button
+                  variant="primary"
+                  className={
+                    limitDone ? styles.btnSuccess : limitBusy ? styles.glowPulse : undefined
+                  }
+                  isDisabled={limitBusy || limitDone || !canSaveLimit}
+                  onPress={() => void applyLimit(limitInputValue || null, limitReset)}
+                >
+                  {limitDone ? <Check size={16} /> : null}
+                  {limitDone
+                    ? t('settings.done')
+                    : t(limitBusy ? 'settings.trafficSaving' : 'settings.trafficSave')}
                 </Button>
               </AlertDialog.Footer>
             </AlertDialog.Dialog>

@@ -74,10 +74,50 @@ export function parseSubscription(body: string): VlessLink[] {
   return links
 }
 
+export function parseHysteria2Line(line: string): string | null {
+  const t = line.trim()
+  return t.startsWith('hysteria2://') ? t : null
+}
+
+/**
+ * Извлекает hysteria2:// ссылки из тела подписки (HAPP и generic тела).
+ * Ключи AWG в подписке не живут — они доставляются .conf-файлом.
+ */
+export function extractHysteria2Links(body: string): string[] {
+  const links: string[] = []
+  for (const line of body.split(/\r?\n/)) {
+    if (line.includes('://')) {
+      const l = parseHysteria2Line(line)
+      if (l) links.push(l)
+      continue
+    }
+    const candidate = line.trim()
+    if (candidate && !candidate.includes('://') && candidate.length > 40) {
+      try {
+        const decoded = decodeBase64(candidate)
+        if (decoded.includes('hysteria2://')) {
+          for (const inner of decoded.split(/\r?\n/)) {
+            const l = parseHysteria2Line(inner)
+            if (l) links.push(l)
+          }
+        }
+      } catch {
+        // не base64 — пропускаем
+      }
+    }
+  }
+  return links
+}
+
+export interface SubscriptionFetch {
+  keys: VlessLink[]
+  hysteria2Links: string[]
+}
+
 export async function fetchSubscription(
   url: string,
   timeoutMs = 15000
-): Promise<VlessLink[]> {
+): Promise<SubscriptionFetch> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
 
@@ -90,7 +130,7 @@ export async function fetchSubscription(
       throw new Error(`HTTP ${res.status} ${res.statusText}`)
     }
     const body = await res.text()
-    return parseSubscription(body)
+    return { keys: parseSubscription(body), hysteria2Links: extractHysteria2Links(body) }
   } finally {
     clearTimeout(timer)
   }

@@ -62,6 +62,27 @@ URL подписки — bearer-credential. Он не публичен, но л�
 - не отдавать внешнему клиенту local-only URL;
 - не держать на том же домене чужие панели и прокси, не разобравшись в конфиге nginx.
 
+## Безопасность мультипротокольных бэкендов
+
+Опциональные бэкенды (Hysteria 2, AmneziaWG) следуют той же модели доверия, что и сервис Xray, с
+уточнениями по каждому:
+
+| Путь или класс | Владелец и доступ |
+|---|---|
+| `/usr/local/etc/xrayebator/backends.json` | `root:root 644` — намеренно без секретов (порты, версии, флаги); аккаунт `xray` читает его из subscription handler |
+| `/usr/local/etc/xrayebator/backends/hysteria/` | `root:hysteria 750`; `server.yaml` и сертификаты `0640 root:hysteria` — сервис обязан их читать, больше никто их не трогает |
+| `/usr/local/etc/xrayebator/backends/awg/` | `root:root 700`; `awg0.conf` и `server-params.json` `0600` — серверные приватные ключи и секреты peer-ов |
+| Placeholder-credential Hysteria | `_xrayebator_placeholder` со случайным паролем в `0600`-файле; существует только чтобы auth-карта не была пустой, выданным клиентам не выдаётся |
+| certbot renewal deploy-hook | `/etc/letsencrypt/renewal-hooks/deploy/xrayebator-hysteria.sh`, root `0755`; копирует продлённые сертификаты в каталог бэкенда и рестартует бэкенд |
+| `/etc/amnezia/amneziawg/awg0.conf` | symlink на управляемый файл — дистрибутивный юнит `awg-quick@awg0` читает через него; второй копии конфига не существует |
+
+Hysteria работает от выделенного пользователя `hysteria` с
+`AmbientCapabilities=CAP_NET_BIND_SERVICE` и `NoNewPrivileges=true`; sysctl-буферы QUIC лежат в
+`/etc/sysctl.d/99-xrayebator-hysteria.conf`. AmneziaWG требует `net.ipv4.ip_forward=1` (свой
+sysctl-файл) и добавляет MASQUERADE/FORWARD-правила через `PostUp`/`PostDown` конфига интерфейса,
+скоупированные на подсеть бэкенда. Бэкенды ставятся только явным действием оператора и снимаются
+соответствующей `*-uninstall` командой; `uninstall.sh` в этом не участвует.
+
 ## Доступ к VPS по SSH
 
 Установить Xrayebator можно прямо из-под `root`, но лучше отдельный пользователь с узко ограниченным sudo.

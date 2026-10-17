@@ -6,7 +6,8 @@
 
 <p>
 <strong>入站</strong> · <strong>配置档</strong> · <strong>订阅</strong> ·
-<strong>分流</strong> · <strong>级联</strong>
+<strong>分流</strong> · <strong>级联</strong> · <strong>hysteria2</strong> ·
+<strong>amneziawg</strong>
 </p>
 
 <p>
@@ -27,7 +28,9 @@
 <strong>一个 bash 脚本，把干净的 VPS 变成私人 VLESS Reality 服务器。</strong><br>
 Xrayebator 安装 Xray-core，在随机端口上建立 Reality 入站，并为新安装创建包含七条线路的标准
 schema-v3 HAPP 配置档。已有七线路配置档在满足存活线路数量时可能被复用，因此排查 label 或 schema
-时请检查配置档 JSON。客户端通过一条 HTTPS 订阅链接获取线路。当前服务器版本线为 3.0；可选
+时请检查配置档 JSON。客户端通过一条 HTTPS 订阅链接获取线路。自多协议阶段起，同一台 VPS 可选装
+Hysteria 2（高速 UDP）与 AmneziaWG 2.0/3.1（系统级 VPN）后端——菜单项 11–13，每配置档授权纳入统一的
+revoke/expire 生命周期。当前服务器版本线为 3.0；可选
 Electron 桌面应用单独版本化。
 </p>
 
@@ -93,11 +96,15 @@ Xrayebator 同时解决这两个问题：
 | Reality 入站 | 在 `30000-60000` 的空闲端口上建立入站，同时核对 `config.json` 与实际监听的套接字 | `xrayebator` |
 | 多线路配置档 | 一个配置档 = 共享 `sub_token` 的一组线路；多个配置档可共用同一端口 | `profiles/<name>.json` |
 | HAPP 订阅 | 提供 `vless://` 列表、托管的 Global Proxy 路由及令牌保护的 geo 数据库，由 nginx 通过 HTTPS 对外发布 | `subhttp.sh`、`xrayebator-sub.service` |
-| 后量子 XHTTP | `xhttp-pq` 线路使用 VLESS 加密 `mlkem768x25519plus` | `.vless_encryption`、`.vless_decryption` |
+| 订阅格式 | 一个令牌四种订阅体：HAPP、面向 v2rayNG/v2rayN 的 base64、Clash/mihomo YAML 与 sing-box JSON；格式按 `?target=` 或 User-Agent 选择 | `_subscription_render_*_pure`、`subhttp.sh` |
+| DNS-01 订阅 | Let's Encrypt 证书通过 TXT 记录验证（Cloudflare/Route53），因此在服务商过滤 80 端口的服务器上也能按域名提供 HTTPS 订阅。它同时是部署回退（`quickstart --dns01-*`）与已退化 http_tls 订阅的修复手段（`repair-dns01`，GUI 中的“用 DNS-01 修复”按钮） | `dns01-setup`、`dns01-status`、`repair-dns01` |
+| 后量子加密 | VLESS 加密 `mlkem768x25519plus` 可用于任意传输方式（`profile-pq --transport`），不再局限于 `xhttp-pq`；PQ 路由使用独立端口，可在部署时通过 `quickstart --pq` 或 GUI 向导开关添加 | `profile-pq`、`.vless_encryption`、`.vless_decryption` |
 | v2ray 兼容 | `v2rayNG` 与 `v2rayN` 获得不含 HAPP 元数据的经典 base64 订阅体 | `subhttp.sh` |
 | 吊销订阅 | 生成新的 32 位十六进制令牌，旧链接立即失效；完全吊销（`--full`）同时更换 uuid，已下载的配置随即断开 | `openssl rand -hex 16`、`profile-revoke` |
 | 配置档有效期 | 配置档可设置到期日：`xrayebator-expire.timer` 到期后把客户端从入站移除，续期后以同一 uuid 恢复 | `profile-expire`、`expire-check` |
-| 分流路由 | 七组域名可经 `freedom` 直连，绕过 VPN | 菜单 `7` |
+| 流量统计与限额 | 按配置档统计 Stats API 用量：`xrayebator-traffic.timer` 累计流量，限额耗尽时移除客户端、提高或重置后恢复；订阅返回真实的 `subscription-userinfo` | `profile-limit`、`traffic-check` |
+| 监控与 Telegram 告警 | 每 15 分钟检查服务、后端（Hysteria 2、AWG）、有效期与限额、订阅存活及其 TLS 模式、服务器重启；每天一次检查配置档实际使用的 SNI 可达性；只把状态变化写入 Telegram | 菜单 `14`、`xrayebator-monitor.timer` |
+| 分流路由 | 八组域名可经 `freedom` 直连，绕过 VPN | 菜单 `7` |
 | 级联 | 把 `tcp,udp` 兜底规则切换到 `tcp` 或 `xhttp` 类型的境外 VLESS Reality 上游 | `upstreams/cascade.json` |
 | Self-steal 挡板 | 在 `127.0.0.1:9444` 部署带有效证书的 nginx，并让 Reality 回落指向它 | 菜单 `9` |
 | 安全写入 JSON | 在目标目录内写临时文件，校验后原子重命名 | `safe_jq_write` |
@@ -105,7 +112,7 @@ Xrayebator 同时解决这两个问题：
 | 迁移 | 由标记文件驱动的一次性迁移：备份 → 修改 → 重启 → 写标记 | `run_migration` |
 | geo 数据库 | 把 Loyalsoldier 发行版的 `geoip.dat` 与 `geosite.dat` 放入 `/usr/local/share/xray` | `install.sh` |
 
-不支持也不声称支持：H2、WebSocket、SplitHTTP、Clash/mihomo 订阅。
+不支持也不声称支持：H2、WebSocket、SplitHTTP。
 
 ## 工作原理
 
@@ -276,10 +283,10 @@ GUI 的功能：
 | 页面 | 操作 |
 |---|---|
 | Dashboard | 服务器卡片与连通/安装状态；空页面提供“部署新服务器”或“连接现有服务器”；语言切换 |
-| 添加服务器 | 显式选择是否提供 email：`quickstart --email` 或 `quickstart --without-email`；保存服务器与公网订阅 |
+| 添加服务器 | 显式选择是否提供 email：`quickstart --email` 或 `quickstart --without-email`；向导中有两个可选区块——**PQ 路由**开关（`--pq`）与 **DNS-01 回退**（域名 + 服务商 + 凭据，`--dns01-*`），默认均关闭；保存服务器与公网订阅 |
 | 连接现有服务器 | 通过 SSH（密码或密钥）和只读 `xrayebator inspect --json` 导入已识别的 Xrayebator；部分安装会连同诊断状态保存，不自动修复 |
 | 服务器密钥 | 刷新公网订阅、复制链接、显示 `vless://` 链接与二维码 |
-| 服务器设置 | 使用 SSH 密码或私钥、直接 root 或 sudo：列出/创建/删除配置档，修改指纹、SNI 和端口，吊销订阅，设置配置档有效期，以及更新或卸载服务器上的 Xrayebator；即使桌面与 VPS 时区不同，有效期日期也按服务器本地日期显示 |
+| 服务器设置 | 使用 SSH 密码或私钥、直接 root 或 sudo：列出/创建/删除配置档，修改指纹、SNI 和端口，吊销订阅，设置配置档有效期与流量限额，添加 PQ 路由，管理订阅与 TLS（DNS-01，包括对已退化 `http_tls` 订阅的“用 DNS-01 修复”）以及 Telegram 通知（状态、测试消息、开/关），还可更新或卸载服务器上的 Xrayebator；即使桌面与 VPS 时区不同，有效期日期也按服务器本地日期显示 |
 
 选中的私钥与成功登录时使用过的 SSH 密码都会通过 `keytar` 保存在操作系统钥匙串中，之后的 SSH 操作和应用重启均可复用；服务器卡片只保存非敏感的 credential id 和显示文件名。单独的 sudo 密码与加密私钥口令不会持久化，需要时重新输入。系统钥匙串不可用时不会写入明文回退文件：密钥仅保留在 main process 内存中直到当前会话结束，界面会提示重启后需重新输入。应用还会保存 `subscription_url`、获取到的 `vless://` 链接和固定的 SSH host-key fingerprint。这些是 bearer/client credentials：请保护本地应用数据，泄露后在服务器设置中吊销订阅（完全吊销会同时更换密钥）。
 
@@ -295,7 +302,7 @@ npm run dev          # Electron + Vite dev server
 npm run build        # 编译 renderer 与 main process
 ```
 
-Electron 检查：`npm test` 运行 `tests/` 中的 14 个单元测试文件；`npm run typecheck` 检查 TypeScript，
+Electron 检查：`npm test` 运行 `tests/` 中的 19 个单元测试文件；`npm run typecheck` 检查 TypeScript，
 包含 `tests/type-contracts/` 中严格的 onboarding 契约；`npm run build` 构建应用。在原生 Windows 上，POSIX 专用测试
 `tests/unit/shell-command.test.ts`
 可能因缺少 `/bin/sh` 而失败；Linux CI 是事实来源。参见[测试](docs/zh-CN/testing.md#桌面图形界面)
@@ -338,7 +345,10 @@ Electron 检查：`npm test` 运行 `tests/` 中的 14 个单元测试文件；`
   域名模式的 ACME webroot
   `/var/www/xrayebator-domain-acme` 可能保留，需要手工清理。
 - `tcp-mux` 线路仅为兼容保留，它并不是 mux 预设。
-- 不支持 H2、WebSocket、SplitHTTP 以及 Clash/mihomo 订阅。
+- 不支持 H2、WebSocket、SplitHTTP。
+- Clash/mihomo 与 sing-box 格式中没有 PQ 加密线路（这些客户端不支持 VLESS Encryption），也没有
+  xhttp：sing-box 根本没有这种传输方式，而在 Clash/mihomo 中它需要通过 `?xhttp=1` 开启并要求
+  mihomo ≥ 1.19。
 - 界面没有硬性的用户数上限，但实际容量受 CPU、内存、VPS 带宽、线路数量和服务商限制约束。
 - 安装程序和项目更新使用独立的校验、重启与回滚路径，不等同于运行时 `safe_restart_xray` 事务；
   lifecycle 更新后请检查 Xray、DNS 和订阅。
@@ -382,7 +392,7 @@ sudo xrayebator-uninstall               # 移除服务与配置
 | v2rayNG | 部分支持 | 接收 base64 订阅，不使用 HAPP 元数据 |
 | v2rayN | 部分支持 | 支持 VLESS 订阅，不使用 HAPP 专有字段 |
 | Shadowrocket | 手工 | 适合原始 VLESS，不是订阅流程的主力客户端 |
-| sing-box · Hiddify · NekoBox · mihomo | 非目标 | 不要指望 PQ-XHTTP 与 HAPP 路由 |
+| sing-box · Hiddify · NekoBox · mihomo | 订阅 | 通过同一 URL 获得 YAML（Clash/mihomo）或 JSON（sing-box）；其中没有 PQ-XHTTP 与 HAPP 路由 |
 
 - Android：[HAPP](https://www.happ.su/) · [v2rayNG](https://github.com/2dust/v2rayNG) · [NekoBox](https://github.com/MatsuriDayo/NekoBoxForAndroid)
 - iOS：[HAPP](https://www.happ.su/) · [Shadowrocket](https://apps.apple.com/app/shadowrocket/id932747118) · [V2Box](https://apps.apple.com/app/v2box-v2ray-client/id6446814690)

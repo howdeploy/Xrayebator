@@ -1,6 +1,19 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import type { Dns01Input } from '@shared/dns01'
 import type {
+  AlertsStatusResult,
+  AlertsTestResult,
+  AlertsToggleResult,
+  AwgConfResult,
+  BackendGrantResult,
+  BackendSimpleResult,
+  BackendStatusResult,
+  BackendToggleResult,
   DeployEvent,
+  Dns01RepairResult,
+  Dns01StatusResult,
+  Hysteria2LinkResult,
+  Hysteria2SubbodyResult,
   DeployStartPayload,
   ElectronAPI,
   ImportProgressEvent,
@@ -14,8 +27,12 @@ import type {
   ProfileExpireResult,
   ProfileFingerprintInput,
   ProfileFingerprintResult,
+  ProfileLimitInput,
+  ProfileLimitResult,
   ProfilePortInput,
   ProfilePortResult,
+  ProfilePqInput,
+  ProfilePqResult,
   ProfileRevokeInput,
   ProfileRevokeResult,
   ProfileSniInput,
@@ -117,15 +134,107 @@ const api: ElectronAPI = {
       access: SshAccessInput,
       input: ProfileExpireInput
     ): Promise<ProfileExpireResult> =>
-      ipcRenderer.invoke('profiles:setExpire', serverId, access, input)
+      ipcRenderer.invoke('profiles:setExpire', serverId, access, input),
+    setLimit: (
+      serverId: string,
+      access: SshAccessInput,
+      input: ProfileLimitInput
+    ): Promise<ProfileLimitResult> =>
+      ipcRenderer.invoke('profiles:setLimit', serverId, access, input),
+    addPq: (
+      serverId: string,
+      access: SshAccessInput,
+      input: ProfilePqInput
+    ): Promise<ProfilePqResult> =>
+      ipcRenderer.invoke('profiles:addPq', serverId, access, input)
+  },
+
+  dns01: {
+    status: (serverId: string, access: SshAccessInput): Promise<Dns01StatusResult> =>
+      ipcRenderer.invoke('dns01:status', serverId, access),
+    setup: (
+      serverId: string,
+      access: SshAccessInput,
+      input: Dns01Input
+    ): Promise<Dns01RepairResult> => ipcRenderer.invoke('dns01:setup', serverId, access, input),
+    repair: (
+      serverId: string,
+      access: SshAccessInput,
+      input: Dns01Input
+    ): Promise<Dns01RepairResult> => ipcRenderer.invoke('dns01:repair', serverId, access, input)
+  },
+
+  alerts: {
+    status: (serverId: string, access: SshAccessInput): Promise<AlertsStatusResult> =>
+      ipcRenderer.invoke('alerts:status', serverId, access),
+    test: (serverId: string, access: SshAccessInput): Promise<AlertsTestResult> =>
+      ipcRenderer.invoke('alerts:test', serverId, access),
+    toggle: (
+      serverId: string,
+      access: SshAccessInput,
+      on: boolean
+    ): Promise<AlertsToggleResult> => ipcRenderer.invoke('alerts:toggle', serverId, access, on)
+  },
+
+  backends: {
+    status: (serverId: string, access: SshAccessInput): Promise<BackendStatusResult> =>
+      ipcRenderer.invoke('backends:status', serverId, access),
+    hysteria2Grant: (
+      serverId: string,
+      access: SshAccessInput,
+      name: string
+    ): Promise<BackendGrantResult> =>
+      ipcRenderer.invoke('backends:hysteria2Grant', serverId, access, name),
+    hysteria2Install: (
+      serverId: string,
+      access: SshAccessInput,
+      grantAll: boolean
+    ): Promise<BackendSimpleResult> =>
+      ipcRenderer.invoke('backends:hysteria2Install', serverId, access, grantAll),
+    hysteria2Uninstall: (
+      serverId: string,
+      access: SshAccessInput
+    ): Promise<BackendSimpleResult> =>
+      ipcRenderer.invoke('backends:hysteria2Uninstall', serverId, access),
+    hysteria2Subbody: (
+      serverId: string,
+      access: SshAccessInput,
+      on: boolean
+    ): Promise<Hysteria2SubbodyResult> =>
+      ipcRenderer.invoke('backends:hysteria2Subbody', serverId, access, on),
+    hysteria2Link: (
+      serverId: string,
+      access: SshAccessInput,
+      name: string
+    ): Promise<Hysteria2LinkResult> =>
+      ipcRenderer.invoke('backends:hysteria2Link', serverId, access, name),
+    awgGrant: (
+      serverId: string,
+      access: SshAccessInput,
+      name: string
+    ): Promise<BackendGrantResult> =>
+      ipcRenderer.invoke('backends:awgGrant', serverId, access, name),
+    awgInstall: (
+      serverId: string,
+      access: SshAccessInput,
+      grantAll: boolean
+    ): Promise<BackendSimpleResult> =>
+      ipcRenderer.invoke('backends:awgInstall', serverId, access, grantAll),
+    awgUninstall: (serverId: string, access: SshAccessInput): Promise<BackendSimpleResult> =>
+      ipcRenderer.invoke('backends:awgUninstall', serverId, access),
+    awgConf: (serverId: string, access: SshAccessInput, name: string): Promise<AwgConfResult> =>
+      ipcRenderer.invoke('backends:awgConf', serverId, access, name),
+    awg31: (serverId: string, access: SshAccessInput, on: boolean): Promise<BackendToggleResult> =>
+      ipcRenderer.invoke('backends:awg31', serverId, access, on)
   },
 
   server: {
     update: (
       serverId: string,
-      access: SshAccessInput
+      access: SshAccessInput,
+      branch?: string
     ): Promise<ServerMaintenanceResult> =>
-      ipcRenderer.invoke('server:update', serverId, access),
+      ipcRenderer.invoke('server:update', serverId, access, branch),
     uninstall: (serverId: string, access: SshAccessInput): Promise<ServerMaintenanceResult> =>
       ipcRenderer.invoke('server:uninstall', serverId, access)
   }

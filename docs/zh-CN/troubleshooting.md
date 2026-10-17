@@ -97,6 +97,34 @@ sudo xrayebator profile-expire --name 名称 --expire none         # 设为永�
 
 延长后会恢复同一个客户端（同一 uuid），因此设备无需重新导入订阅。在 GUI 中同样的操作位于配置档卡片上的「有效期」按钮。
 
+`410 Gone` 的第二个来源是流量限额耗尽：配置档中带有 `.traffic_disabled: true`（客户端由
+`xrayebator traffic-check` 移除，定时器 `xrayebator-traffic.timer` 每 5 分钟运行一次）。
+
+```bash
+sudo xrayebator profiles | jq '.[] | select(.traffic_disabled) | {name, traffic_used, traffic_limit}'
+sudo xrayebator profile-limit --name 名称 --limit 2GB     # 提高限额
+sudo xrayebator profile-limit --name 名称 --reset         # 重置计数器
+sudo xrayebator profile-limit --name 名称 --limit none    # 取消限额
+```
+
+在 GUI 中，同一个对话框通过配置档卡片上的「限额」按钮打开。如果没有设置限额而用量不为零，请检查
+配置中是否存在 api 入站（`jq '.inbounds[] | select(.tag=="api")' /usr/local/etc/xray/config.json`）
+以及统计定时器是否已启用：`systemctl list-timers xrayebator-traffic.timer`。
+
+相反的情况是所有配置档的用量都为零。Xray 只有在
+`policy.levels."0".statsUserUplink/Downlink: true` 时才统计按用户计数器（`policy.system.statsInbound*`
+是入站统计，无法从中得到按用户的数据）。这些标志由 `install.sh` 写入、由迁移 `traffic_stats_2026`
+补齐，而执行过该迁移早期（有缺陷）版本的服务器由单独的迁移 `traffic_user_stats_2026` 修复——
+它在下次进入菜单时触发。检查状态：
+
+```bash
+jq '.policy.levels."0"' /usr/local/etc/xray/config.json
+ls /usr/local/etc/xray/.traffic_stats_2026 && echo "迁移已经执行过"
+```
+
+在 GUI 中，同一问题的征兆是 `profiles` 输出里没有 `traffic_supported`：管理器不会在统计尚未启用的
+地方显示限额管理。
+
 ## 服务器上有旧配置档但无法使用
 
 如果配置档 JSON 指向的端口已经不在 `config.json` 中，说明配置档已过期。新订阅不会提供这些线路。只有当配置档已经没有任何存活线路时，旧令牌才会返回 `410 Gone`；部分过期的多线路配置档仍可能以 `200` 返回剩余的存活线路。请重新创建配置档，或通过终端菜单修复存活入站；不要发布指向失效端口的链接。
@@ -155,9 +183,168 @@ sudo systemctl restart sshd
 
 多个配置档可以同时使用：不同的订阅、SNI、端口和线路提供了更多绕过封锁的选择，但它们共享同一台 VPS 的资源。
 
+## Hysteria 2 服务无法启动
+
+先读原因——安装会回滚产物，状态需要复现：
+
+```bash
+journalctl -u hysteria-server.service --no-pager | tail -20
+```
+
+已知失败模式（生成器已修复，手工改配置时仍然相关）：
+
+- `invalid config: auth.userpass: empty auth userpass` —— auth 映射的键是 `userpass` 而**不是**
+  `users`，且空映射会被拒绝。生成器始终至少渲染 `_xrayebator_placeholder`（尚无配置档授权时）；
+  手工编辑 `server.yaml` 时，请保持 `userpass:` 下有非空映射。
+- `Changing to the requested working directory failed: Permission denied` —— 后端目录必须为
+  `root:hysteria 0750`；只 `chmod` 而不做配对 `chown` 会留下 `root:root`，单元无法进入目录。
+- 证书不可读 —— `le` 模式下证书是 `root:hysteria 0640` 的副本；续期 deploy-hook 负责刷新。
+
+修复后的干净路径：`hysteria2-uninstall` 然后重新 `hysteria2-install`。
+
+## AWG：接口已启动但没有 `latest handshake`
+
+AmneziaWG 对参数不匹配保持沉默：peer 只是永远不出现握手。请检查「必须一致」组——它与每个
+客户端 `.conf` 必须完全相同：
+
+- `S1`–`S4`（3.x 引擎要求 ≥ 12）、`H1`–`H4`；
+- 对端存在的任何 3.x 键：`HeaderProtectionKey`（3.0）与 `RandomTrailers`（3.1）必须逐字节
+  一致。Xrayebator 仅在 3.1 模式（`awg-31 --on`，新安装默认开启）下输出它们；不匹配通常意味着
+  客户端 `.conf` 早于 3.1 切换——请重新下载——或混入了第三方/手工配置；
+- 客户端应用版本：带 `RandomTrailers` 的配置需要 AmneziaVPN ≥ 5.0.1.5；更旧的客户端可能直接
+  拒绝导入。
+
+然后区分调试区域：服务器上的 `awg show awg0` ——若 peer 在列、握手存在但没有流量，问题在
+`awg-quick`/路由/防火墙区域（`ip_forward`、MASQUERADE 接口），而不是协议参数。
+
+在怀疑参数之前，先验证网络路径本身。AWG 套接字位于内核空间，UDP 端口在 `ss`/`netstat` 中不可见
+——只有在客户端尝试连接时于服务器上抓包才能看到：
+
+```bash
+tcpdump -l -ni <iface> 'udp port <port>'
+```
+
+抓不到任何包 → 数据包根本没有到达：运营商/DPI 过滤（典型的 RU 模式——UDP 443 上的 Hysteria 2
+可以通过，而高位随机 UDP 端口被静默丢弃）。抓到包但 `awg show` 仍无握手 → 客户端发送的是
+「垃圾」：重新签发 `.conf`，检查应用版本（3.1 参数需要 AmneziaVPN ≥ 5.0.1.5），或临时
+`awg-31 --off` 并重新导入以测试 2.0 兼容性。注意：`tcpdump` 重定向到文件时若不加 `-l` 会按块
+缓冲输出——早期数据包在缓冲区刷新前可能不可见。
+
+## AmneziaVPN（完整应用）报错 1000，独立版客户端正常
+
+`错误 1000` 是应用笼统的 `AndroidError`；手机端日志此时显示
+`VPN config format error: No value for client_ip`。应用的原生管道只接受自己的导出形态——
+`amnezia-awg2` 容器、与 `last_config` 并列的服务器级 junk 字段、`protocol_version` 以及压缩
+（`qCompress`）payload。裸 `.conf`（或缺少这些字段的朴素 `vpn://`）会被保存，但客户端部分
+到不了隧道。桌面 GUI 的「QR · AmneziaVPN」二维码构造的正是这种形态——请用它代替粘贴
+`.conf`。Xrayebator 安装的 junk 组与 Amnezia 默认值一致（`Jc` 5、`Jmin` 10、`Jmax` 50、
+`H1`–`H4` = 1..4），正是因为应用的 go-туннель对自定义 junk 应用不完整。
+
+## AWG 安装失败
+
+- 首选路径是 `amnezia/ppa` PPA；在没有对应发行版构建的系列上，Xrayebator 回退到源码编译。内核
+  ≥ 5.6 时需要**完整的** `linux-source` 包——仅有内核头文件不够（模块构建会链接整个源码树）。
+- 安装后验证：`lsmod | grep amneziawg` 显示模块，`awg --version` 有响应。
+- 单元 `awg-quick@awg0` 读取 `/etc/amnezia/amneziawg/awg0.conf` —— Xrayebator 将其维护为指向
+  `/usr/local/etc/xrayebator/backends/awg/awg0.conf` 的 symlink。删除 symlink 会让单元失效，
+  尽管后端配置本身有效。
+- 卸载时软件包与内核模块有意保留在系统中；被移除的是接口、配置、symlink 与防火墙规则。
+
+## 订阅中没有 `hysteria2://` 行
+
+只有同时满足以下条件，`hysteria2://` 链接才会追加到两个订阅主体：
+
+1. Hysteria 2 后端已安装（`xrayebator hysteria2-status`）；
+2. 配置档持有授权（`profiles` JSON → `.backends.hysteria2.password`）；
+3. 注册表标志 `sub_body` 为 `true`（总开关——直接改 `backends.json`，处理器每次请求都会重读
+   注册表，无需重启服务）。
+
+过期或停用的配置档不会得到该行；被吊销的配置档在下次刷新订阅时拿到新凭据。吊销后旧 token
+URL 返回 `404` 属于预期——令牌本身已轮换。
+
 ## quickstart 报错 `apt-get install nginx failed`
 
 新装的 Ubuntu VPS 上，`unattended-upgrades` 可能持有 apt/dpkg 锁约 10 分钟，并且对每个包单独调用 `dpkg`，因此简单的锁检查会从包与包之间的空隙漏过。quickstart 现在会额外等待活跃的 `unattended-upgrade` 进程（12 分钟预算），并给 `apt-get install` 传入 `-o DPkg::Lock::Timeout=180`。当 quickstart 提示 apt 超过预算仍被占用时，请稍后重试部署，或等更新队列结束。该行为由 `validation/test-apt-lock-race.sh` 锁定。
+
+## quickstart 报「certbot failed: ... Connection reset by peer」但仍成功结束
+
+Let's Encrypt 无法获取 http-01 challenge——最常见原因是服务商网络对境外来源过滤 80 端口
+（已用 tcpdump 与多节点探测验证：本机防火墙与 nginx 正常，reset 发生在上游）。在此降级
+模式下部署以 `http_tls` 回退结束：结果 JSON 携带 `degraded:true` 与 `tls_mode:"http_tls"`，
+GUI 将服务器标记为「配置不完整」，密钥通过 SSH 加载。此模式下不存在公共订阅
+URL——不会出现可泄露的 HTTP 链接。恢复 HTTPS 的方式：请服务商为 Let's Encrypt validation 网段解除 80 端口
+封锁（或将域名解析到服务器并使用域名 TLS 模式），然后重新部署；流程幂等，challenge
+可达后即签发 LE 证书。回退结构由 `validation/test-quickstart-tls-fallback.sh` 锁定。
+
+## 收不到 Telegram 告警
+
+请按顺序排查：
+
+```bash
+sudo xrayebator alerts-status   # configured/enabled, timer_installed/timer_active, last_run, events
+sudo xrayebator alerts-test     # 立即向会话投递
+systemctl list-timers xrayebator-monitor.timer
+journalctl -u xrayebator-monitor.service -n 50 --no-pager
+```
+
+- `configured:false` —— 尚未配置：执行 `alerts-setup --token ... --chat-id ...`。
+- `enabled:false` —— 投递已被关闭（`alerts-enable`，或「Telegram 通知」子菜单的第 3 项，主菜单 → `14`）；
+  令牌与会话本身完好。
+- `timer_installed:false` —— 监控单元未安装：在已有服务器上，它由迁移 `alerts_monitor_2026` 在首次
+  进入菜单时安装（或重新运行一次 `quickstart`）。
+- `alerts-test` 返回投递错误 —— 请检查机器人是否已加入会话（群组只需普通成员身份），以及服务器能否
+  访问 `api.telegram.org`。
+- 告警工作正常却没有消息 —— 这是去重的正常行为：同一事件的重复提醒每天最多一次
+  （`ALERTS_REMIND_SEC`），恢复则单独发一条消息。配置后的第一次运行同样不会出声：`boot_id` 只是被
+  记住，以免每台新服务器都发送一次「重启」。
+- `monitor-check` 输出中的 `failed:[...]` —— 事件存在，但 Telegram 没有接受：状态不会被记录，发送会
+  在下一个周期重试（SNI 探测不会随之重跑）。
+
+## Clash/mihomo 或 sing-box 收不到或无法解析订阅
+
+响应格式按 `?target=` 或 User-Agent 选择，默认返回 HAPP 订阅体：没有表明身份的客户端拿到的文本
+它无法解析。
+
+```bash
+# 处理器在指定格式下返回什么（在服务器本机执行）
+curl -s -H 'User-Agent: mihomo/1.19' "http://127.0.0.1:8080/sub/<token>" | head -20
+curl -s "http://127.0.0.1:8080/sub/<token>?target=singbox" | jq '.outbounds | length'
+```
+
+- **Clash/mihomo 报配置错误或看不到代理** —— 请看 YAML 开头的 `# skipped:` 注释行：PQ 线路总是被
+  跳过，xhttp 则在没有 `?xhttp=1` 时被跳过。如果配置档只有 xhttp 线路，YAML 中只会剩下带 `DIRECT`
+  的分组：请加上 `&xhttp=1`（需要 mihomo ≥ 1.19），或签发带 tcp/gRPC 线路的配置档。
+- **mihomo 中缺少部分线路** —— 这是有意为之：`tcp-mux` 以普通 TCP 下发，gRPC 与 Hysteria 2 都在，
+  而 PQ/xhttp 不在（限制清单见 README）。
+- **sing-box 只显示一个 outbound** —— 很可能配置档里只有 xhttp 线路（sing-box 没有这种传输方式）。
+  请检查配置档组成，并手动加上 `?target=singbox`。
+- **格式不切换** —— 服务器上还是旧版处理器：迁移 `subhttp_formats_2026` 会在进入菜单时重新生成
+  `subhttp.sh`；重新运行 `happ-setup` 或用菜单 `6` 重装订阅效果相同。
+- **v2rayNG/HAPP 开始收到 YAML** —— 保存的链接里显式写了 `?target=`，它会覆盖 User-Agent：去掉该
+  参数，或改成 `?target=v2ray`/`?target=happ`。
+
+## DNS-01 无法签发证书
+
+`dns01-setup` 失败时，订阅会保持原有模式（该命令只在签发成功之后才切换标记，因此可用的 URL 不会
+被破坏）。
+
+```bash
+sudo xrayebator dns01-status                 # 提供商、域名、证书有效期、deploy-hook
+tail -30 /tmp/certbot-dns01.log              # certbot 输出：失败原因
+dig +short TXT _acme-challenge.sub.example.com   # 签发期间应出现 TXT 记录
+```
+
+- **Cloudflare：`Invalid token` / `unauthorized`** —— 令牌没有被授予针对该区域的 `DNS:Edit` 权限
+  （Zone → API → Tokens）。全局 API key 不适用：需要 API Token。
+- **Route53：`AccessDenied` / `Unable to locate credentials`** —— 密钥缺少
+  `route53:ChangeResourceRecordSets`/`ListHostedZones` 权限，或区域属于另一个账户。文件
+  `/etc/letsencrypt/xrayebator-dns01-aws.ini` 通过 `AWS_SHARED_CREDENTIALS_FILE` 传给 certbot。
+- **`NXDOMAIN` / `No valid IP addresses`** —— 域名未委派，或 A/AAAA 记录没有指向本 VPS：DNS-01 只
+  确认区域归属，但订阅本身仍必须解析到这台服务器。
+- **TXT 记录未能及时出现** —— 在 certbot 参数中调大 `--dns-cloudflare-propagation-seconds`
+  （默认 30）；响应较慢的区域可用 60–120。
+- **续期** —— 由标准的 `certbot.timer` 完成；renewal 配置中保留 `systemctl reload nginx` 的
+  deploy-hook，因此订阅会自动采用新证书，无需人工操作（`dns01-status` 会显示 `deploy_hook: true`）。
 
 ## 安装或使用过程中出现报错
 

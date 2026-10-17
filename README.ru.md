@@ -6,7 +6,8 @@
 
 <p>
 <strong>инбаунды</strong> · <strong>профили</strong> · <strong>подписка</strong> ·
-<strong>bypass</strong> · <strong>каскад</strong>
+<strong>bypass</strong> · <strong>каскад</strong> · <strong>hysteria2</strong> ·
+<strong>amneziawg</strong>
 </p>
 
 <p>
@@ -28,7 +29,10 @@
 Xrayebator ставит Xray-core, поднимает Reality-инбаунды на случайных портах и для новой установки
 создаёт стандартный schema-v3 HAPP-профиль из семи маршрутов. Существующий семимаршрутный профиль
 может быть переиспользован при наличии живых маршрутов, поэтому при отладке label/schema проверяйте
-profile JSON. Клиент получает маршруты одной HTTPS-ссылкой подписки. Актуальная серверная линия — 3.0;
+profile JSON. Клиент получает маршруты одной HTTPS-ссылкой подписки. Начиная с мультипротокольного
+этапа, на тот же VPS опционально ставятся бэкенды Hysteria 2 (быстрый UDP) и AmneziaWG 2.0/3.1
+(системный VPN) — пункты меню 11–13, гранты per-profile включены в общий жизненный цикл
+revoke/expire. Актуальная серверная линия — 3.0;
 опциональное Electron-десктоп-приложение имеет отдельную версию.
 </p>
 
@@ -98,11 +102,15 @@ Xrayebator решает обе задачи так:
 | Reality-инбаунды | Поднимает инбаунды на свободных портах `30000-60000`, сверяясь и с `config.json`, и с реально слушающими сокетами | `xrayebator` |
 | Multi-route профиль | Один профиль = набор маршрутов с общим `sub_token`; несколько профилей могут делить один порт | `profiles/<name>.json` |
 | HAPP-подписка | Отдаёт список `vless://`, управляемый Global Proxy routing и geo-базы по защищённому токеном URL; наружу публикуется nginx по HTTPS | `subhttp.sh`, `xrayebator-sub.service` |
-| Post-quantum XHTTP | Маршрут `xhttp-pq` работает с VLESS-шифрованием `mlkem768x25519plus` | `.vless_encryption`, `.vless_decryption` |
+| Форматы подписки | Один токен — четыре тела: HAPP, base64 для v2rayNG/v2rayN, Clash/mihomo YAML и sing-box JSON; формат выбирается по `?target=` или по User-Agent | `_subscription_render_*_pure`, `subhttp.sh` |
+| DNS-01 подписка | Сертификат Let's Encrypt проверяется TXT-записью (Cloudflare/Route53), поэтому HTTPS-подписка по домену работает даже там, где хостер фильтрует порт 80. Работает и как фолбэк развёртывания (`quickstart --dns01-*`), и как ремонт уже деградировавшей http_tls-подписки (`repair-dns01`, кнопка «Исправить через DNS-01» в GUI) | `dns01-setup`, `dns01-status`, `repair-dns01` |
+| Пост-квантовое шифрование | VLESS Encryption `mlkem768x25519plus` доступно на любом транспорте (`profile-pq --transport`), а не только на `xhttp-pq`; PQ-маршрут живёт на отдельном порту и добавляется при развёртывании флагом `quickstart --pq` или тумблером в GUI-визарде | `profile-pq`, `.vless_encryption`, `.vless_decryption` |
 | Совместимость с v2ray | `v2rayNG`/`v2rayN` получают классический base64-body без HAPP-метаданных | `subhttp.sh` |
 | Revoke подписки | Генерирует новый 32-символьный hex-токен, старый URL перестаёт работать; полный отзыв (`--full`) меняет ещё и uuid — уже скачанные конфиги отваливаются | `openssl rand -hex 16`, `profile-revoke` |
 | Срок действия профиля | У профиля может быть дата окончания: `xrayebator-expire.timer` снимает клиента с inbound при наступлении срока и возвращает его при продлении (тот же uuid) | `profile-expire`, `expire-check` |
-| Bypass routing | Семь групп доменов можно отправить напрямую через `freedom`, минуя VPN | меню `7` |
+| Учёт трафика и лимиты | Расход по профилю из Stats API: `xrayebator-traffic.timer` накапливает гигабайты, лимит снимает клиента при исчерпании и возвращает при поднятии/сбросе; подписка отдаёт реальные `subscription-userinfo` | `profile-limit`, `traffic-check` |
+| Мониторинг и Telegram-алерты | Раз в 15 минут проверяет сервисы, бэкенды (Hysteria 2, AWG), сроки и лимиты, живость подписки и её TLS-режим, перезагрузку; раз в сутки — доступность SNI из профилей; пишет в Telegram только изменения | меню `14`, `xrayebator-monitor.timer` |
+| Bypass routing | Восемь групп доменов можно отправить напрямую через `freedom`, минуя VPN | меню `7` |
 | Каскад | Переключает catch-all `tcp,udp` на зарубежный VLESS Reality upstream типа `tcp` или `xhttp` | `upstreams/cascade.json` |
 | Self-steal заглушка | Ставит nginx с валидным сертификатом на `127.0.0.1:9444` и заводит Reality fallback на него | меню `9` |
 | Безопасная запись JSON | Пишет временный файл в целевом каталоге, валидирует, атомарно переименовывает | `safe_jq_write` |
@@ -110,7 +118,7 @@ Xrayebator решает обе задачи так:
 | Миграции | Одноразовые миграции по marker-файлам: backup → правка → рестарт → маркер | `run_migration` |
 | geo-базы | Кладёт расширенные `geoip.dat` и `geosite.dat` из релизов Loyalsoldier в `/usr/local/share/xray` | `install.sh` |
 
-Не поддерживается и не заявляется: H2, WebSocket, SplitHTTP, подписки Clash/mihomo.
+Не поддерживается и не заявляется: H2, WebSocket, SplitHTTP.
 
 ## Как это работает
 
@@ -287,10 +295,10 @@ xrayebator (bash)   ──►  /usr/local/etc/xray/
 | Страница | Операции |
 |---|---|
 | Dashboard | Карточки серверов со статусом доступности и установки; пустой экран предлагает «Развернуть новый сервер» или «Подключить существующий»; переключатель языка |
-| Добавить сервер | Развернуть VPS с явным выбором email: `quickstart --email` или `quickstart --without-email`; сохранить сервер и публичную подписку |
+| Добавить сервер | Развернуть VPS с явным выбором email: `quickstart --email` или `quickstart --without-email`; два необязательных блока в визарде — тумблер «PQ-маршрут» (`--pq`) и DNS-01-фолбэк (домен + провайдер + креденшелы, `--dns01-*`), оба выключены по умолчанию; сохранить сервер и публичную подписку |
 | Подключить существующий | Импорт распознанной установки Xrayebator по SSH (пароль или ключ) через read-only `xrayebator inspect --json`; частичные установки сохраняются с диагностикой без автоисправления |
 | Ключи сервера | Обновить публичную подписку, скопировать URL, показать ссылки `vless://` и QR-коды |
-| Настройки сервера | SSH по паролю или приватному ключу, прямой root или sudo; список/создание/удаление профилей, смена fingerprint, SNI и порта, отзыв подписки, срок действия профиля, обновление или удаление Xrayebator; дата срока показывается по часовой зоне сервера даже при другом поясе на компьютере |
+| Настройки сервера | SSH по паролю или приватному ключу, прямой root или sudo; список/создание/удаление профилей, смена fingerprint, SNI и порта, отзыв подписки, срок действия профиля, лимит трафика, PQ-маршрут, подписка и TLS (DNS-01, включая «Исправить через DNS-01» для деградировавшей http_tls-подписки), уведомления Telegram (статус, тест, вкл/выкл), обновление или удаление Xrayebator; дата срока показывается по часовой зоне сервера даже при другом поясе на компьютере |
 
 Выбранные приватный ключ и успешно использованный SSH-пароль сохраняются через `keytar` в системном keychain и повторно используются при следующих SSH-операциях и после перезапуска приложения; в карточке сервера хранятся только несекретные credential id и отображаемое имя ключа. Отдельный sudo-пароль и passphrase зашифрованного ключа не сохраняются и запрашиваются заново. Если системный keychain недоступен, plaintext-фолбека нет: секрет остаётся в памяти main process до завершения текущего сеанса, а GUI предупреждает, что после перезапуска его нужно ввести снова. Также локально сохраняются `subscription_url`, ссылки `vless://` и закреплённый SSH host-key fingerprint. Это bearer/client credentials: защищайте локальные данные и при утечке отзывайте подписку в настройках сервера (полный отзыв меняет и ключ).
 
@@ -307,7 +315,7 @@ npm run dev          # Electron + Vite dev server
 npm run build        # скомпилировать renderer и main process
 ```
 
-Проверки Electron: `npm test` гоняет 14 unit-файлов из `tests/`; `npm run typecheck` проверяет
+Проверки Electron: `npm test` гоняет 19 unit-файлов из `tests/`; `npm run typecheck` проверяет
 TypeScript, включая строгие onboarding-контракты из `tests/type-contracts/`, а `npm run build`
 собирает приложение. На нативном Windows POSIX-тест
 `tests/unit/shell-command.test.ts` может падать из-за отсутствия `/bin/sh`; источник истины — Linux CI.
@@ -353,7 +361,10 @@ TypeScript, включая строгие onboarding-контракты из `te
   чужие сертификаты certbot и правила UFW не трогаются. Domain ACME webroot
   `/var/www/xrayebator-domain-acme` может остаться и потребовать ручной очистки.
 - Маршрут `tcp-mux` сохраняется для совместимости, но это не mux-пресет.
-- H2, WebSocket, SplitHTTP и подписки Clash/mihomo не поддерживаются.
+- H2, WebSocket, SplitHTTP не поддерживаются.
+- В форматах Clash/mihomo и sing-box нет маршрутов с PQ-шифрованием (VLESS Encryption не поддержан их
+  клиентами) и xhttp: в sing-box такого транспорта нет вовсе, а в Clash/mihomo он включается
+  параметром `?xhttp=1` и требует mihomo ≥ 1.19.
 - Ёмкость по пользователям ничем не ограничена в интерфейсе, но упирается в CPU, RAM, канал VPS,
   число маршрутов и лимиты провайдера.
 - Установщик и project updater используют свои validation/restart/rollback paths, отличные от runtime
@@ -400,7 +411,7 @@ sudo xrayebator-uninstall               # снять сервис и конфи�
 | v2rayNG | Частично | Получает base64-подписку, HAPP-метаданные не использует |
 | v2rayN | Частично | Подписки с VLESS работают, HAPP-специфика не используется |
 | Shadowrocket | Вручную | Годится для raw VLESS, не основной клиент для подписки |
-| sing-box · Hiddify · NekoBox · mihomo | Не целевые | Не рассчитывайте на PQ-XHTTP и HAPP-роутинг |
+| sing-box · Hiddify · NekoBox · mihomo | Подписка | Получают YAML (Clash/mihomo) или JSON (sing-box) по тому же URL; PQ-XHTTP и HAPP-роутинга в них нет |
 
 - Android: [HAPP](https://www.happ.su/) · [v2rayNG](https://github.com/2dust/v2rayNG) · [NekoBox](https://github.com/MatsuriDayo/NekoBoxForAndroid)
 - iOS: [HAPP](https://www.happ.su/) · [Shadowrocket](https://apps.apple.com/app/shadowrocket/id932747118) · [V2Box](https://apps.apple.com/app/v2box-v2ray-client/id6446814690)

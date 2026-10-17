@@ -149,6 +149,36 @@ sudo xrayebator profile-expire --name NAME --expire none         # make unlimite
 Renewal restores the very same client (same uuid), so devices do not need to re-import the
 subscription. In the GUI the same action lives behind the “Expiry” button on the profile card.
 
+A second source of `410 Gone` is an exhausted traffic limit: the profile carries
+`.traffic_disabled: true` (the client was removed by `xrayebator traffic-check`, the
+`xrayebator-traffic.timer` unit, every 5 minutes).
+
+```bash
+sudo xrayebator profiles | jq '.[] | select(.traffic_disabled) | {name, traffic_used, traffic_limit}'
+sudo xrayebator profile-limit --name NAME --limit 2GB     # raise the limit
+sudo xrayebator profile-limit --name NAME --reset         # reset the counter
+sudo xrayebator profile-limit --name NAME --limit none    # clear the limit
+```
+
+In the GUI the same dialog opens behind the “Limit” button on the profile card. If no limit was set
+but the usage is non-zero, check that the api inbound exists in the config
+(`jq '.inbounds[] | select(.tag=="api")' /usr/local/etc/xray/config.json`) and that the accounting
+timer is enabled: `systemctl list-timers xrayebator-traffic.timer`.
+
+The opposite situation is zero usage for every profile. Xray keeps per-user counters only when
+`policy.levels."0".statsUserUplink/Downlink: true` (`policy.system.statsInbound*` is inbound
+statistics, per-user data is not taken from it). The flags are set by `install.sh`, added by the
+`traffic_stats_2026` migration, and servers that ran its early (buggy) version are repaired by a
+separate migration `traffic_user_stats_2026` — it fires on the next menu entry. Check the state:
+
+```bash
+jq '.policy.levels."0"' /usr/local/etc/xray/config.json
+ls /usr/local/etc/xray/.traffic_stats_2026 && echo "the migration has already run"
+```
+
+In the GUI the same condition shows up as a missing `traffic_supported` in the `profiles` output:
+the manager does not show limit management where accounting is not yet wired.
+
 ## Old profiles exist on the server but do not work
 
 If the profile JSON points at ports that no longer exist in `config.json`, the profile is stale.
@@ -231,9 +261,192 @@ count and provider limits. Grow the user count gradually and watch the load.
 Multiple profiles can be used at once: different subscriptions, SNIs, ports and routes give more
 options for bypassing blocks, but they share the same VPS resources.
 
+## Hysteria 2 service does not start
+
+Read the reason first — the install rolls its artifacts back, so reproduce the state:
+
+```bash
+journalctl -u hysteria-server.service --no-pager | tail -20
+```
+
+Known failure modes, all fixed in the generator but relevant when hand-editing configs:
+
+- `invalid config: auth.userpass: empty auth userpass` — the auth map key is `userpass`, **not**
+  `users`, and an empty map is rejected. The generator always renders at least the
+  `_xrayebator_placeholder` user while no profile has a grant; if you hand-edit `server.yaml`, keep
+  a non-empty map under `userpass:`.
+- `Changing to the requested working directory failed: Permission denied` — the backend directory
+  must be `root:hysteria 0750`; a `chmod` without the matching `chown` keeps it `root:root` and the
+  unit cannot enter it.
+- Certificate unreadable — in `le` mode the certificates are copies owned `root:hysteria 0640`; the
+  renewal deploy-hook refreshes them.
+
+After fixing, the clean path is `hysteria2-uninstall` followed by a fresh `hysteria2-install`.
+
+## AWG: interface is up but there is no `latest handshake`
+
+AmneziaWG reports parameter mismatches by silence: the peer simply never appears with a handshake.
+Check the must-match group — these must be identical on the server and in every client `.conf`:
+
+- `S1`–`S4` (≥ 12 for 3.x engines), `H1`–`H4`;
+- any 3.x keys present on the other side: `HeaderProtectionKey` (3.0) and `RandomTrailers` (3.1)
+  must match byte-for-byte. Xrayebator emits them only in 3.1 mode (`awg-31 --on`, on by default
+  for new installs); a mismatch usually means the client `.conf` predates a 3.1 switch —
+  re-download it — or was mixed with a hand-made or third-party one;
+- the client application version: `RandomTrailers`-era configs need AmneziaVPN ≥ 5.0.1.5; older
+  clients may refuse to import the config entirely.
+
+Then split the debug zones: `awg show awg0` on the server — if the peer is listed with a handshake
+but no traffic passes, the problem is in the `awg-quick`/routing/firewall zone (`ip_forward`,
+MASQUERADE interface), not in the protocol parameters.
+
+Before blaming the parameters, verify the network path itself. The AWG socket lives in kernel
+space, so the UDP port is invisible to `ss`/`netstat` — the only way to see anything is a capture
+on the server while the client tries to connect:
+
+```bash
+tcpdump -l -ni <iface> 'udp port <port>'
+```
+
+Nothing captured → the packets never arrive: carrier/DPI filtering (a typical RU pattern is
+Hysteria 2 on UDP 443 passing while a high random UDP port is silently dropped). The capture shows
+packets but `awg show` still reports no handshake → the client is sending garbage: re-issue the
+`.conf`, check the app version (3.1 params need AmneziaVPN ≥ 5.0.1.5), or temporarily run
+`awg-31 --off` and re-import to test 2.0 compatibility. Note that `tcpdump` without `-l`
+block-buffers its output when redirected to a file — early packets may not appear until the buffer
+flushes.
+
+## AmneziaVPN (the full app) fails with error 1000, the standalone client works
+
+`error 1000` is the app's generic `AndroidError`; the phone-side log then shows
+`VPN config format error: No value for client_ip`. The app's native pipeline only accepts its own
+export shape — the `amnezia-awg2` container, server-side junk fields next to `last_config`,
+`protocol_version` and a compressed (`qCompress`) payload. A raw `.conf` (or a bare `vpn://`
+without those fields) is stored, but the client part never reaches the tunnel. The desktop GUI's
+«QR · AmneziaVPN» code builds exactly that shape — use it instead of pasting a `.conf`. The junk
+group Xrayebator installs mirrors the Amnezia defaults (`Jc` 5, `Jmin` 10, `Jmax` 50,
+`H1`–`H4` = 1..4) precisely because the app's go-tunnel applies custom junk incompletely.
+
+## AWG install fails
+
+- The primary path is the `amnezia/ppa` PPA; on distribution series without PPA builds Xrayebator
+  falls back to a source build. For kernels ≥ 5.6 that build needs the **full** `linux-source`
+  package — kernel headers alone are not enough (the module build links the whole source tree).
+- Verify after install: `lsmod | grep amneziawg` shows the module, `awg --version` answers.
+- The `awg-quick@awg0` unit reads `/etc/amnezia/amneziawg/awg0.conf` — Xrayebator maintains it as a
+  symlink to `/usr/local/etc/xrayebator/backends/awg/awg0.conf`. Deleting the symlink breaks the
+  unit while the backend config remains valid.
+- On uninstall the packages and the kernel module deliberately stay in the system; only the
+  interface, config, symlink and firewall rule are removed.
+
+## The subscription has no `hysteria2://` line
+
+`hysteria2://` links are appended to both subscription bodies only when all of these hold:
+
+1. the Hysteria 2 backend is installed (`xrayebator hysteria2-status`);
+2. the profile has a grant (`profiles` JSON → `.backends.hysteria2.password`);
+3. the registry flag `sub_body` is `true` (the kill switch — flip it in `backends.json`, the
+   handler re-reads the registry on every request, no service restart needed).
+
+An expired or disabled profile never gets the line; a revoked profile gets a new credential on the
+next subscription fetch. A `404` on a previously working token URL after a revoke is expected — the
+token itself was rotated.
+
 ## Quickstart fails with `apt-get install nginx failed`
 
 On a freshly provisioned Ubuntu VPS, `unattended-upgrades` may hold the apt/dpkg lock for ~10 minutes and invoke `dpkg` separately for every package, so a plain flock check slips into the gap between packages. The quickstart path now also waits for an active `unattended-upgrade` worker (12-minute budget) and passes `-o DPkg::Lock::Timeout=180` to `apt-get install`. Rerun the deployment when it reports the lock is still busy, or wait for the queue to finish. `validation/test-apt-lock-race.sh` locks these behaviors.
+
+## Quickstart reports `certbot failed: ... Connection reset by peer` but still succeeds
+
+Let's Encrypt could not fetch the http-01 challenge — most often the hoster's
+network filters port 80 for foreign sources (verified with tcpdump and
+multi-node probes: our firewall and nginx are fine, the reset happens upstream).
+Since this degradation the deploy finishes in `http_tls` fallback mode: the
+result JSON carries `degraded:true` and `tls_mode:"http_tls"`, the GUI shows the
+server as *Partially configured*, and keys are loaded over SSH. There is **no
+public subscription URL at all** in this mode — no leakable HTTP link exists.
+To restore
+HTTPS, ask the hoster to unblock port 80 for Let's Encrypt validation ranges
+(or point a domain at the server and use the domain TLS mode), then re-run the
+deploy; the run is idempotent and issues the LE certificate when the challenge
+becomes reachable. `validation/test-quickstart-tls-fallback.sh` locks the
+fallback structure.
+
+## Telegram alerts do not arrive
+
+Check in order:
+
+```bash
+sudo xrayebator alerts-status   # configured/enabled, timer_installed/timer_active, last_run, events
+sudo xrayebator alerts-test     # delivery to the chat right now
+systemctl list-timers xrayebator-monitor.timer
+journalctl -u xrayebator-monitor.service -n 50 --no-pager
+```
+
+- `configured:false` — no settings: `alerts-setup --token ... --chat-id ...`.
+- `enabled:false` — delivery is off (`alerts-enable` or item 3 of the "Telegram alerts" submenu,
+  main menu → `14`); the token and the chat themselves are intact.
+- `timer_installed:false` — the monitor unit is not installed: on an existing server the
+  `alerts_monitor_2026` migration installs it on the first menu entry (or a repeated `quickstart`).
+- `alerts-test` returns a delivery error — check that the bot was added to the chat (for a group,
+  ordinary membership is enough) and that `api.telegram.org` is reachable from the server.
+- Silence while alerts work is the deduplication norm: a repeat about the same event arrives no more
+  than once a day (`ALERTS_REMIND_SEC`), a recovery is a separate message. The first run after setup
+  is silent too: `boot_id` is only remembered, so that a "reboot" is not sent on every new server.
+- `failed:[...]` in the `monitor-check` output — the event exists, but Telegram did not accept it:
+  the state is not recorded and the send is retried on the next tick (the SNI probe is not repeated).
+
+## Clash/mihomo or sing-box do not see the subscription
+
+The response format is chosen by `?target=` or by User-Agent, and by default the HAPP body is
+served: a client that did not identify itself receives text it cannot parse.
+
+```bash
+# What the handler serves in the requested format (from the server itself)
+curl -s -H 'User-Agent: mihomo/1.19' "http://127.0.0.1:8080/sub/<token>" | head -20
+curl -s "http://127.0.0.1:8080/sub/<token>?target=singbox" | jq '.outbounds | length'
+```
+
+- **Clash/mihomo complains about the config or sees no proxies** — look at the `# skipped:` comment
+  line at the top of the YAML: PQ routes are always skipped, xhttp only without `?xhttp=1`. If the
+  profile consists of xhttp routes only, the YAML keeps groups with `DIRECT`: add `&xhttp=1`
+  (mihomo ≥ 1.19 is required) or issue a profile with tcp/gRPC routes.
+- **Some routes are missing in mihomo** — that is by design: `tcp-mux` is served as plain TCP, gRPC
+  and Hysteria 2 are there, while PQ/xhttp are not (the limitations are listed in the README).
+- **sing-box shows a single outbound** — the profile probably has xhttp routes only (sing-box has no
+  such transport). Check the profile contents and `?target=singbox` by hand.
+- **The format does not switch** — the server carries an old revision of the handler: the
+  `subhttp_formats_2026` migration regenerates `subhttp.sh` on menu entry; a repeated `happ-setup`
+  or reinstalling the subscription (menu `6`) does the same.
+- **v2rayNG/HAPP started receiving YAML** — an explicit `?target=` in the saved link overrides the
+  User-Agent: remove the parameter or set `?target=v2ray`/`?target=happ`.
+
+## DNS-01 does not issue a certificate
+
+`dns01-setup` fails while the subscription stays in its previous mode (the command switches the
+markers only after a successful issuance, so the working URL is not broken).
+
+```bash
+sudo xrayebator dns01-status                 # provider, domain, certificate lifetime, deploy-hook
+tail -30 /tmp/certbot-dns01.log              # certbot output: the reason for the failure
+dig +short TXT _acme-challenge.sub.example.com   # a TXT record must appear during issuance
+```
+
+- **Cloudflare: `Invalid token` / `unauthorized`** — the token does not carry the `DNS:Edit` right on
+  exactly this zone (Zone → API → Tokens). A token made from the global API key does not work: an
+  API Token is required.
+- **Route53: `AccessDenied` / `Unable to locate credentials`** — the key lacks
+  `route53:ChangeResourceRecordSets`/`ListHostedZones`, or the zone is in another account. The file
+  `/etc/letsencrypt/xrayebator-dns01-aws.ini` is handed to certbot through
+  `AWS_SHARED_CREDENTIALS_FILE`.
+- **`NXDOMAIN` / `No valid IP addresses`** — the domain is not delegated or its A/AAAA record does
+  not point at the VPS: DNS-01 proves ownership of the zone, but the subscription still has to
+  resolve to this server.
+- **The TXT record did not appear in time** — raise `--dns-cloudflare-propagation-seconds` (30 by
+  default) in the certbot arguments; 60–120 helps with slow zones.
+- **Renewal** — the stock `certbot.timer`; the renewal config keeps the deploy-hook that runs
+  `systemctl reload nginx`, so the subscription picks up the new certificate with no manual action
+  (`dns01-status` shows `deploy_hook: true`).
 
 ## An error appeared during installation or use
 

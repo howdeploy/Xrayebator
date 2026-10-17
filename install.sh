@@ -924,6 +924,11 @@ if ! cat > "$config_tmp" << EOF
     "loglevel": "warning",
     "access": "none"
   },
+  "stats": {},
+  "api": {
+    "tag": "api",
+    "services": ["StatsService"]
+  },
   "dns": {
     "servers": [
       "${dns_main_doh}",
@@ -935,6 +940,11 @@ if ! cat > "$config_tmp" << EOF
   "routing": {
     "domainStrategy": "IPIfNonMatch",
     "rules": [
+      {
+        "type": "field",
+        "inboundTag": ["api"],
+        "outboundTag": "api"
+      },
       {
         "type": "field",
         "ip": ["geoip:private"],
@@ -957,7 +967,17 @@ if ! cat > "$config_tmp" << EOF
       }
     ]
   },
-  "inbounds": [],
+  "inbounds": [
+    {
+      "listen": "127.0.0.1",
+      "port": 10085,
+      "protocol": "dokodemo-door",
+      "settings": {
+        "address": "127.0.0.1"
+      },
+      "tag": "api"
+    }
+  ],
   "outbounds": [
     {
       "protocol": "freedom",
@@ -972,13 +992,19 @@ if ! cat > "$config_tmp" << EOF
     }
   ],
   "policy": {
+    "system": {
+      "statsInboundUplink": true,
+      "statsInboundDownlink": true
+    },
     "levels": {
       "0": {
         "handshake": 4,
         "connIdle": 300,
         "uplinkOnly": 2,
         "downlinkOnly": 5,
-        "bufferSize": 4
+        "bufferSize": 4,
+        "statsUserUplink": true,
+        "statsUserDownlink": true
       }
     }
   }
@@ -1118,16 +1144,19 @@ if [[ $? -eq 0 ]] && [[ -s "${DATA_DIR}/sni_list.txt" ]]; then
 else
   echo -e "${YELLOW}⚠ Не удалось загрузить список SNI, создаю базовый...${NC}"
   cat > "${DATA_DIR}/sni_list.txt" << 'EOF'
-www.ozon.ru|ru_whitelist|1
-wildberries.ru|ru_whitelist|1
-sberbank.ru|ru_whitelist|1
-nspk.ru|ru_whitelist|1
+# Аварийный список: не удалось скачать sni_list.txt из репозитория.
+# Первая строка = SNI по умолчанию: www.cloudflare.com (выбор 2026-10-06 —
+# самый стабильный; порядок остального по замеру 03.09.2026, MegaFon).
+www.cloudflare.com|foreign|1
+api-maps.yandex.ru|yandex_cdn|1
+yandex.ru|yandex_cdn|1
+www.samsung.com|foreign|1
+dl.google.com|foreign|1
+swcdn.apple.com|foreign|1
+gateway.icloud.com|foreign|1
+www.lovelive-anime.jp|foreign|1
 speller.yandex.net|yandex_cdn|2
-gosuslugi.ru|ru_whitelist|1
-stats.vk-portal.net|ru_whitelist|1
-github.com|foreign|3
-cloudflare.com|foreign|3
-www.microsoft.com|foreign|3
+www.gosuslugi.ru|ru_whitelist|2
 EOF
 fi
 
