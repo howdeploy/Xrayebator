@@ -50,6 +50,25 @@ LOCK_FILE="${LOCK_FILE:-/usr/local/etc/xray/.xrayebator.lock}"
 BACKENDS_ROOT="${BACKENDS_ROOT:-/usr/local/etc/xrayebator}"
 BACKENDS_DIR="$BACKENDS_ROOT/backends"
 BACKENDS_REGISTRY_FILE="$BACKENDS_ROOT/backends.json"
+# Telegram-алерты: конфиг (0600, содержит токен бота) и состояние дедупликации
+# монитора живут в нейтральном корне; пути переопределяемы для тестов.
+ALERTS_FILE="${ALERTS_FILE:-$BACKENDS_ROOT/alerts.json}"
+ALERTS_STATE_FILE="${ALERTS_STATE_FILE:-$BACKENDS_ROOT/monitor-state.json}"
+TELEGRAM_API_BASE="${TELEGRAM_API_BASE:-https://api.telegram.org}"
+# Напоминание о всё ещё «плохом» событии — не чаще раза в сутки; горизонт
+# «скоро истекает» для профилей — 3 дня (текст сообщения рассчитан на 3 дня).
+ALERTS_REMIND_SEC="${ALERTS_REMIND_SEC:-86400}"
+ALERTS_EXPIRE_WARN_SEC="${ALERTS_EXPIRE_WARN_SEC:-259200}"
+# Периодический probe-test SNI (развитие ручной команды в расписание): проверяем
+# доступность SNI, реально используемых профилями, не чаще раза в сутки; таймаут
+# TLS-хендшейка на один SNI. Loopback-хендлер подписки (subhttp.sh) — источник
+# правды о живости подписки: он не зависит ни от TLS-режима, ни от nginx.
+ALERTS_SNI_INTERVAL_SEC="${ALERTS_SNI_INTERVAL_SEC:-86400}"
+ALERTS_SNI_TIMEOUT="${ALERTS_SNI_TIMEOUT:-8}"
+SUBHTTP_LOCAL_BASE="${SUBHTTP_LOCAL_BASE:-http://127.0.0.1:8080}"
+# Пути systemd-юнитов монитора (переопределяемы для функциональных тестов).
+MONITOR_SERVICE_FILE="${MONITOR_SERVICE_FILE:-/etc/systemd/system/xrayebator-monitor.service}"
+MONITOR_TIMER_FILE="${MONITOR_TIMER_FILE:-/etc/systemd/system/xrayebator-monitor.timer}"
 # P2-fix: пути nginx-сайтов переопределяемы для тестов реальной последовательности
 # (quickstart rollback). В проде — системные каталоги; в функциональном тесте —
 # временная ФС. Совпадает с существующим паттерном CONFIG_FILE/PROFILES_DIR override.
@@ -9076,6 +9095,7 @@ main_menu() {
   run_migration "traffic_stats_2026" "Stats API: учёт трафика профилей" _migrate_traffic_stats_2026 || ((migration_failures++))
   run_migration "traffic_timer_2026" "Таймер учёта трафика профилей (5 мин)" _migrate_traffic_timer_2026 || ((migration_failures++))
   run_migration "subhttp_traffic_2026" "Subhttp: реальный traffic в subscription-userinfo" _migrate_subhttp_traffic_2026 || ((migration_failures++))
+  run_migration "alerts_monitor_2026" "Таймер мониторинга сервера (Telegram-алерты)" _migrate_alerts_monitor_2026 || ((migration_failures++))
 
   # Aggregate report (RESEARCH §«Error reporting»): чтобы пользователь не пропустил
   # failure среди скроллящегося TUI вывода.
@@ -9149,6 +9169,9 @@ main_menu() {
     echo -e "${CYAN}12)${NC} AmneziaWG 2.0 (системный VPN)"
     echo -e "${CYAN}13)${NC} Статус бэкендов"
     echo ""
+    echo -e "${MAGENTA} МОНИТОРИНГ:${NC}"
+    echo -e "${CYAN}14)${NC} Уведомления в Telegram (мониторинг сервера)"
+    echo ""
     echo -e "${RED} 0)${NC} Выход"
     echo ""
     echo -e "${BLUE}╚════════════════════════════════════════╝${NC}"
@@ -9168,6 +9191,7 @@ main_menu() {
       11) hysteria2_menu ;;
       12) awg_menu ;;
       13) backend_status_menu ;;
+      14) telegram_alerts_menu ;;
       0) exit 0 ;;
       *) echo -e "${RED}Неверный выбор${NC}"; sleep 1 ;;
     esac
@@ -12686,6 +12710,7 @@ quickstart_command() {
   run_migration "traffic_stats_2026" "Stats API traffic accounting" _migrate_traffic_stats_2026 >/dev/null 2>&1 || true
   run_migration "traffic_timer_2026" "Traffic accounting timer" _migrate_traffic_timer_2026 >/dev/null 2>&1 || true
   run_migration "subhttp_traffic_2026" "Subhttp traffic userinfo" _migrate_subhttp_traffic_2026 >/dev/null 2>&1 || true
+  run_migration "alerts_monitor_2026" "Telegram alerts monitor timer" _migrate_alerts_monitor_2026 >/dev/null 2>&1 || true
   run_migration "subhttp_happ_xhttp_compat_2026" "Subhttp HAPP XHTTP compat" _migrate_subhttp_happ_xhttp_compat_2026 >/dev/null 2>&1 || true
   run_migration "subhttp_no_default_happ_routing_2026" "Subhttp no default HAPP routing profile" _migrate_subhttp_no_default_happ_routing_2026 >/dev/null 2>&1 || true
   run_migration "subhttp_stale_profiles_410_2026" "Subhttp stale profile 410 handler" _migrate_subhttp_stale_profiles_410_2026 >/dev/null 2>&1 || true
@@ -13187,6 +13212,7 @@ happ_setup_command() {
   run_migration "traffic_stats_2026" "Stats API traffic accounting" _migrate_traffic_stats_2026 >/dev/null 2>&1 || true
   run_migration "traffic_timer_2026" "Traffic accounting timer" _migrate_traffic_timer_2026 >/dev/null 2>&1 || true
   run_migration "subhttp_traffic_2026" "Subhttp traffic userinfo" _migrate_subhttp_traffic_2026 >/dev/null 2>&1 || true
+  run_migration "alerts_monitor_2026" "Telegram alerts monitor timer" _migrate_alerts_monitor_2026 >/dev/null 2>&1 || true
   fix_xray_permissions >/dev/null 2>&1 || true
 
   # 1. Убедиться, что subscription server установлен и запущен
@@ -14575,6 +14601,825 @@ _migrate_subhttp_traffic_2026() {
 }
 
 # ═══════════════════════════════════════════════════════════
+# Telegram-алерты (F2): мониторинг сервера — здоровье сервисов
+# (xray/sub/nginx, а также hysteria-server и интерфейс AWG, если бэкенды
+# установлены), истекающие и отключённые по сроку профили, отключённые по
+# лимиту трафика, живость подписки и её деградация до http_tls, доступность
+# SNI (периодический probe-test, ALERTS_SNI_INTERVAL_SEC), перезагрузка
+# сервера. Конфиг — alerts.json (0600) в нейтральном корне, состояние
+# дедупликации — monitor-state.json.
+# xrayebator-monitor.timer раз в 15 минут выполняет `xrayebator monitor-check`;
+# повторный алерт об одном и том же событии — не чаще ALERTS_REMIND_SEC,
+# восстановление — отдельным сообщением. Все CLI печатают только JSON на stdout.
+# ═══════════════════════════════════════════════════════════
+
+_alerts_configured() { [[ -f "$ALERTS_FILE" ]]; }
+
+_alerts_enabled() {
+  [[ -f "$ALERTS_FILE" ]] || return 1
+  [[ "$(jq -r '.enabled // false' "$ALERTS_FILE" 2>/dev/null)" == "true" ]]
+}
+
+_alerts_hostname() { hostname 2>/dev/null || echo "server"; }
+
+# boot_id меняется при перезагрузке — edge-триггер reboot-события. Вынесено
+# в функцию, чтобы функциональный тест подменил источник (эмуляция reboot).
+_monitor_boot_id() { cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo unknown; }
+
+# ── Точки подмены для функционального теста (тот же приём, что _monitor_boot_id):
+# боевые пути и внешние команды не зашиты в monitor-check напрямую.
+_monitor_sub_dir() { echo "/usr/local/etc/xray"; }
+_monitor_sub_local_base() { echo "$SUBHTTP_LOCAL_BASE"; }
+_monitor_hysteria_unit() { echo "${HYSTERIA2_UNIT:-hysteria-server.service}"; }
+_monitor_awg_iface() { echo "${AWG_IFACE:-awg0}"; }
+
+# Интерфейс AWG поднят? `awg show` возвращает ошибку, если интерфейса нет —
+# отдельный парсинг вывода не нужен.
+_monitor_awg_up() { awg show "$(_monitor_awg_iface)" >/dev/null 2>&1; }
+
+# Уникальные SNI, реально используемые профилями: у multi-route профилей SNI
+# лежит в routes[].sni, у single-route — в top-level .sni (держатся синхронно
+# через update_all_profiles_on_port).
+_monitor_sni_candidates() {
+  local f
+  for f in "$PROFILES_DIR"/*.json; do
+    [[ -f "$f" ]] || continue
+    jq -r '[(.sni // empty), ((.routes // [])[] | .sni // empty)] | .[]' "$f" 2>/dev/null || true
+  done | { grep -E '^[A-Za-z0-9][A-Za-z0-9.-]{1,252}$' || true; } | sort -u
+}
+
+# Доступность SNI с сервера: критерий тот же, что у `probe-test` (openssl s_client
+# → "Verify return code: 0"). Без openssl деградируем к HTTP-коду curl (не 000).
+_monitor_sni_reachable() {
+  local sni="$1" out
+  if command -v openssl >/dev/null 2>&1; then
+    out=$(timeout "$ALERTS_SNI_TIMEOUT" openssl s_client -connect "${sni}:443" \
+      -servername "$sni" -tls1_3 </dev/null 2>&1) || true
+    grep -q "Verify return code: 0" <<<"$out"
+    return
+  fi
+  local code
+  code=$(curl -s -o /dev/null --connect-timeout "$ALERTS_SNI_TIMEOUT" \
+    --max-time "$ALERTS_SNI_TIMEOUT" -w '%{http_code}' "https://${sni}/" 2>/dev/null || echo 000)
+  [[ "$code" != "000" ]]
+}
+
+# Живость loopback-хендлера подписки: HTTP-код кладётся в MONITOR_SUB_CODE,
+# возврат 0 — 200 и в теле есть ссылка (vless:// или hysteria2://).
+MONITOR_SUB_CODE=""
+_monitor_sub_probe() {
+  local token="$1" body code
+  MONITOR_SUB_CODE="000"
+  body=$(mktemp) || return 1
+  code=$(curl -sS --connect-timeout 3 --max-time 15 -o "$body" -w '%{http_code}' \
+    "$(_monitor_sub_local_base)/sub/${token}" 2>/dev/null) || code="000"
+  MONITOR_SUB_CODE="${code:-000}"
+  if [[ "$MONITOR_SUB_CODE" == "200" ]] && grep -qE '(vless|hysteria2)://' "$body" 2>/dev/null; then
+    rm -f "$body"
+    return 0
+  fi
+  rm -f "$body"
+  return 1
+}
+
+# Результат последней SNI-пробы в состоянии монитора: он нужен, чтобы не гонять
+# дорогой probe на каждом 15-минутном тике, пока идёт retry недоставленного алерта.
+_monitor_sni_state_write() {
+  local checked="$1" ok="$2" bad="$3" sig="$4" tmp
+  tmp=$(mktemp) || return 1
+  if jq --argjson c "$checked" --argjson o "$ok" --argjson b "$bad" --arg sg "$sig" \
+       --argjson lr "$(date +%s)" \
+       '.sni = {last: $lr, checked: $c, ok: $o, bad: $b, sig: $sg}' \
+       "$ALERTS_STATE_FILE" > "$tmp" 2>/dev/null; then
+    chmod 600 "$tmp" 2>/dev/null || true
+    mv "$tmp" "$ALERTS_STATE_FILE"
+    return 0
+  fi
+  rm -f "$tmp"
+  return 1
+}
+
+# Отправка произвольного сообщения с явными токеном/чатом (setup-проверка).
+_telegram_send_raw() {
+  local token="$1" chat="$2" text="$3" resp
+  resp=$(curl -sS --max-time 20 -X POST \
+    "$TELEGRAM_API_BASE/bot$token/sendMessage" \
+    --data-urlencode "chat_id=$chat" \
+    --data-urlencode "text=$text" \
+    --data-urlencode "disable_web_page_preview=true" 2>/dev/null) || return 1
+  [[ "$(jq -r '.ok // false' <<<"$resp" 2>/dev/null)" == "true" ]]
+}
+
+# Отправка в чат из конфига. 0 — доставлено, 1 — нет.
+_telegram_send() {
+  local text="$1" token chat
+  token=$(jq -r '.token // empty' "$ALERTS_FILE" 2>/dev/null)
+  chat=$(jq -r '.chat_id // empty' "$ALERTS_FILE" 2>/dev/null)
+  [[ -n "$token" && -n "$chat" ]] || return 1
+  _telegram_send_raw "$token" "$chat" "$text"
+}
+
+# Валидация токена через getMe: печатает username бота; 1 — токен/сеть не приняты.
+_telegram_get_me() {
+  local token="$1" resp
+  resp=$(curl -sS --max-time 20 "$TELEGRAM_API_BASE/bot$token/getMe" 2>/dev/null) || return 1
+  [[ "$(jq -r '.ok // false' <<<"$resp" 2>/dev/null)" == "true" ]] || return 1
+  jq -r '.result.username // "bot"' <<<"$resp"
+}
+
+# Обновление записи одного события в monitor-state.json.
+_monitor_state_write() {
+  local key="$1" state="$2" sig="$3" sent="$4" tmp
+  tmp=$(mktemp) || return 1
+  if jq --arg k "$key" --arg s "$state" --arg sg "$sig" --argjson sent "${sent:-0}" \
+       '.events[$k] = {state: $s, sig: $sg, sent: $sent}' \
+       "$ALERTS_STATE_FILE" > "$tmp" 2>/dev/null; then
+    chmod 600 "$tmp" 2>/dev/null || true
+    mv "$tmp" "$ALERTS_STATE_FILE"
+    return 0
+  fi
+  rm -f "$tmp"
+  return 1
+}
+
+# Дедупликация одного события. state: ok|bad; sig — подпись содержимого
+# (смена подписи при bad = новое событие). Возврат: 0 — отправлен bad-алерт,
+# 1 — отправлено восстановление, 2 — отправки не было, 3 — отправка не удалась
+# (состояние не записывается — повтор на следующем запуске).
+_monitor_apply_event() {
+  local key="$1" state="$2" sig="$3" bad_msg="$4" ok_msg="$5"
+  local now prev_state prev_sig prev_sent send=0 msg=""
+  now=$(date +%s)
+  prev_state=$(jq -r --arg k "$key" '.events[$k].state // "ok"' "$ALERTS_STATE_FILE" 2>/dev/null)
+  prev_sig=$(jq -r --arg k "$key" '.events[$k].sig // ""' "$ALERTS_STATE_FILE" 2>/dev/null)
+  prev_sent=$(jq -r --arg k "$key" '.events[$k].sent // 0' "$ALERTS_STATE_FILE" 2>/dev/null)
+  [[ "$prev_sent" =~ ^[0-9]+$ ]] || prev_sent=0
+
+  if [[ "$state" == "bad" ]]; then
+    if [[ "$prev_state" != "bad" || "$prev_sig" != "$sig" ]]; then
+      send=1; msg="$bad_msg"
+    elif (( now - prev_sent >= ALERTS_REMIND_SEC )); then
+      send=1; msg="$bad_msg (напоминание)"
+    fi
+  elif [[ "$prev_state" == "bad" ]]; then
+    send=1; msg="$ok_msg"
+  fi
+
+  if (( send )); then
+    _telegram_send "$msg" || return 3
+    prev_sent=$now
+  fi
+
+  _monitor_state_write "$key" "$state" "$sig" "$prev_sent" || true
+  if (( send )); then
+    [[ "$state" == "bad" ]] && return 0
+    return 1
+  fi
+  return 2
+}
+
+# xrayebator monitor-check — одна итерация мониторинга (systemd-таймер, 15 мин).
+monitor_check_command() {
+  export TERM=dumb
+  export XRAYEBATOR_NONINTERACTIVE=1
+
+  local force_sni=0
+  [[ "${1:-}" == "--force-sni" ]] && force_sni=1
+
+  if ! _alerts_enabled; then
+    echo '{"ok":true,"enabled":false,"skipped":true}'
+    return 0
+  fi
+
+  local host now
+  host=$(_alerts_hostname)
+  now=$(date +%s)
+
+  if [[ ! -f "$ALERTS_STATE_FILE" ]]; then
+    mkdir -p "$BACKENDS_ROOT" 2>/dev/null || true
+    echo '{"events":{}}' > "$ALERTS_STATE_FILE" 2>/dev/null || true
+    chmod 600 "$ALERTS_STATE_FILE" 2>/dev/null || true
+  fi
+
+  local sent=() recovered=() failed=() rc=0
+  local boot_id prev_boot
+  boot_id=$(_monitor_boot_id)
+  prev_boot=$(jq -r '.boot_id // ""' "$ALERTS_STATE_FILE" 2>/dev/null)
+
+  # --- Перезагрузка (edge-triggered; первый запуск только запоминает boot_id) ---
+  # boot_id обновляем ТОЛЬКО после доставки: у остальных событий недоставленный
+  # алерт повторяется на следующем тике, а reboot-событие при безусловной записи
+  # потерялось бы навсегда.
+  local boot_persist="$boot_id"
+  if [[ -n "$prev_boot" && "$prev_boot" != "$boot_id" ]]; then
+    if _telegram_send "🔄 $host: сервер перезапущен ($(uptime -p 2>/dev/null || echo "uptime unknown"))"; then
+      sent+=(reboot)
+    else
+      failed+=(reboot)
+      boot_persist="$prev_boot"
+    fi
+  fi
+
+  # --- Здоровье сервисов: xray всегда; sub — если юнит есть; nginx — если включён ---
+  local unit key state
+  for unit in xray.service xrayebator-sub.service nginx.service; do
+    case "$unit" in
+      xrayebator-sub.service) [[ -f "/etc/systemd/system/$unit" ]] || continue ;;
+      nginx.service) systemctl is-enabled --quiet "$unit" 2>/dev/null || continue ;;
+    esac
+    key="svc_${unit%%.*}"
+    if systemctl is-active --quiet "$unit" 2>/dev/null; then state=ok; else state=bad; fi
+    rc=0
+    _monitor_apply_event "$key" "$state" "$state" \
+      "🔴 $host: $unit не работает" \
+      "✅ $host: $unit снова работает" || rc=$?
+    case $rc in
+      0) sent+=("$key") ;;
+      1) recovered+=("$key") ;;
+      3) failed+=("$key") ;;
+    esac
+  done
+
+  # --- Бэкенды мультипротокольного этапа: hysteria2 (systemd), AWG (интерфейс) ---
+  # Проверяем только установленные бэкенды: реестр — источник правды, иначе
+  # несуществующий юнит/интерфейс давал бы вечный алерт на чистой установке.
+  local bk_unit
+  if _backend_installed hysteria2; then
+    bk_unit=$(_monitor_hysteria_unit)
+    if systemctl is-active --quiet "$bk_unit" 2>/dev/null; then state=ok; else state=bad; fi
+    rc=0
+    _monitor_apply_event "svc_hysteria2" "$state" "$state" \
+      "🔴 $host: Hysteria 2 ($bk_unit) не работает" \
+      "✅ $host: Hysteria 2 снова работает" || rc=$?
+    case $rc in
+      0) sent+=(svc_hysteria2) ;;
+      1) recovered+=(svc_hysteria2) ;;
+      3) failed+=(svc_hysteria2) ;;
+    esac
+  fi
+  if _backend_installed awg; then
+    if _monitor_awg_up; then state=ok; else state=bad; fi
+    rc=0
+    _monitor_apply_event "svc_awg" "$state" "$state" \
+      "🔴 $host: AmneziaWG ($(_monitor_awg_iface)) не поднят" \
+      "✅ $host: AmneziaWG снова работает" || rc=$?
+    case $rc in
+      0) sent+=(svc_awg) ;;
+      1) recovered+=(svc_awg) ;;
+      3) failed+=(svc_awg) ;;
+    esac
+  fi
+
+  # --- Профили: истекают (≤3 дней) / отключены по сроку — одним агрегатом ---
+  local f name exp dis
+  local soon_names=() soon_detail=() expired_names=()
+  for f in "$PROFILES_DIR"/*.json; do
+    [[ -f "$f" ]] || continue
+    name=$(basename "$f" .json)
+    [[ "$name" =~ ^[a-zA-Z0-9_-]{1,48}$ ]] || continue
+    exp=$(jq -r '.expire // 0' "$f" 2>/dev/null)
+    [[ "$exp" =~ ^[0-9]+$ ]] || exp=0
+    dis=$(jq -r '.expire_disabled // false' "$f" 2>/dev/null)
+    if [[ "$exp" -gt 0 && "$dis" == "true" ]]; then
+      expired_names+=("$name")
+    elif [[ "$exp" -gt 0 ]] && (( exp - now <= ALERTS_EXPIRE_WARN_SEC )); then
+      soon_names+=("$name")
+      soon_detail+=("$name (до $(date -d @"$exp" +%F 2>/dev/null || echo '?'))")
+    fi
+  done
+  local exp_sig="" exp_msg=""
+  if (( ${#soon_names[@]} > 0 )); then
+    exp_sig="soon:$(IFS=,; echo "${soon_names[*]}")"
+    exp_msg="⏳ $host: истекают сроки (≤3 дней): $(IFS=,; echo "${soon_detail[*]}")"
+  fi
+  if (( ${#expired_names[@]} > 0 )); then
+    [[ -n "$exp_sig" ]] && exp_sig+="|"
+    exp_sig+="expired:$(IFS=,; echo "${expired_names[*]}")"
+    [[ -n "$exp_msg" ]] && exp_msg+=$'\n'
+    exp_msg+="⛔ $host: отключены по сроку: $(IFS=,; echo "${expired_names[*]}")"
+  fi
+  rc=0
+  if [[ -n "$exp_sig" ]]; then
+    _monitor_apply_event "profiles_expiry" bad "$exp_sig" "$exp_msg" "" || rc=$?
+  else
+    _monitor_apply_event "profiles_expiry" ok "" "" "✅ $host: сроки профилей в порядке" || rc=$?
+  fi
+  case $rc in
+    0) sent+=(profiles_expiry) ;;
+    1) recovered+=(profiles_expiry) ;;
+    3) failed+=(profiles_expiry) ;;
+  esac
+
+  # --- Профили, отключённые по лимиту трафика ---
+  local lim_names=()
+  for f in "$PROFILES_DIR"/*.json; do
+    [[ -f "$f" ]] || continue
+    name=$(basename "$f" .json)
+    [[ "$name" =~ ^[a-zA-Z0-9_-]{1,48}$ ]] || continue
+    [[ "$(jq -r '.traffic_disabled // false' "$f" 2>/dev/null)" == "true" ]] && lim_names+=("$name")
+  done
+  rc=0
+  if (( ${#lim_names[@]} > 0 )); then
+    local lim_join
+    lim_join=$(IFS=,; echo "${lim_names[*]}")
+    _monitor_apply_event "traffic_limited" bad "$lim_join" \
+      "🚫 $host: отключены по лимиту трафика: $lim_join" "" || rc=$?
+  else
+    _monitor_apply_event "traffic_limited" ok "" "" "✅ $host: лимиты трафика в порядке" || rc=$?
+  fi
+  case $rc in
+    0) sent+=(traffic_limited) ;;
+    1) recovered+=(traffic_limited) ;;
+    3) failed+=(traffic_limited) ;;
+  esac
+
+  # --- Подписка: loopback-хендлер отвечает + режим TLS не деградировал ---
+  # Хендлер (:8080) — источник правды: nginx лишь проксирует его, поэтому проба
+  # не зависит от TLS-режима. Токен берём у первого профиля с валидным sub_token.
+  local sub_dir sub_mode="" sub_token="" sub_mode_known=0
+  sub_dir=$(_monitor_sub_dir)
+  if [[ -f "$sub_dir/.subscription_installed" ]]; then
+    sub_mode=$(tr -d '\r\n' < "$sub_dir/.subscription_mode" 2>/dev/null || true)
+    [[ -n "$sub_mode" ]] && sub_mode_known=1
+    for f in "$PROFILES_DIR"/*.json; do
+      [[ -f "$f" ]] || continue
+      sub_token=$(jq -r '.sub_token // empty' "$f" 2>/dev/null)
+      if [[ "$sub_token" =~ ^[a-f0-9]{32}$ ]]; then break; fi
+      sub_token=""
+    done
+  fi
+
+  if [[ -n "$sub_token" ]]; then
+    if _monitor_sub_probe "$sub_token"; then state=ok; else state=bad; fi
+    rc=0
+    if [[ "$state" == "bad" ]]; then
+      _monitor_apply_event "sub_handler" bad "bad" \
+        "🔴 $host: подписка не отвечает (loopback :8080, HTTP $MONITOR_SUB_CODE)" "" || rc=$?
+    else
+      _monitor_apply_event "sub_handler" ok "" "" "✅ $host: подписка отвечает" || rc=$?
+    fi
+    case $rc in
+      0) sent+=(sub_handler) ;;
+      1) recovered+=(sub_handler) ;;
+      3) failed+=(sub_handler) ;;
+    esac
+  fi
+
+  # Деградация http_tls (LE не смог проверить http-01, подписка ушла на HTTP
+  # без сертификата) — оператору важно узнать об этом, а не искать причину самому.
+  if (( sub_mode_known )); then
+    case "$sub_mode" in
+      ip_tls|domain_tls) state=ok ;;
+      *) state=bad ;;
+    esac
+    rc=0
+    if [[ "$state" == "bad" ]]; then
+      _monitor_apply_event "sub_tls" bad "$sub_mode" \
+        "🟡 $host: подписка деградировала до HTTP (режим $sub_mode) — TLS-сертификат не выпущен" "" || rc=$?
+    else
+      _monitor_apply_event "sub_tls" ok "" "" "✅ $host: подписка по HTTPS (режим $sub_mode)" || rc=$?
+    fi
+    case $rc in
+      0) sent+=(sub_tls) ;;
+      1) recovered+=(sub_tls) ;;
+      3) failed+=(sub_tls) ;;
+    esac
+  fi
+
+  # --- SNI: периодический probe-test (ручная команда probe-test в расписании) ---
+  # Дорогой probe идёт не чаще ALERTS_SNI_INTERVAL_SEC, а результат хранится в
+  # состоянии: недоставленный алерт повторяется на следующем тике БЕЗ повторной
+  # пробы (--force-sni — принудительно, для оператора и тестов).
+  local sni_last sni_checked sni_ok sni_bad sni_sig
+  sni_last=$(jq -r '.sni.last // 0' "$ALERTS_STATE_FILE" 2>/dev/null)
+  [[ "$sni_last" =~ ^[0-9]+$ ]] || sni_last=0
+  if (( force_sni )) || (( now - sni_last >= ALERTS_SNI_INTERVAL_SEC )); then
+    local sni_list=() s
+    local sni_bad_names=()
+    mapfile -t sni_list < <(_monitor_sni_candidates)
+    sni_checked=${#sni_list[@]}
+    sni_ok=0
+    sni_bad=0
+    for s in "${sni_list[@]}"; do
+      if _monitor_sni_reachable "$s"; then
+        ((sni_ok++)) || true
+      else
+        ((sni_bad++)) || true
+        sni_bad_names+=("$s")
+      fi
+    done
+    sni_sig=""
+    (( sni_bad > 0 )) && sni_sig="$(IFS=,; echo "${sni_bad_names[*]}")"
+    _monitor_sni_state_write "$sni_checked" "$sni_ok" "$sni_bad" "$sni_sig" || true
+  else
+    sni_checked=$(jq -r '.sni.checked // 0' "$ALERTS_STATE_FILE" 2>/dev/null)
+    sni_ok=$(jq -r '.sni.ok // 0' "$ALERTS_STATE_FILE" 2>/dev/null)
+    sni_bad=$(jq -r '.sni.bad // 0' "$ALERTS_STATE_FILE" 2>/dev/null)
+    sni_sig=$(jq -r '.sni.sig // ""' "$ALERTS_STATE_FILE" 2>/dev/null)
+  fi
+  [[ "$sni_checked" =~ ^[0-9]+$ ]] || sni_checked=0
+  [[ "$sni_ok" =~ ^[0-9]+$ ]] || sni_ok=0
+  [[ "$sni_bad" =~ ^[0-9]+$ ]] || sni_bad=0
+
+  # rc=0 — успешно отправленный bad-алерт; 2 («отправки не было») ставим только в
+  # ветке пропуска: `|| rc=$?` не трогает rc на успехе, поэтому preset обязан
+  # совпадать с успешным исходом, иначе событие не попадёт в sent.
+  rc=0
+  if (( sni_checked == 0 )); then
+    rc=2 # профилей/SNI ещё нет — событие не трогаем (свежая установка до профилей)
+  elif (( sni_bad > 0 )); then
+    if (( sni_ok == 0 )); then
+      _monitor_apply_event "sni_reach" bad "$sni_sig" \
+        "📡 $host: SNI недоступны (0/$sni_checked): $sni_sig" "" || rc=$?
+    else
+      _monitor_apply_event "sni_reach" bad "$sni_sig" \
+        "🟡 $host: часть SNI недоступна ($sni_ok/$sni_checked доступно): $sni_sig" "" || rc=$?
+    fi
+  else
+    _monitor_apply_event "sni_reach" ok "" "" \
+      "✅ $host: SNI доступны ($sni_ok/$sni_checked)" || rc=$?
+  fi
+  case $rc in
+    0) sent+=(sni_reach) ;;
+    1) recovered+=(sni_reach) ;;
+    3) failed+=(sni_reach) ;;
+  esac
+
+  # --- Финализация состояния: boot_id и время проверки ---
+  local tmp
+  tmp=$(mktemp) 2>/dev/null || tmp=""
+  if [[ -n "$tmp" ]] && jq --arg b "$boot_persist" --argjson lr "$now" \
+       '.boot_id = $b | .last_run = $lr' "$ALERTS_STATE_FILE" > "$tmp" 2>/dev/null; then
+    chmod 600 "$tmp" 2>/dev/null || true
+    mv "$tmp" "$ALERTS_STATE_FILE"
+  else
+    [[ -n "$tmp" ]] && rm -f "$tmp"
+  fi
+
+  jq -n \
+    --arg sent "$(IFS=,; echo "${sent[*]:-}")" \
+    --arg recovered "$(IFS=,; echo "${recovered[*]:-}")" \
+    --arg failed "$(IFS=,; echo "${failed[*]:-}")" \
+    --argjson sni_checked "$sni_checked" \
+    --argjson sni_ok "$sni_ok" \
+    --argjson sni_bad "$sni_bad" \
+    --arg sni_sig "$sni_sig" \
+    '{ok: true, enabled: true,
+      sent: ($sent | split(",") | map(select(length > 0))),
+      recovered: ($recovered | split(",") | map(select(length > 0))),
+      failed: ($failed | split(",") | map(select(length > 0))),
+      sni: {checked: $sni_checked, ok: $sni_ok, bad: $sni_bad,
+            unavailable: ($sni_sig | split(",") | map(select(length > 0)))}}'
+  return 0
+}
+
+# xrayebator alerts-setup --token T --chat-id C — настроить/переключить алерты.
+alerts_setup_command() {
+  export TERM=dumb
+  export XRAYEBATOR_NONINTERACTIVE=1
+
+  local token="" chat=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --token) token="$2"; shift 2 ;;
+      --chat-id) chat="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  if [[ -z "$token" || -z "$chat" ]]; then
+    echo '{"ok":false,"error":"Укажите --token TELEGRAM_BOT_TOKEN и --chat-id CHAT_ID"}'
+    return 1
+  fi
+  if [[ ! "$token" =~ ^[0-9]{5,}:[A-Za-z0-9_-]{20,}$ ]]; then
+    echo '{"ok":false,"error":"Некорректный формат токена (токен выдаёт @BotFather)"}'
+    return 1
+  fi
+  if [[ ! "$chat" =~ ^-?[0-9]{1,20}$ ]]; then
+    echo '{"ok":false,"error":"Некорректный chat_id (числовой id; у групп отрицательный)"}'
+    return 1
+  fi
+
+  local bot_username
+  if ! bot_username=$(_telegram_get_me "$token"); then
+    echo '{"ok":false,"error":"Telegram не принял токен (getMe): проверьте токен и доступ в сеть"}'
+    return 1
+  fi
+  # Проверка доставки ДО сохранения конфига: чат может быть недоступен боту.
+  if ! _telegram_send_raw "$token" "$chat" \
+      "✅ Xrayebator: уведомления подключены ($(_alerts_hostname))"; then
+    echo "{\"ok\":false,\"error\":\"Токен верный, но сообщение не доставлено: добавьте бота @$bot_username в чат $chat\"}"
+    return 1
+  fi
+
+  mkdir -p "$BACKENDS_ROOT" 2>/dev/null
+  chmod 755 "$BACKENDS_ROOT" 2>/dev/null || true
+
+  local now tmp
+  now=$(date +%s)
+  tmp=$(mktemp) || { echo '{"ok":false,"error":"mktemp недоступен"}'; return 1; }
+  if ! jq -n --arg t "$token" --arg c "$chat" --arg u "$bot_username" --argjson cr "$now" \
+       '{enabled: true, token: $t, chat_id: $c, bot_username: $u, created: $cr}' > "$tmp"; then
+    rm -f "$tmp"
+    echo '{"ok":false,"error":"Не удалось записать конфиг алертов"}'
+    return 1
+  fi
+  chmod 600 "$tmp" 2>/dev/null || true
+  if ! mv "$tmp" "$ALERTS_FILE"; then
+    rm -f "$tmp"
+    echo '{"ok":false,"error":"Не удалось сохранить конфиг алертов"}'
+    return 1
+  fi
+  chown root:root "$ALERTS_FILE" 2>/dev/null || true
+
+  local trc=0 timer_installed=true
+  _install_monitor_timer || trc=$?
+  [[ "$trc" -le 1 ]] || timer_installed=false
+
+  jq -n --arg c "$chat" --arg u "$bot_username" --argjson timer "$timer_installed" \
+    '{ok: true, chat_id: $c, bot_username: $u, test_sent: true, timer_installed: $timer}'
+  return 0
+}
+
+# xrayebator alerts-status — состояние алертов (токен не показывается).
+alerts_status_command() {
+  export TERM=dumb
+  export XRAYEBATOR_NONINTERACTIVE=1
+
+  local configured=false enabled=false chat="" bot="" last_run=0
+  if _alerts_configured; then
+    configured=true
+    [[ "$(jq -r '.enabled // false' "$ALERTS_FILE" 2>/dev/null)" == "true" ]] && enabled=true
+    chat=$(jq -r '.chat_id // ""' "$ALERTS_FILE" 2>/dev/null)
+    bot=$(jq -r '.bot_username // ""' "$ALERTS_FILE" 2>/dev/null)
+  fi
+
+  local timer_installed=false timer_active=false
+  [[ -f "$MONITOR_TIMER_FILE" ]] && timer_installed=true
+  systemctl is-active --quiet xrayebator-monitor.timer 2>/dev/null && timer_active=true
+
+  last_run=$(jq -r '.last_run // 0' "$ALERTS_STATE_FILE" 2>/dev/null)
+  [[ "$last_run" =~ ^[0-9]+$ ]] || last_run=0
+  local events_json='{}'
+  [[ -f "$ALERTS_STATE_FILE" ]] \
+    && events_json=$(jq -c '.events // {}' "$ALERTS_STATE_FILE" 2>/dev/null || echo '{}')
+
+  local sni_json='{}'
+  [[ -f "$ALERTS_STATE_FILE" ]] \
+    && sni_json=$(jq -c '.sni // {}' "$ALERTS_STATE_FILE" 2>/dev/null || echo '{}')
+
+  jq -n --argjson configured "$configured" --argjson enabled "$enabled" \
+    --arg chat "$chat" --arg bot "$bot" \
+    --argjson timer_installed "$timer_installed" --argjson timer_active "$timer_active" \
+    --argjson last_run "$last_run" --argjson events "$events_json" --argjson sni "$sni_json" \
+    '{ok: true, configured: $configured, enabled: $enabled, chat_id: $chat,
+      bot_username: $bot, timer_installed: $timer_installed, timer_active: $timer_active,
+      last_run: $last_run, events: $events, sni: $sni}'
+  return 0
+}
+
+# xrayebator alerts-test — тестовое сообщение в настроенный чат.
+alerts_test_command() {
+  export TERM=dumb
+  export XRAYEBATOR_NONINTERACTIVE=1
+
+  if ! _alerts_enabled; then
+    echo '{"ok":false,"error":"Алерты не настроены или выключены (alerts-setup / alerts-enable)"}'
+    return 1
+  fi
+  if _telegram_send "🔔 Xrayebator: тестовое сообщение ($(_alerts_hostname))"; then
+    echo '{"ok":true,"sent":true}'
+    return 0
+  fi
+  echo '{"ok":false,"error":"Telegram API не принял сообщение: проверьте токен, chat_id и доступ в сеть"}'
+  return 1
+}
+
+# Общий код alerts-enable / alerts-disable (файл уже существует).
+_alerts_set_enabled() {
+  local target="$1" flag=false
+  [[ "$target" == "enable" ]] && flag=true
+
+  if ! _alerts_configured; then
+    echo '{"ok":false,"error":"Алерты не настроены — сначала alerts-setup --token ... --chat-id ..."}'
+    return 1
+  fi
+  local tmp
+  tmp=$(mktemp) || { echo '{"ok":false,"error":"mktemp недоступен"}'; return 1; }
+  if ! jq --argjson e "$flag" '.enabled = $e' "$ALERTS_FILE" > "$tmp"; then
+    rm -f "$tmp"
+    echo '{"ok":false,"error":"Не удалось обновить конфиг алертов"}'
+    return 1
+  fi
+  chmod 600 "$tmp" 2>/dev/null || true
+  mv "$tmp" "$ALERTS_FILE"
+  chown root:root "$ALERTS_FILE" 2>/dev/null || true
+  jq -n --argjson e "$flag" '{ok: true, enabled: $e}'
+  return 0
+}
+
+alerts_enable_command() {
+  export TERM=dumb
+  export XRAYEBATOR_NONINTERACTIVE=1
+  _alerts_set_enabled enable
+}
+
+alerts_disable_command() {
+  export TERM=dumb
+  export XRAYEBATOR_NONINTERACTIVE=1
+  _alerts_set_enabled disable
+}
+
+# systemd-таймер мониторинга (15 мин). Контракт no-op как у expire/traffic:
+# уже включён и ExecStart актуален → return 1; установлен → return 0.
+_install_monitor_timer() {
+  local unit="$MONITOR_SERVICE_FILE"
+  local timer="$MONITOR_TIMER_FILE"
+
+  if [[ -f "$unit" && -f "$timer" ]] \
+     && grep -q "ExecStart=/usr/local/bin/xrayebator monitor-check" "$unit" \
+     && systemctl is-enabled --quiet xrayebator-monitor.timer 2>/dev/null; then
+    return 1
+  fi
+
+  cat > "$unit" << 'SVCEOF'
+[Unit]
+Description=Xrayebator: server health monitor (Telegram alerts)
+After=network-online.target xray.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/xrayebator monitor-check
+# Таймаут с запасом: SNI-проба (ALERTS_SNI_TIMEOUT на каждый недоступный SNI)
+# не должна попадать под дефолтные 90 с oneshot-таймаута — иначе systemd убьёт
+# итерацию до финализации состояния (last_run/boot_id).
+TimeoutStartSec=300
+IOSchedulingClass=idle
+SVCEOF
+  chmod 644 "$unit"
+  chown root:root "$unit" || return 2
+
+  cat > "$timer" << 'TMREOF'
+[Unit]
+Description=Run Xrayebator server health monitor every 15 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
+TMREOF
+  chmod 644 "$timer"
+  chown root:root "$timer" || return 2
+
+  systemctl daemon-reload || return 2
+  systemctl enable --now xrayebator-monitor.timer >/dev/null 2>&1 || return 2
+  return 0
+}
+
+# Контракт run_migration: 1 = no-op (маркер без рестарта Xray — таймер не
+# трогает config.json); ≥2 = фалл (повтор при следующем запуске меню).
+_migrate_alerts_monitor_2026() {
+  local rc=0
+  _install_monitor_timer || rc=$?
+  [[ $rc -le 1 ]] && return 1
+  return 2
+}
+
+# Интерактивное меню «Уведомления в Telegram» (главное меню, пункт 14).
+telegram_alerts_menu() {
+  while true; do
+    show_ascii
+    echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
+    echo -e "${BLUE}        УВЕДОМЛЕНИЯ В TELEGRAM                 ${NC}"
+    echo -e "${BLUE}═══════════════════════════════════════════════${NC}\n"
+
+    if _alerts_configured; then
+      local en chat_show bot
+      en=$(jq -r '.enabled // false' "$ALERTS_FILE" 2>/dev/null)
+      chat_show=$(jq -r '.chat_id // "?"' "$ALERTS_FILE" 2>/dev/null)
+      bot=$(jq -r '.bot_username // "?"' "$ALERTS_FILE" 2>/dev/null)
+      if [[ "$en" == "true" ]]; then
+        echo -e " Статус: ${GREEN}включены${NC} (бот @${bot}, чат ${chat_show})"
+      else
+        echo -e " Статус: ${YELLOW}выключены${NC} (бот @${bot}, чат ${chat_show})"
+      fi
+    else
+      echo -e " Статус: ${YELLOW}не настроены${NC}"
+    fi
+    echo -e " Отслеживается: xray/sub/nginx, Hysteria 2 и AWG (если стоят), сроки"
+    echo -e " профилей, лимиты трафика, живость подписки и её режим TLS, доступность"
+    echo -e " SNI (probe-test раз в сутки), перезапуск сервера."
+    echo ""
+    echo -e "${CYAN} 1)${NC} Настроить / изменить (токен бота + chat_id)"
+    echo -e "${CYAN} 2)${NC} Отправить тестовое сообщение"
+    echo -e "${CYAN} 3)${NC} Включить / выключить"
+    echo -e "${CYAN} 4)${NC} Показать состояние мониторинга"
+    echo -e "${CYAN} 5)${NC} Удалить настройки"
+    echo -e "${RED} 0)${NC} Назад"
+    echo ""
+    echo -n -e "${YELLOW}Выберите действие: ${NC}"
+    local choice
+    read -r choice || return 0
+    case $choice in
+      1) _alerts_menu_setup ;;
+      2) _alerts_menu_test ;;
+      3) _alerts_menu_toggle ;;
+      4) _alerts_menu_status ;;
+      5) _alerts_menu_remove ;;
+      0) return ;;
+      *) echo -e "${RED}Неверный выбор${NC}"; sleep 1 ;;
+    esac
+  done
+}
+
+_alerts_menu_setup() {
+  echo ""
+  echo -e "${YELLOW}Токен выдаёт @BotFather (/newbot). chat_id — у @userinfobot;${NC}"
+  echo -e "${YELLOW}для групп он отрицательный, например -1001234567890.${NC}"
+  echo -n -e "${YELLOW}Токен бота: ${NC}"
+  local token chat out rc
+  read -r token || return
+  if [[ -z "$token" ]]; then
+    echo -e "${RED}✗ Пустой токен${NC}"; sleep 1; return
+  fi
+  echo -n -e "${YELLOW}chat_id: ${NC}"
+  read -r chat || return
+  if [[ -z "$chat" ]]; then
+    echo -e "${RED}✗ Пустой chat_id${NC}"; sleep 1; return
+  fi
+  out=$(alerts_setup_command --token "$token" --chat-id "$chat")
+  rc=$?
+  if [[ $rc -eq 0 ]]; then
+    echo -e "${GREEN}✓ Уведомления включены: тестовое сообщение отправлено${NC}"
+  else
+    echo -e "${RED}✗ $(jq -r '.error // "не удалось настроить"' <<<"$out" 2>/dev/null)${NC}"
+  fi
+  sleep 2
+}
+
+_alerts_menu_test() {
+  local out rc
+  out=$(alerts_test_command)
+  rc=$?
+  if [[ $rc -eq 0 ]]; then
+    echo -e "${GREEN}✓ Тестовое сообщение отправлено${NC}"
+  else
+    echo -e "${RED}✗ $(jq -r '.error // "не удалось отправить"' <<<"$out" 2>/dev/null)${NC}"
+  fi
+  sleep 2
+}
+
+_alerts_menu_toggle() {
+  if ! _alerts_configured; then
+    echo -e "${RED}✗ Алерты не настроены${NC}"; sleep 1; return
+  fi
+  if _alerts_enabled; then
+    alerts_disable_command >/dev/null
+    echo -e "${YELLOW}Уведомления выключены${NC}"
+  else
+    alerts_enable_command >/dev/null
+    echo -e "${GREEN}Уведомления включены${NC}"
+  fi
+  sleep 1
+}
+
+# Последняя проба SNI + события монитора человекочитаемо (токен не показываем).
+_alerts_menu_status() {
+  local out last
+  out=$(alerts_status_command)
+  last=$(jq -r '.last_run // 0' <<<"$out" 2>/dev/null)
+  echo ""
+  if [[ "$last" =~ ^[0-9]+$ ]] && (( last > 0 )); then
+    echo -e " Последняя проверка: ${GREEN}$(date -d @"$last" '+%F %T' 2>/dev/null || echo "$last")${NC}"
+  else
+    echo -e " Последняя проверка: ${YELLOW}ещё не было${NC}"
+  fi
+  local sni_checked
+  sni_checked=$(jq -r '.sni.checked // 0' <<<"$out" 2>/dev/null)
+  if [[ "$sni_checked" =~ ^[0-9]+$ ]] && (( sni_checked > 0 )); then
+    echo -e " SNI: доступно ${GREEN}$(jq -r '.sni.ok' <<<"$out")${NC} из $sni_checked (проба раз в сутки)"
+  fi
+  echo -e " События:"
+  jq -r '(.events // {}) | to_entries[] |
+    "  - \(.key): \(.value.state)" +
+    (if ((.value.sent // 0) > 0) then " · последняя отправка \(.value.sent | todate)" else "" end)' \
+    <<<"$out" 2>/dev/null || true
+  echo ""
+  echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
+  read -r _ || true
+}
+
+_alerts_menu_remove() {
+  rm -f "$ALERTS_FILE" "$ALERTS_STATE_FILE"
+  systemctl disable --now xrayebator-monitor.timer >/dev/null 2>&1 || true
+  echo -e "${GREEN}✓ Настройки удалены, таймер остановлен${NC}"
+  sleep 2
+}
+
+# ═══════════════════════════════════════════════════════════
 # CLI для обхода VPN (bypass routing) — GUI вызывает эти команды по SSH.
 # Все команды печатают только JSON на stdout; статусы helpers
 # (_apply_bypass_rule, backup_config, safe_restart_xray) уходят в stderr.
@@ -15428,6 +16273,30 @@ if [[ "$XRAYEBATOR_SOURCED" -eq 0 ]]; then
       shift
       profile_limit_command "$@"
       ;;
+    monitor-check)
+      shift
+      monitor_check_command "$@"
+      ;;
+    alerts-setup)
+      shift
+      alerts_setup_command "$@"
+      ;;
+    alerts-status)
+      shift
+      alerts_status_command "$@"
+      ;;
+    alerts-test)
+      shift
+      alerts_test_command "$@"
+      ;;
+    alerts-enable)
+      shift
+      alerts_enable_command "$@"
+      ;;
+    alerts-disable)
+      shift
+      alerts_disable_command "$@"
+      ;;
     fp-change)
       shift
       fp_change_command "$@"
@@ -15519,6 +16388,11 @@ if [[ "$XRAYEBATOR_SOURCED" -eq 0 ]]; then
       echo -e "  ${CYAN}sudo xrayebator expire-check${NC} — применить наступившие сроки (для systemd-таймера) (JSON)"
       echo -e "  ${CYAN}sudo xrayebator profile-limit --name N --limit 100GB|none [--reset]${NC} — лимит трафика профиля (JSON)"
       echo -e "  ${CYAN}sudo xrayebator traffic-check${NC} — учесть трафик и применить лимиты (для systemd-таймера) (JSON)"
+      echo -e "  ${CYAN}sudo xrayebator alerts-setup --token T --chat-id C${NC} — подключить Telegram-алерты мониторинга (JSON)"
+      echo -e "  ${CYAN}sudo xrayebator alerts-status${NC} — состояние алертов и таймера мониторинга (JSON; токен не показывается)"
+      echo -e "  ${CYAN}sudo xrayebator alerts-test${NC} — тестовое сообщение в Telegram (JSON)"
+      echo -e "  ${CYAN}sudo xrayebator alerts-enable|alerts-disable${NC} — включить/выключить алерты (JSON)"
+      echo -e "  ${CYAN}sudo xrayebator monitor-check [--force-sni]${NC} — одна итерация мониторинга (--force-sni: probe SNI вне расписания) (JSON)"
       echo -e "  ${CYAN}sudo xrayebator sni-list${NC} — список допустимых SNI (JSON)"
       echo -e "  ${CYAN}sudo xrayebator sni-change --name N [--route R] --sni S${NC} — сменить SNI (JSON; обновит все профили на порту)"
       echo -e "  ${CYAN}sudo xrayebator port-change --name N [--route R] --port P|random${NC} — сменить порт (JSON; reconnect клиентов)"

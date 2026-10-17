@@ -103,7 +103,18 @@ if systemctl list-unit-files 'xrayebator-traffic.*' > /dev/null 2>&1; then
     rm -f /etc/systemd/system/xrayebator-traffic.service
     rm -f /etc/systemd/system/xrayebator-traffic.timer
 fi
+# Таймер мониторинга сервера (Telegram-алерты): дёргал бы удалённый
+# xrayebator monitor-check каждые 15 минут.
+if systemctl list-unit-files 'xrayebator-monitor.*' > /dev/null 2>&1; then
+    systemctl disable --now xrayebator-monitor.timer > /dev/null 2>&1 || true
+    systemctl stop xrayebator-monitor.service > /dev/null 2>&1 || true
+    rm -f /etc/systemd/system/xrayebator-monitor.service
+    rm -f /etc/systemd/system/xrayebator-monitor.timer
+fi
 rm -rf /usr/local/etc/xray
+# Нейтральный корень мультипротокольных бэкендов и алертов (registry, секреты
+# Hysteria/AWG, токен Telegram-бота) — вне /usr/local/etc/xray, чистим отдельно.
+rm -rf /usr/local/etc/xrayebator
 rm -rf /var/log/xray
 echo -e "${GREEN}✓ Конфигурации и логи удалены${NC}\n"
 
