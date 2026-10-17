@@ -164,6 +164,13 @@ explanation — mihomo refuses to load a config with an unknown `network`, so "d
 is worse than skipping here. `subscription-userinfo` is served in every format: both Clash UIs and
 sing-box clients understand it.
 
+The subscription TLS mode (`ip_tls` / `domain_tls` / `http_tls` / `local_only`) defines only the base
+URL and how Let's Encrypt validates the domain: `dns01-setup` issues the certificate through DNS-01
+(Cloudflare/Route53), so port 80 is not needed, the vhost contains a single TLS server, and provider
+credentials live in `/etc/letsencrypt/xrayebator-dns01-*.ini` (0600 root) and are passed to certbot
+as an argument (Cloudflare) or through `AWS_SHARED_CREDENTIALS_FILE` (Route53); renewal is the stock
+`certbot.timer` with a deploy-hook that reloads nginx.
+
 ## Multi-protocol backends
 
 Beyond Xray, the manager can install additional transports on the same VPS. All backend state lives

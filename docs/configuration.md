@@ -150,6 +150,8 @@ is a client-side profile/route setting; changing it does not restart Xray or alt
 | `sudo xrayebator awg-grant --name N` | Issue a per-profile peer (keypair + preshared key + `10.8.1.x` address in the profile's `.backends.awg`); `awg0.conf` is regenerated; prints JSON |
 | `sudo xrayebator awg-conf --name N` | Print the client `.conf` for a profile peer as JSON `{ok, name, conf}` — full-tunnel AllowedIPs, server junk parameters, endpoint; import into the AmneziaWG/AmneziaVPN client |
 | `sudo xrayebator awg-31 --on\|--off` | Toggle the AWG 3.1 config format (`HeaderProtectionKey`, `RandomTrailers`, `S3`/`S4`); 3.1 is on by default for new installs, the toggle upgrades legacy server params in place, warns that every issued client `.conf` must be re-downloaded (AmneziaVPN ≥ 5.0.1.5) and regenerates the interface with rollback |
+| `sudo xrayebator dns01-setup --domain sub.example.com --provider cloudflare\|route53` | HTTPS subscription by domain through DNS-01: port 80 is not needed, ownership is proven by a TXT record. Writes `0600` credentials, issues the certbot certificate with a deploy-hook, brings up an nginx vhost without `listen 80` and switches the markers to `domain_tls`; prints JSON |
+| `sudo xrayebator dns01-status` | DNS-01 state: provider, mode, domain, port, presence of credentials, certificate lifetime in days and whether the deploy-hook is present; prints JSON |
 | `sudo xrayebator alerts-setup --token T --chat-id C` | Connect Telegram notifications: validates the token through `getMe`, sends a test message and **only after successful delivery** saves `alerts.json` (0600) and enables `xrayebator-monitor.timer`; prints JSON |
 | `sudo xrayebator alerts-status` | Monitoring state: config, timer, last check time, events and the result of the last SNI probe (the bot token is never shown); prints JSON |
 | `sudo xrayebator alerts-test` | Send a test message to the configured chat (delivery check); prints JSON |
@@ -551,6 +553,52 @@ retried on the next tick, while the SNI probe is not repeated (its result is alr
 state). The thresholds are configured by the unit's environment variables: `ALERTS_REMIND_SEC`
 (reminder, 86400), `ALERTS_EXPIRE_WARN_SEC` (the "expiring" horizon, 259200),
 `ALERTS_SNI_INTERVAL_SEC` (86400), `ALERTS_SNI_TIMEOUT` (8 seconds per SNI).
+
+## DNS-01: certificate and subscription domain without port 80
+
+The usual subscription modes (`ip_tls`, `domain_tls`) obtain the Let's Encrypt certificate over
+http-01, that is through an externally reachable port 80. Some hosters filter it — the subscription
+then degrades to `http_tls` (HTTP without a certificate). DNS-01 proves domain ownership with a TXT
+record, so port 80 is not needed at all, and the subscription lives on its own domain:
+`https://sub.example.com/sub/<token>`.
+
+```bash
+# Cloudflare: an API token with the DNS:Edit right on the zone
+sudo xrayebator dns01-setup --domain sub.example.com --provider cloudflare \
+  --token CF_API_TOKEN --email admin@example.com
+
+# Route53: keys with the Route53:ChangeResourceRecordSets right
+sudo xrayebator dns01-setup --domain sub.example.com --provider route53 \
+  --aws-access-key-id AKIA... --aws-secret-access-key ... --without-email
+
+sudo xrayebator dns01-status   # provider, domain, port, certificate lifetime, deploy-hook
+```
+
+What the command does:
+
+1. installs `certbot` and the provider plugin (`python3-certbot-dns-cloudflare` or
+   `python3-certbot-dns-route53`);
+2. writes a `0600` root credentials file — `/etc/letsencrypt/xrayebator-dns01-cloudflare.ini`
+   (`dns_cloudflare_api_token = …`) or `xrayebator-dns01-aws.ini` (profile `[default]`, handed to
+   certbot through `AWS_SHARED_CREDENTIALS_FILE`);
+3. issues the certificate with `certbot certonly --dns-cloudflare|--dns-route53 -d <domain>` plus
+   `--deploy-hook "systemctl reload nginx"` (renewal is the stock `certbot.timer`; the certificate
+   is reissued without stopping the subscription);
+4. writes an nginx vhost **with a TLS server only** (no `listen 80` and no ACME location — they are
+   not needed in this mode) and opens only the public subscription port in UFW (`443` by default);
+5. switches the subscription markers to `domain_tls`, so `_subscription_base_url` and the GUI return
+   `https://<domain>`.
+
+Requirements and caveats:
+
+- the domain must be delegated and its A/AAAA record must point at this VPS (no DNS check is
+  performed: split DNS and proxied zones produce false positives);
+- without an email the certificate is issued with `--register-unsafely-without-email` — renewal
+  notices and email-based account recovery are unavailable (as in `quickstart`);
+- the credentials files are removed by `xrayebator-uninstall`; certificates follow the root-owned
+  `.certbot_owned` manifest, so foreign domains are not touched;
+- switching to DNS-01 does not invalidate already-issued links: only the subscription base URL
+  changes.
 
 ## Cascade and upstream nodes
 

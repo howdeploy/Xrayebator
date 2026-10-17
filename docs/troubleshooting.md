@@ -421,6 +421,33 @@ curl -s "http://127.0.0.1:8080/sub/<token>?target=singbox" | jq '.outbounds | le
 - **v2rayNG/HAPP started receiving YAML** — an explicit `?target=` in the saved link overrides the
   User-Agent: remove the parameter or set `?target=v2ray`/`?target=happ`.
 
+## DNS-01 does not issue a certificate
+
+`dns01-setup` fails while the subscription stays in its previous mode (the command switches the
+markers only after a successful issuance, so the working URL is not broken).
+
+```bash
+sudo xrayebator dns01-status                 # provider, domain, certificate lifetime, deploy-hook
+tail -30 /tmp/certbot-dns01.log              # certbot output: the reason for the failure
+dig +short TXT _acme-challenge.sub.example.com   # a TXT record must appear during issuance
+```
+
+- **Cloudflare: `Invalid token` / `unauthorized`** — the token does not carry the `DNS:Edit` right on
+  exactly this zone (Zone → API → Tokens). A token made from the global API key does not work: an
+  API Token is required.
+- **Route53: `AccessDenied` / `Unable to locate credentials`** — the key lacks
+  `route53:ChangeResourceRecordSets`/`ListHostedZones`, or the zone is in another account. The file
+  `/etc/letsencrypt/xrayebator-dns01-aws.ini` is handed to certbot through
+  `AWS_SHARED_CREDENTIALS_FILE`.
+- **`NXDOMAIN` / `No valid IP addresses`** — the domain is not delegated or its A/AAAA record does
+  not point at the VPS: DNS-01 proves ownership of the zone, but the subscription still has to
+  resolve to this server.
+- **The TXT record did not appear in time** — raise `--dns-cloudflare-propagation-seconds` (30 by
+  default) in the certbot arguments; 60–120 helps with slow zones.
+- **Renewal** — the stock `certbot.timer`; the renewal config keeps the deploy-hook that runs
+  `systemctl reload nginx`, so the subscription picks up the new certificate with no manual action
+  (`dns01-status` shows `deploy_hook: true`).
+
 ## An error appeared during installation or use
 
 Copy the full error text from the terminal. For installation failures, include the relevant

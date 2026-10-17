@@ -103,6 +103,7 @@ about.
 | Multi-route profile | One profile = a set of routes with a shared `sub_token`; several profiles may share one port | `profiles/<name>.json` |
 | HAPP subscription | Serves the `vless://` list, a managed Global Proxy routing profile and token-protected geo databases; nginx publishes it over HTTPS | `subhttp.sh`, `xrayebator-sub.service` |
 | Subscription formats | One token — four bodies: HAPP, base64 for v2rayNG/v2rayN, Clash/mihomo YAML and sing-box JSON; the format is chosen by `?target=` or by User-Agent | `_subscription_render_*_pure`, `subhttp.sh` |
+| DNS-01 subscription | The Let's Encrypt certificate is proven by a TXT record (Cloudflare/Route53), so the HTTPS subscription by domain works even where the hoster filters port 80 | `dns01-setup`, `dns01-status` |
 | Post-quantum XHTTP | The `xhttp-pq` route runs VLESS encryption `mlkem768x25519plus` | `.vless_encryption`, `.vless_decryption` |
 | v2ray compatibility | `v2rayNG` and `v2rayN` receive a classic base64 body without HAPP metadata | `subhttp.sh` |
 | Subscription revoke | Generates a new 32-character hex token; the old URL stops working. Full revocation (`--full`) also rotates the uuid, so already-downloaded configs stop connecting | `openssl rand -hex 16`, `profile-revoke` |

@@ -306,4 +306,40 @@ jq -e '.[] | select(.name == "sample") |
   (.subscription_url_singbox | endswith("?target=singbox"))' <<<"$profiles_json" >/dev/null \
   || fail "profiles: форматные URL не отдаются в JSON"
 
-echo "✓ Subscription formats: Clash/mihomo YAML + sing-box JSON (links, reality, flow, xudp, grpc, hysteria2, skip PQ/xhttp, handler negotiation, migration, CLI) — OK"
+# ═══════════ 7. Deep-link'и и CLI всех ссылок ═══════════
+dl_happ=$(_deeplink_pure happ "https://sub.example.com/sub/abc") || fail "deep-link HAPP не собрался"
+[[ "$dl_happ" == "happ://add/"* ]] || fail "HAPP deep-link должен начинаться с happ://add/: $dl_happ"
+dl_payload="${dl_happ#happ://add/}"
+[[ "$(printf '%s' "$dl_payload" | base64 -d 2>/dev/null)" == "https://sub.example.com/sub/abc" ]] \
+  || fail "HAPP deep-link должен нести base64(URL): $dl_happ"
+
+dl_ng=$(_deeplink_pure v2rayng "https://sub.example.com/sub/abc") || fail "deep-link v2rayNG не собрался"
+[[ "$dl_ng" == "v2rayng://install-sub?url=https%3A%2F%2Fsub.example.com%2Fsub%2Fabc" ]] \
+  || fail "v2rayNG deep-link должен быть install-sub?url=<encoded>: $dl_ng"
+
+if _deeplink_pure hiddify "https://x" >/dev/null 2>&1; then
+  fail "непроверенные клиенты не должны давать deep-link"
+fi
+if _deeplink_pure happ "" >/dev/null 2>&1; then
+  fail "пустой URL должен отклоняться"
+fi
+
+links=$(
+  _subscription_base_url() { printf 'https://sub.example.com'; }
+  subscription_links_command --name sample
+) || fail "subscription-links failed"
+jq -e '.ok == true and .name == "sample" and
+  (.urls.happ | endswith("/sub/abcdef0123456789abcdef0123456789")) and
+  (.urls.clash | endswith("?target=clash")) and
+  (.urls.singbox | endswith("?target=singbox")) and
+  (.urls.v2ray | endswith("?target=v2ray")) and
+  (.deeplinks.happ_add | startswith("happ://add/")) and
+  (.deeplinks.v2rayng_install_sub | startswith("v2rayng://install-sub?url="))' \
+  <<<"$links" >/dev/null || fail "subscription-links JSON wrong: $links"
+
+out=$(subscription_links_command --name nope) || true
+jq -e '.ok == false and (.error | length > 0)' <<<"$out" >/dev/null || fail "несуществующий профиль: $out"
+out=$(subscription_links_command) || true
+jq -e '.ok == false and (.error | length > 0)' <<<"$out" >/dev/null || fail "без --name: $out"
+
+echo "✓ Subscription formats: Clash/mihomo YAML + sing-box JSON (links, reality, flow, xudp, grpc, hysteria2, skip PQ/xhttp, handler negotiation, migration, CLI, deep-links) — OK"

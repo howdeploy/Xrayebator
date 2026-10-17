@@ -162,14 +162,6 @@ URL и способ проверки домена для Let's Encrypt: `dns01-s
 провайдера лежат в `/etc/letsencrypt/xrayebator-dns01-*.ini` (0600 root) и передаются certbot как
 аргумент (Cloudflare) или через `AWS_SHARED_CREDENTIALS_FILE` (Route53); продление — штатный
 `certbot.timer` с deploy-hook на reload nginx.
-`_subscription_links_json` (разбор `vless://`/`hysteria2://`, IPv6-скобки, percent-decoding,
-матрица поддержки транспортов клиентами), а сам формат собирают чистые билдеры
-`_subscription_render_clash_pure` и `_subscription_render_singbox_pure`. Формат выбирается по
-`?target=` или User-Agent, по умолчанию остаётся HAPP-тело. Маршруты, которые клиент не умеет
-(PQ VLESS Encryption, xhttp в sing-box, xhttp в Clash без `?xhttp=1`), пропускаются с пояснением —
-mihomo не грузит конфиг с неизвестным `network`, поэтому «нарисовать хоть что-нибудь» здесь хуже
-пропуска. `subscription-userinfo` отдаётся во всех форматах: его понимают и Clash-UI, и
-sing-box-клиенты.
 
 ## Мультипротокольные бэкенды
 
