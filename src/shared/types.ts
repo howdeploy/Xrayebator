@@ -251,6 +251,12 @@ export interface ServerProfile {
   routes: number
   pq_enabled: boolean
   subscription_url: string
+  /**
+   * Тот же токен, другое тело ответа (content negotiation в subhttp): Clash/mihomo YAML
+   * и sing-box JSON. Серверы без поддержки форматов поля не отдают — тогда кнопки скрыты.
+   */
+  subscription_url_clash?: string
+  subscription_url_singbox?: string
   /** epoch-секунды истечения; 0 = бессрочный. Принуждается серверным таймером. */
   expire: number
   /** Календарная дата истечения в локальной временной зоне сервера (YYYY-MM-DD). */

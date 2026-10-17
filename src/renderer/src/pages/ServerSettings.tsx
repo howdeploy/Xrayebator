@@ -458,6 +458,18 @@ export function ServerSettings({
     toastText(t('settings.copied'))
   }
 
+  // Тот же токен, другое тело ответа: сервер выбирает формат по ?target= (Clash/mihomo
+  // YAML и sing-box JSON). Старые серверы поля не отдают — кнопки тогда не рисуются.
+  const copyFormatUrl = async (
+    profile: ServerProfile,
+    format: 'clash' | 'singbox'
+  ): Promise<void> => {
+    const url = format === 'clash' ? profile.subscription_url_clash : profile.subscription_url_singbox
+    if (!url) return
+    await navigator.clipboard.writeText(url)
+    toastText(t('settings.copiedFormat', { format: format === 'clash' ? 'Clash/mihomo' : 'sing-box' }))
+  }
+
   const openRevoke = (profile: ServerProfile, forceFull = false): void => {
     setRevokeTarget(profile)
     setRevokeFullOnly(forceFull)
@@ -1322,6 +1334,26 @@ export function ServerSettings({
                       <Button size="sm" variant="secondary" onPress={() => copyUrl(profile)}>
                         <Copy size={13} />
                         {t('settings.copy')}
+                      </Button>
+                    )}
+                    {profile.subscription_url_clash && (
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onPress={() => copyFormatUrl(profile, 'clash')}
+                      >
+                        <Copy size={13} />
+                        {t('settings.copyClash')}
+                      </Button>
+                    )}
+                    {profile.subscription_url_singbox && (
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onPress={() => copyFormatUrl(profile, 'singbox')}
+                      >
+                        <Copy size={13} />
+                        {t('settings.copySingbox')}
                       </Button>
                     )}
                     <Button
