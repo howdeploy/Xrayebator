@@ -702,6 +702,14 @@ _profile_route_matches_live_inbound() {
         any(.settings.clients[]?; .id == $uuid and ((.flow // "") == $flow)) and
         any(.streamSettings.realitySettings.serverNames[]?; . == $sni) and
         (
+          # PQ (VLESS Encryption) работает на ЛЮБОМ транспорте: инбаунд обязан
+          # иметь decryption != none, если маршрут помечен pq_enabled, и наоборот.
+          if $pq_enabled == "true"
+          then (.settings.decryption // "none") != "none"
+          else (.settings.decryption // "none") == "none"
+          end
+        ) and
+        (
           $transport != "grpc" or
           ((.streamSettings.grpcSettings.serviceName // "grpc") == $grpc_service_name)
         ) and
@@ -709,13 +717,7 @@ _profile_route_matches_live_inbound() {
           $transport != "xhttp" or
           (
             (.streamSettings.xhttpSettings.path // "") == $xhttp_path and
-            ((.streamSettings.xhttpSettings.host // "") | contains_value($sni)) and
-            (
-              if $pq_enabled == "true"
-              then (.settings.decryption // "none") != "none"
-              else (.settings.decryption // "none") == "none"
-              end
-            )
+            ((.streamSettings.xhttpSettings.host // "") | contains_value($sni))
           )
         )
       )
@@ -810,41 +812,41 @@ _generate_vless_url_pure() {
     "$CONFIG_FILE" 2>/dev/null)
   [[ -z "$short_id" || "$short_id" == "null" ]] && short_id=""
 
+  # PQ (VLESS Encryption) — опция любого транспорта, а не только xhttp: поле
+  # encryption выносим в переменную, чтобы tcp/grpc тоже могли быть PQ.
+  local pq_enabled enc_field="encryption=none"
+  if [[ -n "$route_index" ]]; then
+    pq_enabled=$(jq -r --argjson i "$route_index" '.routes[$i].pq_enabled // false' "$profile_file" 2>/dev/null)
+  else
+    pq_enabled=$(jq -r '.pq_enabled // false' "$profile_file" 2>/dev/null)
+  fi
+  if [[ "$pq_enabled" == "true" ]]; then
+    [[ -f "$VLESS_ENCRYPTION_FILE" ]] || return 1
+    local raw_encryption
+    raw_encryption=$(cat "$VLESS_ENCRYPTION_FILE")
+    enc_field="encryption=$(jq -nr --arg enc "$raw_encryption" '$enc|@uri')"
+  fi
+
   case "$transport" in
     tcp|tcp-utls)
-      printf 'vless://%s@%s:%s?encryption=none&flow=xtls-rprx-vision&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=tcp&headerType=none#%s' \
-        "$uuid" "$server_ip" "$port" "$sni" "$fingerprint" "$clean_public_key" "$short_id" "$profile_name"
+      printf 'vless://%s@%s:%s?%s&flow=xtls-rprx-vision&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=tcp&headerType=none#%s' \
+        "$uuid" "$server_ip" "$port" "$enc_field" "$sni" "$fingerprint" "$clean_public_key" "$short_id" "$profile_name"
       ;;
     tcp-xudp)
-      printf 'vless://%s@%s:%s?encryption=none&flow=xtls-rprx-vision&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=tcp&headerType=none&packetEncoding=xudp#%s' \
-        "$uuid" "$server_ip" "$port" "$sni" "$fingerprint" "$clean_public_key" "$short_id" "$profile_name"
+      printf 'vless://%s@%s:%s?%s&flow=xtls-rprx-vision&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=tcp&headerType=none&packetEncoding=xudp#%s' \
+        "$uuid" "$server_ip" "$port" "$enc_field" "$sni" "$fingerprint" "$clean_public_key" "$short_id" "$profile_name"
       ;;
     tcp-mux)
-      printf 'vless://%s@%s:%s?encryption=none&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=tcp&headerType=none#%s' \
-        "$uuid" "$server_ip" "$port" "$sni" "$fingerprint" "$clean_public_key" "$short_id" "$profile_name"
+      printf 'vless://%s@%s:%s?%s&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=tcp&headerType=none#%s' \
+        "$uuid" "$server_ip" "$port" "$enc_field" "$sni" "$fingerprint" "$clean_public_key" "$short_id" "$profile_name"
       ;;
     grpc)
-      printf 'vless://%s@%s:%s?encryption=none&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=grpc&serviceName=%s&mode=gun#%s' \
-        "$uuid" "$server_ip" "$port" "$sni" "$fingerprint" "$clean_public_key" "$short_id" "$grpc_service_name" "$profile_name"
+      printf 'vless://%s@%s:%s?%s&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=grpc&serviceName=%s&mode=gun#%s' \
+        "$uuid" "$server_ip" "$port" "$enc_field" "$sni" "$fingerprint" "$clean_public_key" "$short_id" "$grpc_service_name" "$profile_name"
       ;;
     xhttp)
-      local pq_enabled
-      if [[ -n "$route_index" ]]; then
-        pq_enabled=$(jq -r --argjson i "$route_index" '.routes[$i].pq_enabled // false' "$profile_file" 2>/dev/null)
-      else
-        pq_enabled=$(jq -r '.pq_enabled // false' "$profile_file" 2>/dev/null)
-      fi
-      if [[ "$pq_enabled" == "true" ]]; then
-        [[ -f "$VLESS_ENCRYPTION_FILE" ]] || return 1
-        local raw_encryption encoded_encryption
-        raw_encryption=$(cat "$VLESS_ENCRYPTION_FILE")
-        encoded_encryption=$(jq -nr --arg enc "$raw_encryption" '$enc|@uri')
-        printf 'vless://%s@%s:%s?encryption=%s&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=xhttp&path=%s&host=%s&mode=auto#%s' \
-          "$uuid" "$server_ip" "$port" "$encoded_encryption" "$sni" "$fingerprint" "$clean_public_key" "$short_id" "$encoded_xhttp_path" "$sni" "$profile_name"
-      else
-        printf 'vless://%s@%s:%s?encryption=none&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=xhttp&path=%s&host=%s&mode=auto#%s' \
-          "$uuid" "$server_ip" "$port" "$sni" "$fingerprint" "$clean_public_key" "$short_id" "$encoded_xhttp_path" "$sni" "$profile_name"
-      fi
+      printf 'vless://%s@%s:%s?%s&security=reality&sni=%s&fp=%s&pbk=%s&sid=%s&type=xhttp&path=%s&host=%s&mode=auto#%s' \
+        "$uuid" "$server_ip" "$port" "$enc_field" "$sni" "$fingerprint" "$clean_public_key" "$short_id" "$encoded_xhttp_path" "$sni" "$profile_name"
       ;;
     *)
       return 1
@@ -7974,7 +7976,9 @@ elif [[ "$universal_sub" == "true" ]]; then
   # подключиться, а legacy xhttp (encryption=none) сохраняем. V11.
   {
     printf '%s' "$vless_urls" | awk '
-      /^vless:\/\// && /&type=xhttp&/ && $0 !~ /encryption=none/ { next }
+      # PQ (VLESS Encryption) — на любом транспорте: клиент без ML-KEM к такому
+      # маршруту не подключится, поэтому в v2ray/base64-тело он не попадает.
+      /^vless:\/\// && /[?&]encryption=/ && $0 !~ /[?&]encryption=none/ { next }
       { print }
     '
     [[ -n "$hysteria2_uri" ]] && printf '%s\n' "$hysteria2_uri"
