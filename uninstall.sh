@@ -95,6 +95,14 @@ if systemctl list-unit-files 'xrayebator-expire.*' > /dev/null 2>&1; then
     rm -f /etc/systemd/system/xrayebator-expire.service
     rm -f /etc/systemd/system/xrayebator-expire.timer
 fi
+# Таймер учёта трафика профилей: та же причина — дёргал бы удалённый
+# xrayebator traffic-check каждые 5 минут.
+if systemctl list-unit-files 'xrayebator-traffic.*' > /dev/null 2>&1; then
+    systemctl disable --now xrayebator-traffic.timer > /dev/null 2>&1 || true
+    systemctl stop xrayebator-traffic.service > /dev/null 2>&1 || true
+    rm -f /etc/systemd/system/xrayebator-traffic.service
+    rm -f /etc/systemd/system/xrayebator-traffic.timer
+fi
 rm -rf /usr/local/etc/xray
 rm -rf /var/log/xray
 echo -e "${GREEN}✓ Конфигурации и логи удалены${NC}\n"

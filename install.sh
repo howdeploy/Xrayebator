@@ -924,6 +924,11 @@ if ! cat > "$config_tmp" << EOF
     "loglevel": "warning",
     "access": "none"
   },
+  "stats": {},
+  "api": {
+    "tag": "api",
+    "services": ["StatsService"]
+  },
   "dns": {
     "servers": [
       "${dns_main_doh}",
@@ -935,6 +940,11 @@ if ! cat > "$config_tmp" << EOF
   "routing": {
     "domainStrategy": "IPIfNonMatch",
     "rules": [
+      {
+        "type": "field",
+        "inboundTag": ["api"],
+        "outboundTag": "api"
+      },
       {
         "type": "field",
         "ip": ["geoip:private"],
@@ -957,7 +967,17 @@ if ! cat > "$config_tmp" << EOF
       }
     ]
   },
-  "inbounds": [],
+  "inbounds": [
+    {
+      "listen": "127.0.0.1",
+      "port": 10085,
+      "protocol": "dokodemo-door",
+      "settings": {
+        "address": "127.0.0.1"
+      },
+      "tag": "api"
+    }
+  ],
   "outbounds": [
     {
       "protocol": "freedom",
@@ -972,6 +992,10 @@ if ! cat > "$config_tmp" << EOF
     }
   ],
   "policy": {
+    "system": {
+      "statsInboundUplink": true,
+      "statsInboundDownlink": true
+    },
     "levels": {
       "0": {
         "handshake": 4,

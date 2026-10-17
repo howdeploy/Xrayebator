@@ -135,14 +135,17 @@ XRAYEBATOR_RESERVED_PORTS=()
 _lock_acquire() {
   if ! command -v flock >/dev/null 2>&1; then return 0; fi
   # Явно открываем fd, чтобы flock удержал блокировку весь срок жизни функции.
-  exec {XB_LOCK_FD}>"$LOCK_FILE" 2>/dev/null || return 0
+  # ВАЖНО: redirection обёрнут в { ...; } — у голого exec редиректы
+  # применяются к шеллу НАВСЕГДА (2>/dev/null глушил бы stderr всего процесса
+  # после первого safe_jq_write), а у compound-команды восстанавливаются.
+  { exec {XB_LOCK_FD}>"$LOCK_FILE"; } 2>/dev/null || return 0
   flock "$XB_LOCK_FD" 2>/dev/null || return 0
   return 0
 }
 _lock_release() {
   if [[ -n "${XB_LOCK_FD:-}" ]]; then
     flock -u "$XB_LOCK_FD" 2>/dev/null
-    exec {XB_LOCK_FD}>&- 2>/dev/null
+    { exec {XB_LOCK_FD}>&-; } 2>/dev/null
     XB_LOCK_FD=""
   fi
   return 0
@@ -2198,8 +2201,9 @@ _hysteria2_apply_config() {
 }
 
 # Регенерация users-карты из профилей + безопасный рестарт.
-# Фильтр expire_disabled: истёкший/отключённый профиль не попадает в auth —
-# restored после продления вернёт его автоматически (ключи живут в профиле).
+# Фильтр expire_disabled/traffic_disabled: истёкший или исчерпавший лимит
+# профиль не попадает в auth — restored вернёт его автоматически (ключи живут
+# в профиле).
 _hysteria2_regen_config() {
   _backend_installed hysteria2 || return 0
   local port
@@ -2207,7 +2211,9 @@ _hysteria2_regen_config() {
   [[ "$port" =~ ^[0-9]+$ ]] || return 1
   local users
   users=$(jq -sc '
-    map(select(.backends.hysteria2.password != null and (.expire_disabled // false) == false)) |
+    map(select(.backends.hysteria2.password != null
+               and (.expire_disabled // false) == false
+               and (.traffic_disabled // false) == false)) |
     map({key: .backends.hysteria2.username, value: .backends.hysteria2.password}) |
     from_entries
   ' "$PROFILES_DIR"/*.json 2>/dev/null) || users="{}"
@@ -3391,8 +3397,8 @@ awg_31_command() {
 # ── Срез 5: peers per-profile, клиентский .conf, события жизненного цикла ──
 # Модель та же, что у hysteria: профиль — источник правды
 # (.backends.awg {client_private_key, client_public_key, preshared_key,
-# address}), awg0.conf регенерируется из профилей (фильтр expire_disabled)
-# и применяется рестартом интерфейса с откатом. Рестарт = короткий обрыв
+# address}), awg0.conf регенерируется из профилей (фильтр expire_disabled/
+# traffic_disabled) и применяется рестартом интерфейса с откатом. Рестарт = короткий обрыв
 # туннеля всех peer-ов; гранты/отзывы — редкие события, для этапа 1 приемлемо.
 
 # Первый свободный адрес подсети (.2..254) с учётом выданных в профилях.
@@ -3450,8 +3456,8 @@ _awg_apply_config() {
 }
 
 # Регенерация awg0.conf: [Interface] из server-params + [Peer] из профилей.
-# Истёкший/отключённый профиль (expire_disabled) не попадает в peer-ы —
-# restored после продления вернёт его автоматически.
+# Истёкший/отключённый по лимиту профиль (expire_disabled/traffic_disabled)
+# не попадает в peer-ы — restored после продления вернёт его автоматически.
 _awg_regen_config() {
   _backend_installed awg || return 0
   [[ -s "$AWG_PARAMS_FILE" ]] || return 1
@@ -3474,7 +3480,9 @@ PublicKey = ${cpub}
 PresharedKey = ${psk}
 AllowedIPs = ${addr}/32
 EOF
-  done < <(jq -r 'select(.backends.awg.address != null and (.expire_disabled // false) == false)
+  done < <(jq -r 'select(.backends.awg.address != null
+                    and (.expire_disabled // false) == false
+                    and (.traffic_disabled // false) == false)
                    | [.backends.awg.address, .backends.awg.client_public_key, .backends.awg.preshared_key]
                    | @tsv' "$PROFILES_DIR"/*.json 2>/dev/null)
   _awg_apply_config "$tmp"
@@ -7305,11 +7313,13 @@ done
 profile_name=$(basename "$profile_file" .json)
 short_token="${token:0:8}"
 
-# Профиль с истёкшим/отключённым сроком не отдаёт маршруты: клиент сразу видит
-# «срок вышел» вместо рабочего на вид конфига, который всё равно не подключится
-# (клиента нет в inbound — принуждение делает xrayebator expire-check).
+# Профиль с истёкшим/отключённым сроком ИЛИ исчерпанным лимитом трафика не
+# отдаёт маршруты: клиент сразу видит «срок/лимит вышел» вместо рабочего на вид
+# конфига, который всё равно не подключится (клиента нет в inbound — принуждение
+# делают xrayebator expire-check / traffic-check).
 # Проверяем и флаг, и сам срок: таймер мог ещё не отработать (окно до 10 минут).
 if jq -e '(.expire_disabled == true)
+          or (.traffic_disabled == true)
           or ((.expire // 0) > 0 and (.expire // 0) <= now)' \
      --argjson now "$(date +%s)" "$profile_file" >/dev/null 2>&1; then
   emit_410_expired
@@ -7494,10 +7504,16 @@ if [[ "${HAPP_ROUTING_ENABLED,,}" == "true" ]]; then
   fi
 fi
 
-# subscription-userinfo expire: jq override hook (.expire поле в profile JSON),
-# fallback 4102444800 (год 2099 — legacy placeholder; real-time tracking пока не реализован).
+# subscription-userinfo: expire из .expire профиля (fallback 4102444800 — legacy
+# placeholder), download = накопленный .traffic.used, total = .traffic.limit
+# (0 = безлимит). Счётчики обновляет xrayebator traffic-check из Stats API.
 expire_value=$(jq -r '.expire // 4102444800' "$profile_file" 2>/dev/null)
-sub_userinfo="upload=0; download=0; total=0; expire=${expire_value}"
+[[ "$expire_value" =~ ^[0-9]+$ ]] || expire_value=4102444800
+traffic_used=$(jq -r '((.traffic.used // 0) | if type == "number" and . >= 0 then floor else 0 end)' "$profile_file" 2>/dev/null)
+[[ "$traffic_used" =~ ^[0-9]+$ ]] || traffic_used=0
+traffic_limit=$(jq -r '((.traffic.limit // 0) | if type == "number" and . >= 0 then floor else 0 end)' "$profile_file" 2>/dev/null)
+[[ "$traffic_limit" =~ ^[0-9]+$ ]] || traffic_limit=0
+sub_userinfo="upload=0; download=${traffic_used}; total=${traffic_limit}; expire=${expire_value}"
 
 body_tmp=$(mktemp /tmp/xrayebator-subhttp-body.XXXXXX) ||
   emit_500 "cannot create response buffer"
@@ -9057,6 +9073,9 @@ main_menu() {
   run_migration "subhttp_happ_xhttp_compat_2026" "HAPP subscription: XHTTP mode/no-limit compatibility" _migrate_subhttp_happ_xhttp_compat_2026 || ((migration_failures++))
   run_migration "subhttp_happ_legacy_xhttp_2026" "HAPP subscription: prefer legacy XHTTP route" _migrate_subhttp_happ_legacy_xhttp_2026 || ((migration_failures++))
   run_migration "subhttp_hysteria2_2026" "Subhttp: hysteria2-ссылка в телах подписки (мультибэкенд)" _migrate_subhttp_hysteria2_2026 || ((migration_failures++))
+  run_migration "traffic_stats_2026" "Stats API: учёт трафика профилей" _migrate_traffic_stats_2026 || ((migration_failures++))
+  run_migration "traffic_timer_2026" "Таймер учёта трафика профилей (5 мин)" _migrate_traffic_timer_2026 || ((migration_failures++))
+  run_migration "subhttp_traffic_2026" "Subhttp: реальный traffic в subscription-userinfo" _migrate_subhttp_traffic_2026 || ((migration_failures++))
 
   # Aggregate report (RESEARCH §«Error reporting»): чтобы пользователь не пропустил
   # failure среди скроллящегося TUI вывода.
@@ -9651,6 +9670,17 @@ add_inbound() {
   local short_id=$(openssl rand -hex 4)
   [[ -z "$pq_enabled" && "$transport" == "xhttp" ]] && pq_enabled=true
 
+  # Учёт трафика (Stats API): email клиента = имя профиля. Xray агрегирует
+  # user>>>EMAIL>>>traffic>>>uplink/downlink по email, поэтому один multi-route
+  # профиль со всех своих inbound'ов считается одним счётчиком. Профильного
+  # JSON у cascade-inbound'а (вражеская нода) нет — клиент без email.
+  local client_email=""
+  local email_profile=""
+  if email_profile=$(find_profile_file_by_uuid "$uuid") && [[ -n "$email_profile" ]]; then
+    client_email=$(basename "$email_profile" .json)
+    [[ "$client_email" =~ ^[a-zA-Z0-9_-]{1,48}$ ]] || client_email=""
+  fi
+
   # Phase 6 REQ-A04: для PQ XHTTP-инбаундов читаем decryption из файла.
   # HAPP fallback XHTTP использует decryption=none, иначе это не fallback.
   # Файл создан Plan 6.1 (install.sh при свежей установке ИЛИ миграция .mlkem_keys_generated).
@@ -9800,11 +9830,11 @@ add_inbound() {
       tcp|tcp-utls|tcp-xudp) client_flow="xtls-rprx-vision" ;;
       tcp-mux|grpc|xhttp) client_flow="" ;;
     esac
-    if ! safe_jq_write --arg uuid "$uuid" --argjson port "$port" --arg flow "$client_flow" '
+    if ! safe_jq_write --arg uuid "$uuid" --argjson port "$port" --arg flow "$client_flow" --arg email "$client_email" '
       (.inbounds[] | select(.port == $port) | .settings.clients) += [{
         "id": $uuid,
         "flow": $flow
-      }]
+      } + (if $email == "" then {} else {email: $email} end)]
     ' "$CONFIG_FILE"; then
       echo -e "${RED}  ✗ Не удалось добавить клиента в inbound${NC}"
       return 1
@@ -9818,6 +9848,8 @@ add_inbound() {
   local inbound=""
   local reality_dest=""
   reality_dest=$(_reality_dest_for_sni "$sni")
+  local email_field=""
+  [[ -n "$client_email" ]] && email_field=", \"email\": \"$client_email\""
   case $transport in
     tcp-mux)
       inbound=$(cat << TCPMUXEOF
@@ -9826,7 +9858,7 @@ add_inbound() {
   "port": $port,
   "protocol": "vless",
   "settings": {
-    "clients": [{"id": "$uuid", "flow": ""}],
+    "clients": [{"id": "$uuid", "flow": ""$email_field}],
     "decryption": "none"
   },
   "streamSettings": {
@@ -9854,7 +9886,7 @@ TCPMUXEOF
   "port": $port,
   "protocol": "vless",
   "settings": {
-    "clients": [{"id": "$uuid", "flow": "xtls-rprx-vision"}],
+    "clients": [{"id": "$uuid", "flow": "xtls-rprx-vision"$email_field}],
     "decryption": "none"
   },
   "streamSettings": {
@@ -9882,7 +9914,7 @@ TCPEOF
   "port": $port,
   "protocol": "vless",
   "settings": {
-    "clients": [{"id": "$uuid", "flow": ""}],
+    "clients": [{"id": "$uuid", "flow": ""$email_field}],
     "decryption": "none"
   },
   "streamSettings": {
@@ -9911,7 +9943,7 @@ GRPCEOF
   "port": $port,
   "protocol": "vless",
   "settings": {
-    "clients": [{"id": "$uuid", "flow": ""}],
+    "clients": [{"id": "$uuid", "flow": ""$email_field}],
     "decryption": "$vless_decryption"
   },
   "streamSettings": {
@@ -10144,6 +10176,9 @@ _expire_disable_profile() {
      | $in.settings.clients[]? | select(.id == $uuid)
      | {port: $in.port, client: .}]' "$CONFIG_FILE" 2>/dev/null) || return 1
 
+  # rc=3: клиента в конфиге уже нет (бан наложен по трафику или руками) —
+  # меняются только флаги профиля, config.json не тронут → рестарт не нужен.
+  local rc=0
   if [[ "$(jq 'length' <<< "$saved")" != "0" ]]; then
     safe_jq_write --arg uuid "$uuid" --argjson ports "$ports_json" '
       .inbounds |= map(
@@ -10153,13 +10188,15 @@ _expire_disable_profile() {
         else . end
       )
     ' "$CONFIG_FILE" || return 1
+  else
+    rc=3
   fi
   safe_jq_write --argjson saved "$saved" \
     '.expire_clients = $saved | .expire_disabled = true' "$profile_file" || return 1
   # Мультибэкенд: событие expired — реген users-карты уберёт истёкший грант
   # (фильтр expire_disabled в _hysteria2_regen_config).
   _backend_apply_profile_lifecycle "$(basename "$profile_file" .json)" expired
-  return 0
+  return $rc
 }
 
 # Включение профиля до истечения нового срока: клиенты из снимка (с актуальным
@@ -10171,6 +10208,15 @@ _expire_enable_profile() {
   local uuid ports_json saved
   uuid=$(jq -r '.uuid // empty' "$profile_file")
   [[ -n "$uuid" ]] || return 1
+
+  # Кросс-гард с лимитом трафика: профиль забанен ещё и по трафику — снимаем
+  # только срок; клиенты вернутся, когда трафик-лимит поднимут/сбросят
+  # (или таймер traffic-check это сделает). Config не тронут → rc=3.
+  if _profile_is_traffic_disabled "$profile_file"; then
+    safe_jq_write 'del(.expire_clients) | .expire_disabled = false' "$profile_file" || return 1
+    return 3
+  fi
+
   ports_json=$(_profile_ports_json "$profile_file")
   jq -e 'type == "array" and length > 0' <<< "$ports_json" >/dev/null 2>&1 || return 1
 
@@ -10180,7 +10226,7 @@ _expire_enable_profile() {
     if ! _expire_rebuild_clients "$profile_file"; then
       echo -e "${YELLOW}  ⚠ $(basename "$profile_file" .json): порты профиля не найдены — срок снят, клиент не восстановлен${NC}" >&2
       safe_jq_write 'del(.expire_clients) | .expire_disabled = false' "$profile_file" || return 1
-      return 0
+      return 3
     fi
   else
     safe_jq_write --arg uuid "$uuid" --argjson ports "$ports_json" --argjson saved "$saved" '
@@ -10211,6 +10257,9 @@ _expire_rebuild_clients() {
   local uuid rcount idx transport port flow added=false
   uuid=$(jq -r '.uuid // empty' "$profile_file")
   [[ -n "$uuid" ]] || return 1
+  local client_email
+  client_email=$(basename "$profile_file" .json)
+  [[ "$client_email" =~ ^[a-zA-Z0-9_-]{1,48}$ ]] || client_email=""
   rcount=$(_profile_route_count "$profile_file")
   [[ "$rcount" =~ ^[0-9]+$ ]] || rcount=0
 
@@ -10238,9 +10287,9 @@ _expire_rebuild_clients() {
     local exists
     exists=$(jq -r --argjson p "$port" '[.inbounds[] | select(.port == $p)] | length' "$CONFIG_FILE" 2>/dev/null)
     [[ "$exists" == "1" ]] || continue
-    if safe_jq_write --arg uuid "$uuid" --argjson port "$port" --arg flow "$flow" '
+    if safe_jq_write --arg uuid "$uuid" --argjson port "$port" --arg flow "$flow" --arg email "$client_email" '
       (.inbounds[] | select(.port == $port) | .settings.clients) |=
-        (map(select(.id != $uuid)) + [ {id: $uuid, flow: $flow} ])
+        (map(select(.id != $uuid)) + [ {id: $uuid, flow: $flow} + (if $email == "" then {} else {email: $email} end) ])
     ' "$CONFIG_FILE"; then
       added=true
     fi
@@ -12634,6 +12683,9 @@ quickstart_command() {
   run_migration "subhttp_expired_410_2026" "Subhttp expired 410" _migrate_subhttp_expired_410_2026 >/dev/null 2>&1 || true
   run_migration "subhttp_happ_legacy_xhttp_2026" "Subhttp HAPP legacy XHTTP route" _migrate_subhttp_happ_legacy_xhttp_2026 >/dev/null 2>&1 || true
   run_migration "subhttp_hysteria2_2026" "Subhttp hysteria2 links" _migrate_subhttp_hysteria2_2026 >/dev/null 2>&1 || true
+  run_migration "traffic_stats_2026" "Stats API traffic accounting" _migrate_traffic_stats_2026 >/dev/null 2>&1 || true
+  run_migration "traffic_timer_2026" "Traffic accounting timer" _migrate_traffic_timer_2026 >/dev/null 2>&1 || true
+  run_migration "subhttp_traffic_2026" "Subhttp traffic userinfo" _migrate_subhttp_traffic_2026 >/dev/null 2>&1 || true
   run_migration "subhttp_happ_xhttp_compat_2026" "Subhttp HAPP XHTTP compat" _migrate_subhttp_happ_xhttp_compat_2026 >/dev/null 2>&1 || true
   run_migration "subhttp_no_default_happ_routing_2026" "Subhttp no default HAPP routing profile" _migrate_subhttp_no_default_happ_routing_2026 >/dev/null 2>&1 || true
   run_migration "subhttp_stale_profiles_410_2026" "Subhttp stale profile 410 handler" _migrate_subhttp_stale_profiles_410_2026 >/dev/null 2>&1 || true
@@ -13132,6 +13184,9 @@ happ_setup_command() {
   run_migration "subscription_tokens_2026" "Subscription tokens" _migrate_subscription_tokens_2026 >/dev/null 2>&1 || true
   run_migration "happ_legacy_xhttp_route_2026" "HAPP legacy xhttp route" _migrate_happ_legacy_xhttp_route_2026 >/dev/null 2>&1 || true
   run_migration "subhttp_multiroute_2026" "Subhttp multiroute handler" _migrate_subhttp_multiroute_2026 >/dev/null 2>&1 || true
+  run_migration "traffic_stats_2026" "Stats API traffic accounting" _migrate_traffic_stats_2026 >/dev/null 2>&1 || true
+  run_migration "traffic_timer_2026" "Traffic accounting timer" _migrate_traffic_timer_2026 >/dev/null 2>&1 || true
+  run_migration "subhttp_traffic_2026" "Subhttp traffic userinfo" _migrate_subhttp_traffic_2026 >/dev/null 2>&1 || true
   fix_xray_permissions >/dev/null 2>&1 || true
 
   # 1. Убедиться, что subscription server установлен и запущен
@@ -13250,6 +13305,19 @@ profiles_command() {
     fi
     [[ "$rcount" =~ ^[0-9]+$ ]] || rcount=0
 
+    # Учёт трафика (Stats API): used/limit в байтах (0 = безлимит),
+    # traffic_disabled — бан по исчерпанному лимиту (drop-in клиентов).
+    local traffic_used traffic_limit traffic_disabled
+    traffic_used=$(_profile_traffic_used "$file" 2>/dev/null || printf '0')
+    [[ "$traffic_used" =~ ^[0-9]+$ ]] || traffic_used=0
+    traffic_limit=$(_profile_traffic_limit "$file" 2>/dev/null || printf '0')
+    [[ "$traffic_limit" =~ ^[0-9]+$ ]] || traffic_limit=0
+    if _profile_is_traffic_disabled "$file" 2>/dev/null; then
+      traffic_disabled=true
+    else
+      traffic_disabled=false
+    fi
+
     # Мультибэкенд: аддитивный объект .backends профиля (гранты hysteria2/awg).
     local backends
     backends=$(jq -c '.backends // {}' "$file" 2>/dev/null)
@@ -13268,13 +13336,17 @@ profiles_command() {
       --argjson pq "$pq" --arg subscription_url "$sub_url" \
       --argjson expire "$expire" --arg expire_date "$expire_date" \
       --argjson expire_disabled "$expire_disabled" \
+      --argjson traffic_used "$traffic_used" --argjson traffic_limit "$traffic_limit" \
+      --argjson traffic_disabled "$traffic_disabled" \
       --argjson backends "$backends" \
       '{name: $name, uuid: $uuid, transport: $transport, port: $port,
         fingerprint: $fingerprint, sni: $sni, created: $created,
         sub_token: $sub_token, multi_route: $multi_route, routes: $routes,
         pq_enabled: $pq, subscription_url: $subscription_url,
         expire: $expire, expire_date: $expire_date, expire_disabled: $expire_disabled,
-        expire_supported: true, backends: $backends}'
+        expire_supported: true, backends: $backends,
+        traffic_used: $traffic_used, traffic_limit: $traffic_limit,
+        traffic_disabled: $traffic_disabled, traffic_supported: true}'
   done
   printf ']\n'
   return 0
@@ -13781,11 +13853,15 @@ profile_expire_command() {
   fi
   chown root:root "$profile_file" 2>/dev/null || true
 
-  local apply_rc=0
+  local apply_rc=0 config_changed=false op_rc=0
   if [[ "$action" == "disable" ]]; then
-    _expire_disable_profile "$profile_file" || apply_rc=1
+    _expire_disable_profile "$profile_file" || op_rc=$?
+    [[ "$op_rc" -eq 0 || "$op_rc" -eq 3 ]] || apply_rc=1
+    [[ "$op_rc" -eq 0 ]] && config_changed=true
   elif [[ "$action" == "enable" ]]; then
-    _expire_enable_profile "$profile_file" || apply_rc=1
+    _expire_enable_profile "$profile_file" || op_rc=$?
+    [[ "$op_rc" -eq 0 || "$op_rc" -eq 3 ]] || apply_rc=1
+    [[ "$op_rc" -eq 0 ]] && config_changed=true
   fi
 
   if [[ "$apply_rc" -ne 0 ]]; then
@@ -13794,7 +13870,9 @@ profile_expire_command() {
     return 1
   fi
 
-  if [[ -n "$action" ]]; then
+  # Рестарт нужен только когда реально изменился config.json (rc=0).
+  # Flag-only изменения (rc=3) — профиль JSON, Xray их не читает.
+  if [[ "$config_changed" == true ]]; then
     fix_xray_permissions
     if ! safe_restart_xray "$rollback_config"; then
       echo '{"ok":false,"error":"Xray не принял конфиг — изменения откачены"}' >&3
@@ -13853,22 +13931,31 @@ expire_check_command() {
   fi
 
   local -a done_disable=() done_enable=()
+  local config_changed=false op_rc
   for profile_file in "${disable_files[@]}"; do
-    if _expire_disable_profile "$profile_file"; then
+    op_rc=0
+    _expire_disable_profile "$profile_file" || op_rc=$?
+    if [[ "$op_rc" -eq 0 || "$op_rc" -eq 3 ]]; then
       done_disable+=("$(basename "$profile_file" .json)")
+      [[ "$op_rc" -eq 0 ]] && config_changed=true
     fi
   done
   for profile_file in "${enable_files[@]}"; do
-    if _expire_enable_profile "$profile_file"; then
+    op_rc=0
+    _expire_enable_profile "$profile_file" || op_rc=$?
+    if [[ "$op_rc" -eq 0 || "$op_rc" -eq 3 ]]; then
       done_enable+=("$(basename "$profile_file" .json)")
+      [[ "$op_rc" -eq 0 ]] && config_changed=true
     fi
   done
 
   fix_xray_permissions
-  if ! safe_restart_xray "$rollback_config"; then
-    echo '{"ok":false,"error":"Xray не принял конфиг — изменения откачены"}' >&3
-    exec 1>&3 3>&-
-    return 1
+  if [[ "$config_changed" == true ]]; then
+    if ! safe_restart_xray "$rollback_config"; then
+      echo '{"ok":false,"error":"Xray не принял конфиг — изменения откачены"}' >&3
+      exec 1>&3 3>&-
+      return 1
+    fi
   fi
   exec 1>&3 3>&-
 
@@ -13933,6 +14020,558 @@ _migrate_expire_timer_2026() {
   local rc=$?
   [[ $rc -le 1 ]] && return 1
   return 2
+}
+
+# ═══════════════════════════════════════════════════════════
+# Учёт трафика профилей (Stats API) — байты на профиль + лимит.
+# Xray с stats{} + api(StatsService) отдаёт per-client счётчики
+# user>>>EMAIL>>>traffic>>>uplink/downlink; email клиента = имя профиля
+# (add_inbound + миграция traffic_stats_2026), поэтому multi-route профиль
+# со всех своих inbound'ов считается одним счётчиком.
+# used накапливается дельтами от watermark .traffic.last: счётчики Xray
+# сбрасываются при рестарте, поэтому при cur < last дельта = cur.
+# Превышение .traffic.limit → бан как у expire: снимок клиентов в
+# .traffic_clients + флаг .traffic_disabled (drop-in/uuid с inbound'ов).
+# ═══════════════════════════════════════════════════════════
+
+# Профиль "отключён по трафику" = в JSON стоит флаг .traffic_disabled.
+_profile_is_traffic_disabled() {
+  local profile_file="$1"
+  jq -e '.traffic_disabled == true' "$profile_file" >/dev/null 2>&1
+}
+
+# Числовое поле .traffic[$field] → целое >= 0; нечисловое/отрицательное → 0.
+_profile_traffic_bytes() {
+  local profile_file="$1" field="$2"
+  jq -r --arg f "$field" \
+    '((.traffic[$f] // 0) | if type == "number" and . >= 0 then floor else 0 end)' \
+    "$profile_file" 2>/dev/null
+}
+
+_profile_traffic_used() { _profile_traffic_bytes "$1" "used"; }
+_profile_traffic_limit() { _profile_traffic_bytes "$1" "limit"; }
+
+# "100GB" / "1.5TB" / "500 MB" / "0" / "none" → байты в stdout.
+# "none"/0 → 0 (безлимит). Голое число трактуется как байты.
+_normalize_traffic_limit() {
+  local raw="$1" num unit mult lc
+  raw="${raw//[[:space:]]/}"
+  [[ -n "$raw" ]] || return 1
+  [[ "${raw,,}" == "none" ]] && { printf '0'; return 0; }
+  lc="${raw,,}"
+  if [[ "$lc" =~ ^([0-9]+([.][0-9]+)?)([bkmgt][b]?)?$ ]]; then
+    num="${BASH_REMATCH[1]}"
+    unit="${BASH_REMATCH[3]}"
+    case "$unit" in
+      ""|"b") mult=$((1)) ;;
+      kb)     mult=$((1024)) ;;
+      mb)     mult=$((1024*1024)) ;;
+      gb)     mult=$((1024*1024*1024)) ;;
+      tb)     mult=$((1024*1024*1024*1024)) ;;
+      *) return 1 ;;
+    esac
+    awk -v n="$num" -v m="$mult" 'BEGIN { printf "%.0f", n*m }'
+    return 0
+  fi
+  return 1
+}
+
+# Порт api-inbound из config.json (tag="api").
+_api_port() {
+  jq -r 'first(.inbounds[]? | select(.tag == "api") | .port) // empty' "$CONFIG_FILE" 2>/dev/null
+}
+
+# Снапшот счётчиков {"<email>": <uplink+downlink>} одной JSON-строкой.
+# Счётчики "since xray start" (без -reset): накопление делает вызывающая сторона.
+_traffic_stats_snapshot() {
+  local api_port out snap
+  api_port=$(_api_port)
+  [[ "$api_port" =~ ^[0-9]+$ ]] || return 1
+  out=$(timeout 5 "$XRAY_BIN" api statsquery --server="127.0.0.1:${api_port}" --pattern "" 2>/dev/null) || return 1
+  snap=$(jq -c '
+    [.stat[]?
+     | select(.name | test("^user>>>[^>]+>>>traffic>>>(uplink|downlink)$"))
+     | {email: (.name | split(">>>")[1]), v: ((.value | tostring | tonumber?) // 0)}
+    ] | group_by(.email)
+      | map({key: .[0].email, value: (map(.v) | add)})
+      | from_entries
+  ' <<< "$out" 2>/dev/null) || return 1
+  [[ -n "$snap" ]] || snap="{}"
+  printf '%s' "$snap"
+}
+
+# Отключение профиля по исчерпанному лимиту: снимок клиентов в .traffic_clients
+# + флаг, uuid уходит с inbound'ов портов профиля. Inbound'ы не удаляются
+# (как в expire): сброс/подъём лимита вернёт клиента без смены shortId.
+# rc=0 — config изменён; rc=3 — клиента уже нет, только флаги; rc=1 — ошибка.
+_traffic_disable_profile() {
+  local profile_file="$1"
+  local uuid ports_json saved
+  uuid=$(jq -r '.uuid // empty' "$profile_file")
+  [[ -n "$uuid" ]] || return 1
+  ports_json=$(_profile_ports_json "$profile_file")
+  jq -e 'type == "array" and length > 0' <<< "$ports_json" >/dev/null 2>&1 || return 1
+
+  saved=$(jq -c --arg uuid "$uuid" --argjson ports "$ports_json" '
+    [.inbounds[] as $in
+     | select(($ports | index($in.port)) != null)
+     | $in.settings.clients[]? | select(.id == $uuid)
+     | {port: $in.port, client: .}]' "$CONFIG_FILE" 2>/dev/null) || return 1
+
+  local rc=0
+  if [[ "$(jq 'length' <<< "$saved")" != "0" ]]; then
+    safe_jq_write --arg uuid "$uuid" --argjson ports "$ports_json" '
+      .inbounds |= map(
+        .port as $p |
+        if (($ports | index($p)) != null) then
+          .settings.clients = ((.settings.clients // []) | map(select(.id != $uuid)))
+        else . end
+      )
+    ' "$CONFIG_FILE" || return 1
+  else
+    rc=3
+  fi
+  safe_jq_write --argjson saved "$saved" \
+    '.traffic_clients = $saved | .traffic_disabled = true' "$profile_file" || return 1
+  # Мультибэкенд: событие expired — реген уберёт грант (фильтр traffic_disabled
+  # в _hysteria2_regen_config/_awg_regen_config).
+  _backend_apply_profile_lifecycle "$(basename "$profile_file" .json)" expired
+  return $rc
+}
+
+# Включение профиля после снятия/подъёма лимита: клиенты из .traffic_clients
+# (с актуальным uuid), при пустом снимке — rebuild из метаданных routes.
+# Кросс-гард: срок всё ещё истёк → снимаем только флаг (.traffic_disabled),
+# клиентов не возвращаем; config не тронут → rc=3.
+_traffic_enable_profile() {
+  local profile_file="$1"
+  local uuid ports_json saved
+  uuid=$(jq -r '.uuid // empty' "$profile_file")
+  [[ -n "$uuid" ]] || return 1
+
+  if _profile_is_expire_disabled "$profile_file"; then
+    safe_jq_write 'del(.traffic_clients) | .traffic_disabled = false' "$profile_file" || return 1
+    return 3
+  fi
+
+  ports_json=$(_profile_ports_json "$profile_file")
+  jq -e 'type == "array" and length > 0' <<< "$ports_json" >/dev/null 2>&1 || return 1
+
+  saved=$(jq -c '.traffic_clients // []' "$profile_file") || return 1
+
+  if [[ "$(jq 'length' <<< "$saved")" == "0" ]]; then
+    if ! _expire_rebuild_clients "$profile_file"; then
+      echo -e "${YELLOW}  ⚠ $(basename "$profile_file" .json): порты профиля не найдены — лимит снят, клиент не восстановлен${NC}" >&2
+      safe_jq_write 'del(.traffic_clients) | .traffic_disabled = false' "$profile_file" || return 1
+      return 3
+    fi
+  else
+    safe_jq_write --arg uuid "$uuid" --argjson ports "$ports_json" --argjson saved "$saved" '
+      .inbounds |= map(
+        .port as $p |
+        if (($ports | index($p)) != null) then
+          .settings.clients = ((.settings.clients // []) | map(select(.id != $uuid)))
+        else . end
+      )
+      | .inbounds |= map(
+          .port as $p |
+          if (($ports | index($p)) != null) and any($saved[]; .port == $p) then
+            .settings.clients = ((.settings.clients // [])
+              + [$saved[] | select(.port == $p) | .client | .id = $uuid])
+          else . end
+        )' "$CONFIG_FILE" || return 1
+  fi
+  safe_jq_write 'del(.traffic_clients) | .traffic_disabled = false' "$profile_file" || return 1
+  _backend_apply_profile_lifecycle "$(basename "$profile_file" .json)" restored
+  return 0
+}
+
+# xrayebator traffic-check — таймер xrayebator-traffic.timer и вручную.
+# 1) снимает счётчики Stats API и накапливает .traffic.used по каждому профилю;
+# 2) отключает профили с исчерпанным лимитом, возвращает те, где лимит подняли
+#    или сбросили. Идемпотентен: без изменений конфига — без рестарта.
+traffic_check_command() {
+  export TERM=dumb
+  export XRAYEBATOR_NONINTERACTIVE=1
+
+  local api_port
+  api_port=$(_api_port)
+  if [[ ! "$api_port" =~ ^[0-9]+$ ]]; then
+    echo '{"ok":false,"error":"Stats API не настроен (миграция traffic_stats_2026). Обновите менеджер: xrayebator update <ветка>"}'
+    return 1
+  fi
+
+  local snapshot
+  if ! snapshot=$(_traffic_stats_snapshot); then
+    echo '{"ok":false,"error":"Stats API недоступен — не удалось получить счётчики"}'
+    return 1
+  fi
+
+  # Проход 1: накопление used (только profile JSON; config не трогаем).
+  local -a disable_files=() enable_files=()
+  local profile_file name cur last delta used limit new_used
+  for profile_file in "$PROFILES_DIR"/*.json; do
+    [[ -f "$profile_file" ]] || continue
+    name=$(basename "$profile_file" .json)
+    cur=$(jq -r --arg e "$name" '((.[$e] // 0) | if type == "number" and . >= 0 then floor else 0 end)' <<< "$snapshot" 2>/dev/null)
+    [[ "$cur" =~ ^[0-9]+$ ]] || cur=0
+    last=$(jq -r '((.traffic.last // 0) | if type == "number" and . >= 0 then floor else 0 end)' "$profile_file" 2>/dev/null)
+    [[ "$last" =~ ^[0-9]+$ ]] || last=0
+    used=$(_profile_traffic_used "$profile_file")
+    limit=$(_profile_traffic_limit "$profile_file")
+    # Счётчик Xray живёт с момента старта процесса: cur < last → был рестарт.
+    if [[ "$cur" -ge "$last" ]]; then
+      delta=$((cur - last))
+    else
+      delta=$cur
+    fi
+
+    if [[ "$delta" -gt 0 ]] || ! jq -e '(.traffic // null) != null' "$profile_file" >/dev/null 2>&1; then
+      new_used=$((used + delta))
+      if ! safe_jq_write --argjson used "$new_used" --argjson last "$cur" '
+          .traffic = ((.traffic // {}) + {used: $used, last: $last})
+        ' "$profile_file"; then
+        continue
+      fi
+      used=$new_used
+    fi
+
+    if [[ "$limit" -gt 0 ]] && [[ "$used" -ge "$limit" ]]; then
+      if ! _profile_is_traffic_disabled "$profile_file" || _profile_client_in_config "$profile_file"; then
+        disable_files+=("$profile_file")
+      fi
+    elif _profile_is_traffic_disabled "$profile_file"; then
+      enable_files+=("$profile_file")
+    fi
+  done
+
+  if [[ ${#disable_files[@]} -eq 0 && ${#enable_files[@]} -eq 0 ]]; then
+    echo '{"ok":true,"disabled":[],"enabled":[]}'
+    return 0
+  fi
+
+  exec 3>&1
+  exec 1>&2
+
+  local rollback_config=""
+  if ! backup_config "traffic_check" rollback_config; then
+    echo '{"ok":false,"error":"Не удалось создать бэкап config.json"}' >&3
+    exec 1>&3 3>&-
+    return 1
+  fi
+
+  local -a done_disable=() done_enable=()
+  local config_changed=false op_rc
+  for profile_file in "${disable_files[@]}"; do
+    op_rc=0
+    _traffic_disable_profile "$profile_file" || op_rc=$?
+    if [[ "$op_rc" -eq 0 || "$op_rc" -eq 3 ]]; then
+      done_disable+=("$(basename "$profile_file" .json)")
+      [[ "$op_rc" -eq 0 ]] && config_changed=true
+    fi
+  done
+  for profile_file in "${enable_files[@]}"; do
+    op_rc=0
+    _traffic_enable_profile "$profile_file" || op_rc=$?
+    if [[ "$op_rc" -eq 0 || "$op_rc" -eq 3 ]]; then
+      done_enable+=("$(basename "$profile_file" .json)")
+      [[ "$op_rc" -eq 0 ]] && config_changed=true
+    fi
+  done
+
+  fix_xray_permissions
+  if [[ "$config_changed" == true ]]; then
+    if ! safe_restart_xray "$rollback_config"; then
+      echo '{"ok":false,"error":"Xray не принял конфиг — изменения откачены"}' >&3
+      exec 1>&3 3>&-
+      return 1
+    fi
+  fi
+  exec 1>&3 3>&-
+
+  jq -n \
+    --argjson d "$(printf '%s\n' "${done_disable[@]}" | jq -R . | jq -s 'map(select(length > 0))')" \
+    --argjson e "$(printf '%s\n' "${done_enable[@]}" | jq -R . | jq -s 'map(select(length > 0))')" \
+    '{ok: true, disabled: $d, enabled: $e}'
+  return 0
+}
+
+# xrayebator profile-limit --name NAME [--limit 100GB|none] [--reset]
+# Лимит трафика и/или сброс счётчика. Применяется сразу: превышение →
+# отключение, подъём выше used / сброс → включение (контракт expire).
+profile_limit_command() {
+  export TERM=dumb
+  export XRAYEBATOR_NONINTERACTIVE=1
+
+  local name="" raw="" have_limit=false reset=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --name) name="$2"; shift 2 ;;
+      --limit) raw="$2"; have_limit=true; shift 2 ;;
+      --reset) reset=true; shift ;;
+      *) shift ;;
+    esac
+  done
+
+  if [[ -z "$name" ]] || ! [[ "$name" =~ ^[a-zA-Z0-9_-]{1,48}$ ]]; then
+    echo '{"ok":false,"error":"Некорректное имя профиля (1-48 симв.: a-z, 0-9, _ -)"}'
+    return 1
+  fi
+  if [[ "$have_limit" != true && "$reset" != true ]]; then
+    echo '{"ok":false,"error":"Укажите --limit 100GB|500MB|1.5TB|none и/или --reset"}'
+    return 1
+  fi
+
+  local limit=0
+  if [[ "$have_limit" == true ]]; then
+    if ! limit=$(_normalize_traffic_limit "$raw"); then
+      echo '{"ok":false,"error":"Некорректный лимит: 500MB/1.5GB/2TB/none/0"}'
+      return 1
+    fi
+  fi
+
+  local profile_file="$PROFILES_DIR/$name.json"
+  if [[ ! -f "$profile_file" ]]; then
+    echo "{\"ok\":false,\"error\":\"Профиль $name не найден\"}"
+    return 1
+  fi
+
+  local now_used new_used
+  [[ "$have_limit" == true ]] || limit=$(_profile_traffic_limit "$profile_file")
+  now_used=$(_profile_traffic_used "$profile_file")
+  new_used="$now_used"
+  [[ "$reset" == true ]] && new_used=0
+
+  # Что делать с баном: включить/отключить/ничего.
+  local action=""
+  if _profile_is_traffic_disabled "$profile_file"; then
+    if [[ "$limit" -eq 0 ]] || [[ "$new_used" -lt "$limit" ]]; then action="enable"; fi
+  else
+    if [[ "$limit" -gt 0 ]] && [[ "$new_used" -ge "$limit" ]]; then action="disable"; fi
+  fi
+
+  # Тот же контракт JSON-only: статусы helpers — только в stderr.
+  exec 3>&1
+  exec 1>&2
+
+  local rollback_config=""
+  if [[ -n "$action" ]] && ! backup_config "cli_traffic_limit_$name" rollback_config; then
+    echo '{"ok":false,"error":"Не удалось создать бэкап config.json"}' >&3
+    exec 1>&3 3>&-
+    return 1
+  fi
+
+  if ! safe_jq_write --argjson limit "$limit" --argjson used "$new_used" '
+      .traffic = ((.traffic // {}) + {limit: $limit, used: $used})
+    ' "$profile_file"; then
+    echo "{\"ok\":false,\"error\":\"Не удалось записать лимит в профиль\"}" >&3
+    exec 1>&3 3>&-
+    return 1
+  fi
+  chown root:root "$profile_file" 2>/dev/null || true
+
+  local apply_rc=0 config_changed=false op_rc=0
+  if [[ "$action" == "disable" ]]; then
+    _traffic_disable_profile "$profile_file" || op_rc=$?
+    [[ "$op_rc" -eq 0 || "$op_rc" -eq 3 ]] || apply_rc=1
+    [[ "$op_rc" -eq 0 ]] && config_changed=true
+  elif [[ "$action" == "enable" ]]; then
+    _traffic_enable_profile "$profile_file" || op_rc=$?
+    [[ "$op_rc" -eq 0 || "$op_rc" -eq 3 ]] || apply_rc=1
+    [[ "$op_rc" -eq 0 ]] && config_changed=true
+  fi
+
+  if [[ "$apply_rc" -ne 0 ]]; then
+    echo "{\"ok\":false,\"error\":\"Не удалось применить включение/отключение профиля\"}" >&3
+    exec 1>&3 3>&-
+    return 1
+  fi
+
+  # Рестарт только когда реально изменился config.json (rc=0 операции).
+  if [[ "$config_changed" == true ]]; then
+    fix_xray_permissions
+    if ! safe_restart_xray "$rollback_config"; then
+      echo '{"ok":false,"error":"Xray не принял конфиг — изменения откачены"}' >&3
+      exec 1>&3 3>&-
+      return 1
+    fi
+  fi
+  exec 1>&3 3>&-
+
+  local disabled=false
+  if _profile_is_traffic_disabled "$profile_file"; then disabled=true; fi
+  jq -n --arg name "$name" --argjson limit "$limit" --argjson used "$new_used" \
+    --argjson disabled "$disabled" \
+    '{ok: true, name: $name, traffic_limit: $limit, traffic_used: $used, traffic_disabled: $disabled}'
+  return 0
+}
+
+# systemd-таймер учёта трафика (root-контекст: при бане мутит config.json).
+# Контракт no-op как у expire-таймера: уже включён и ExecStart актуален → return 1.
+_install_traffic_timer() {
+  local unit=/etc/systemd/system/xrayebator-traffic.service
+  local timer=/etc/systemd/system/xrayebator-traffic.timer
+
+  if [[ -f "$unit" && -f "$timer" ]] \
+     && grep -q "ExecStart=/usr/local/bin/xrayebator traffic-check" "$unit" \
+     && systemctl is-enabled --quiet xrayebator-traffic.timer 2>/dev/null; then
+    return 1
+  fi
+
+  cat > "$unit" << 'SVCEOF'
+[Unit]
+Description=Xrayebator: per-profile traffic accounting and limits
+After=network-online.target xray.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/xrayebator traffic-check
+IOSchedulingClass=idle
+SVCEOF
+  chmod 644 "$unit"
+  chown root:root "$unit" || return 2
+
+  cat > "$timer" << 'TMREOF'
+[Unit]
+Description=Run Xrayebator traffic accounting every 5 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
+TMREOF
+  chmod 644 "$timer"
+  chown root:root "$timer" || return 2
+
+  systemctl daemon-reload || return 2
+  systemctl enable --now xrayebator-traffic.timer >/dev/null 2>&1 || return 2
+  return 0
+}
+
+# Контракт run_migration: 1 = no-op (маркер без рестарта xray — сам таймер
+# config.json не трогает); ≥2 = фалл (повтор).
+_migrate_traffic_timer_2026() {
+  _install_traffic_timer
+  local rc=$?
+  [[ $rc -le 1 ]] && return 1
+  return 2
+}
+
+# Миграция traffic_stats_2026: stats{} + api(StatsService) + policy.system
+# + api-inbound (127.0.0.1, tag=api) + routing rule inboundTag=api + email
+# каждому клиенту всех профилей (email = имя профиля — ключ учёта трафика).
+# rc=1 (no-op) если всё уже на месте — свежая установка из install.sh.
+_migrate_traffic_stats_2026() {
+  local changed=false
+
+  local api_port
+  api_port=$(jq -r 'first(.inbounds[]? | select(.tag == "api") | .port) // empty' "$CONFIG_FILE" 2>/dev/null)
+  if [[ ! "$api_port" =~ ^[0-9]+$ ]]; then
+    # Порт api-inbound: 10085 стандарт; при занятости — первый свободный из 10085-10094.
+    local p candidate=""
+    for p in $(seq 10085 10094); do
+      if ! jq -e --argjson p "$p" 'any(.inbounds[]?; .port == $p)' "$CONFIG_FILE" >/dev/null 2>&1; then
+        candidate=$p
+        break
+      fi
+    done
+    if [[ -z "$candidate" ]]; then
+      echo -e "${RED}  ✗ Нет свободного порта из 10085-10094 для Stats API inbound${NC}"
+      return 2
+    fi
+    if ! safe_jq_write --argjson p "$candidate" '
+      .inbounds = ((.inbounds // []) + [{
+        "listen": "127.0.0.1",
+        "port": $p,
+        "protocol": "dokodemo-door",
+        "settings": {"address": "127.0.0.1"},
+        "tag": "api"
+      }])
+    ' "$CONFIG_FILE"; then
+      return 2
+    fi
+    changed=true
+  fi
+
+  if [[ "$(jq -r '[.routing.rules[]? | select((.outboundTag // "") == "api")] | length' "$CONFIG_FILE" 2>/dev/null)" == "0" ]]; then
+    if ! safe_jq_write '
+      .routing.rules = [{"type": "field", "inboundTag": ["api"], "outboundTag": "api"}] + (.routing.rules // [])
+    ' "$CONFIG_FILE"; then
+      return 2
+    fi
+    changed=true
+  fi
+
+  if [[ "$(jq -r 'has("stats")' "$CONFIG_FILE" 2>/dev/null)" != "true" ]]; then
+    if ! safe_jq_write '.stats = (.stats // {})' "$CONFIG_FILE"; then
+      return 2
+    fi
+    changed=true
+  fi
+
+  if [[ "$(jq -r 'has("api")' "$CONFIG_FILE" 2>/dev/null)" != "true" ]]; then
+    if ! safe_jq_write '.api = {tag: "api", services: ["StatsService"]}' "$CONFIG_FILE"; then
+      return 2
+    fi
+    changed=true
+  fi
+
+  if [[ "$(jq -r '(.policy.system.statsInboundUplink == true) and (.policy.system.statsInboundDownlink == true)' "$CONFIG_FILE" 2>/dev/null)" != "true" ]]; then
+    if ! safe_jq_write '
+      .policy = ((.policy // {}) + {system: ((.policy.system // {}) + {
+        statsInboundUplink: true,
+        statsInboundDownlink: true
+      })})
+    ' "$CONFIG_FILE"; then
+      return 2
+    fi
+    changed=true
+  fi
+
+  # email клиентам: ключ учёта трафика = имя профиля.
+  local profile_file name uuid need_email
+  for profile_file in "$PROFILES_DIR"/*.json; do
+    [[ -f "$profile_file" ]] || continue
+    name=$(basename "$profile_file" .json)
+    [[ "$name" =~ ^[a-zA-Z0-9_-]{1,48}$ ]] || continue
+    uuid=$(jq -r '.uuid // empty' "$profile_file" 2>/dev/null)
+    [[ -n "$uuid" ]] || continue
+    need_email=$(jq -r --arg u "$uuid" --arg e "$name" '
+      any(.inbounds[]?; ((.settings.clients // []) | any(.id == $u and ((.email // "") != $e))))
+    ' "$CONFIG_FILE" 2>/dev/null)
+    [[ "$need_email" == "true" ]] || continue
+    if ! safe_jq_write --arg uuid "$uuid" --arg email "$name" '
+      .inbounds |= map(
+        if ((.settings.clients // []) | any(.id == $uuid)) then
+          .settings.clients = (.settings.clients | map(if .id == $uuid then . + {email: $email} else . end))
+        else . end
+      )
+    ' "$CONFIG_FILE"; then
+      return 2
+    fi
+    changed=true
+  done
+
+  [[ "$changed" == "true" ]] && return 0
+  return 1
+}
+
+# Миграция subhttp_traffic_2026: handler отдаёт реальный subscription-userinfo
+# (used/limit из .traffic профиля) и 410 профилям, отключённым по трафику.
+# Регенерирует handler существующим repair-путём (как subhttp_hysteria2_2026).
+_migrate_subhttp_traffic_2026() {
+  [[ -f /usr/local/etc/xray/.subhttp_traffic_2026 ]] && return 1
+  if [[ -f /usr/local/etc/xray/.subscription_installed ]]; then
+    if ! _subscription_repair_handler; then
+      echo -e "${RED}✗ Не удалось регенерировать subhttp.sh (traffic)${NC}"
+      return 2
+    fi
+  fi
+  return 0
 }
 
 # ═══════════════════════════════════════════════════════════
@@ -14781,6 +15420,14 @@ if [[ "$XRAYEBATOR_SOURCED" -eq 0 ]]; then
       shift
       expire_check_command "$@"
       ;;
+    traffic-check)
+      shift
+      traffic_check_command "$@"
+      ;;
+    profile-limit)
+      shift
+      profile_limit_command "$@"
+      ;;
     fp-change)
       shift
       fp_change_command "$@"
@@ -14870,6 +15517,8 @@ if [[ "$XRAYEBATOR_SOURCED" -eq 0 ]]; then
       echo -e "  ${CYAN}sudo xrayebator profile-revoke --name N [--full]${NC} — новый sub_token; --full: и новый uuid, старые клиенты отваливаются (JSON)"
       echo -e "  ${CYAN}sudo xrayebator profile-expire --name N --expire 2006-12-31|epoch|none${NC} — срок действия профиля (JSON)"
       echo -e "  ${CYAN}sudo xrayebator expire-check${NC} — применить наступившие сроки (для systemd-таймера) (JSON)"
+      echo -e "  ${CYAN}sudo xrayebator profile-limit --name N --limit 100GB|none [--reset]${NC} — лимит трафика профиля (JSON)"
+      echo -e "  ${CYAN}sudo xrayebator traffic-check${NC} — учесть трафик и применить лимиты (для systemd-таймера) (JSON)"
       echo -e "  ${CYAN}sudo xrayebator sni-list${NC} — список допустимых SNI (JSON)"
       echo -e "  ${CYAN}sudo xrayebator sni-change --name N [--route R] --sni S${NC} — сменить SNI (JSON; обновит все профили на порту)"
       echo -e "  ${CYAN}sudo xrayebator port-change --name N [--route R] --port P|random${NC} — сменить порт (JSON; reconnect клиентов)"
