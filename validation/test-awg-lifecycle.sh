@@ -47,8 +47,11 @@ export XRAYEBATOR_SERVER_ADDR_OVERRIDE="203.0.113.10"
 source ./xrayebator || fail "source ./xrayebator failed"
 
 # 1) junk-параметры: дефолтный диалект Amnezia (совместимость с их мобильными
-#    клиентами) + уникальность S1..S4 (5 прогонов), включая 3.1-поля
-for _ in 1 2 3 4 5; do
+#    клиентами) + уникальность S1..S4, включая 3.1-поля. Прогон с фиксированными
+#    сидами (300): прежний генератор не проверял S1 != S2 и давал коллизию в ~1.4%
+#    установок — пять прогонов такой баг не ловили (тест падал флейком).
+for seed in {1..300}; do
+  RANDOM=$seed
   junk=$(_awg_gen_junk)
   jq -e '
     .Jc == 5 and .Jmin == 10 and .Jmax == 50 and
@@ -58,17 +61,22 @@ for _ in 1 2 3 4 5; do
     (.S1 + 56) != .S2 and
     .H1 == 1 and .H2 == 2 and .H3 == 3 and .H4 == 4 and
     (.HeaderProtectionKey | length == 44 and endswith("="))
-  ' <<<"$junk" >/dev/null || fail "junk/3.1 params out of spec: $junk"
+  ' <<<"$junk" >/dev/null || fail "junk/3.1 params out of spec (seed $seed): $junk"
 done
-pass "junk = Amnezia defaults (Jc=5/Jmin=10/Jmax=50/H=1..4) + S1-S4 unique + HPK (5/5 runs)"
+pass "junk = Amnezia defaults (Jc=5/Jmin=10/Jmax=50/H=1..4) + S1-S4 unique + HPK (300 seeded runs)"
 
 # 1b) _awg_ensure_31_params дополняет старый params (до-3.1 установка)
 old_junk=$(jq -c 'del(.S3, .S4, .HeaderProtectionKey)' <<<"$junk")
-upgraded=$(_awg_ensure_31_params "$old_junk") || fail "ensure_31_params"
-jq -e 'has("S3") and has("S4") and (.S3 >= 12) and (.S4 >= 12) and
-       (.HeaderProtectionKey | length == 44)' <<<"$upgraded" >/dev/null \
-  || fail "ensure_31_params did not add 3.1 fields: $upgraded"
-pass "_awg_ensure_31_params upgrades legacy params with S3/S4/HPK"
+for seed in {1..100}; do
+  RANDOM=$seed
+  upgraded=$(_awg_ensure_31_params "$old_junk") || fail "ensure_31_params"
+  jq -e 'has("S3") and has("S4") and (.S3 >= 12) and (.S3 <= 64) and
+         (.S4 >= 12) and (.S4 <= 64) and
+         ([.S1, .S2, .S3, .S4] | (length == ([unique[]] | length))) and
+         (.HeaderProtectionKey | length == 44)' <<<"$upgraded" >/dev/null \
+    || fail "ensure_31_params did not add valid 3.1 fields (seed $seed): $upgraded"
+done
+pass "_awg_ensure_31_params upgrades legacy params with S3/S4 (12..64, unique) + HPK"
 
 # 2) keygen через awg (фейковый): три непустых base64
 keys=$(_awg_gen_keys) || fail "awg gen keys"

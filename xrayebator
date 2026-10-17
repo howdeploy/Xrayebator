@@ -2975,7 +2975,10 @@ _awg_gen_junk() {
   jmax=50
   s1=$((RANDOM % 139 + 12))                            # 12..150
   s2=$((RANDOM % 139 + 12))
-  while (( s2 == s1 + 56 )); do s2=$((RANDOM % 139 + 12)); done
+  # Уникальность S1..S4 (спека выше) + запрет S2 = S1+56: прежний цикл проверял
+  # только второй инвариант, поэтому ~1.4% установок получали S1 == S2 и
+  # validation-тест падал флейком.
+  while (( s2 == s1 || s2 == s1 + 56 )); do s2=$((RANDOM % 139 + 12)); done
   s3=$((RANDOM % 53 + 12))                             # 12..64 (их лимит cookie)
   while (( s3 == s1 || s3 == s2 )); do s3=$((RANDOM % 53 + 12)); done
   s4=$((RANDOM % 53 + 12))
@@ -2998,10 +3001,13 @@ _awg_ensure_31_params() {
     echo "$junk"
     return 0
   fi
-  local s3=$((RANDOM % 139 + 12)) s4=$((RANDOM % 139 + 12)) hpk
+  # S3/S4 — лимиты валидатора Amnezia (12..64), как в _awg_gen_junk: прежний
+  # диапазон 12..150 выходил за cookie-лимит клиентов и расходился с основным
+  # генератором.
+  local s3=$((RANDOM % 53 + 12)) s4=$((RANDOM % 53 + 12)) hpk
   local s1=$(jq -r '.S1 // 15' <<<"$junk") s2=$(jq -r '.S2 // 16' <<<"$junk")
-  while (( s3 == s1 || s3 == s2 )); do s3=$((RANDOM % 139 + 12)); done
-  while (( s4 == s1 || s4 == s2 || s4 == s3 )); do s4=$((RANDOM % 139 + 12)); done
+  while (( s3 == s1 || s3 == s2 )); do s3=$((RANDOM % 53 + 12)); done
+  while (( s4 == s1 || s4 == s2 || s4 == s3 )); do s4=$((RANDOM % 53 + 12)); done
   hpk=$(openssl rand -base64 32 2>/dev/null) || return 1
   jq -n --argjson j "$junk" --argjson s3 "$s3" --argjson s4 "$s4" --arg hpk "$hpk" \
     '$j + {S3: $s3, S4: $s4, HeaderProtectionKey: $hpk}'
