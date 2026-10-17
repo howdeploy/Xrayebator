@@ -13664,6 +13664,7 @@ inspect_command() {
 
 quickstart_command() {
   local email="" email_mode="provided" deploy_pq=false
+  local dns01_domain="" dns01_provider="" dns01_token="" dns01_aws_key="" dns01_aws_secret=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --email) email="$2"; email_mode="provided"; shift 2 ;;
@@ -13672,6 +13673,13 @@ quickstart_command() {
       # не подключится, поэтому выбор делает оператор (GUI-визард или флаг).
       --pq) deploy_pq=true; shift ;;
       --without-pq) deploy_pq=false; shift ;;
+      # DNS-01 как фолбэк развёртывания: если :80 у хостера отфильтрован, вместо
+      # http_tls-деградации выпускаем серт по TXT-записи (домен + провайдер + токен).
+      --dns01-domain) dns01_domain="${2:-}"; shift 2 ;;
+      --dns01-provider) dns01_provider="${2:-}"; shift 2 ;;
+      --dns01-token) dns01_token="${2:-}"; shift 2 ;;
+      --dns01-aws-access-key-id) dns01_aws_key="${2:-}"; shift 2 ;;
+      --dns01-aws-secret-access-key) dns01_aws_secret="${2:-}"; shift 2 ;;
       *) shift ;;
     esac
   done
@@ -13682,6 +13690,31 @@ quickstart_command() {
   if [[ "$email_mode" == "provided" ]] && { [[ -z "$email" ]] || ! [[ "$email" =~ ^[^@]+@[^@]+\.[^@]+$ ]]; }; then
     echo '{"ok":false,"error":"Некорректный email (нужен для Let'\''s Encrypt)"}'
     return 1
+  fi
+
+  # DNS-01 запрошен, если оператор передал хотя бы один из его параметров. Проверяем
+  # их ДО системных изменений: молча проигнорированный DNS-01 выглядел бы как успешный
+  # деплой, а подписка осталась бы в http_tls — то есть ровно та деградация, от которой
+  # этот фолбэк и спасает.
+  local dns01_requested=false
+  if [[ -n "$dns01_domain" || -n "$dns01_provider" || -n "$dns01_token" ]]; then
+    dns01_requested=true
+    if ! _dns01_validate_domain "$dns01_domain"; then
+      echo '{"ok":false,"error":"DNS-01: укажите --dns01-domain sub.example.com (A/AAAA должна указывать на этот VPS)"}'
+      return 1
+    fi
+    if ! _dns01_provider_supported "$dns01_provider"; then
+      echo '{"ok":false,"error":"DNS-01: укажите --dns01-provider cloudflare или --dns01-provider route53"}'
+      return 1
+    fi
+    if [[ "$dns01_provider" == "cloudflare" && ! "$dns01_token" =~ ^[A-Za-z0-9_-]{20,}$ ]]; then
+      echo '{"ok":false,"error":"DNS-01: укажите --dns01-token API-токен Cloudflare с правом DNS:Edit на зону"}'
+      return 1
+    fi
+    if [[ "$dns01_provider" == "route53" && ( -z "$dns01_aws_key" || -z "$dns01_aws_secret" ) ]]; then
+      echo '{"ok":false,"error":"DNS-01: укажите --dns01-aws-access-key-id и --dns01-aws-secret-access-key"}'
+      return 1
+    fi
   fi
 
   export TERM=dumb
@@ -13986,6 +14019,31 @@ NGINXHTTP
          [[ -n "$cert_epoch" && "$cert_epoch" -gt "$cert_now" ]]; then
         echo "  -> certbot не смог выпустить новый серт, но действующий есть — переиспользую его (${cert_end})" >&2
       else
+        # Fallback 2a (domain_tls): DNS-01 доказывает владение доменом TXT-записью,
+        # поэтому upstream-фильтр :80 ему не мешает. _dns01_install сам рисует vhost
+        # (один TLS-сервер, без :80), открывает порт и пишет маркеры domain_tls —
+        # ниже nginx-блок и запись маркеров для этого режима пропускаются.
+        local dns01_ok=false
+        if [[ "$dns01_requested" == "true" ]]; then
+          local _dns_rc=0
+          # Прогресс _dns01_install уводим в stderr: stdout quickstart — только JSON.
+          exec 3>&1
+          exec 1>&2
+          _dns01_install "$dns01_domain" "$dns01_provider" "$email" "$dns01_token" \
+            "$dns01_aws_key" "$dns01_aws_secret" "8443" || _dns_rc=$?
+          exec 1>&3
+          exec 3>&-
+          if [[ "$_dns_rc" -eq 0 ]]; then
+            dns01_ok=true
+          else
+            echo "  ⚠ DNS-01 (${dns01_provider}) не выпустил серт — перехожу на http_tls-фолбэк" >&2
+          fi
+        fi
+        if [[ "$dns01_ok" == "true" ]]; then
+          SUB_TLS_MODE="domain_tls"
+          cert_dir="/etc/letsencrypt/live/${dns01_domain}"
+          echo "  ✓ Подписка по домену ${dns01_domain} (DNS-01, ${dns01_provider}), :80 не использовался" >&2
+        else
         # Fallback 2 (http_tls): hoster-уровневая блокировка http-01 (LE validation
         # получает "Connection reset by peer" — порт 80 фильтруется upstream до нашего
         # стека; подтверждено tcpdump + check-host на VPS 150.241.65.101, 2026-10-08).
@@ -14013,6 +14071,7 @@ NGINXHTTP
         echo "  ⚠ Подписка разворачивается по HTTP (fallback): http://${server_ip}:8080/sub/<token>" >&2
         echo "    Токен URL остаётся bearer-credential; повторите quickstart после разблокировки :80 —" >&2
         echo "    тогда будет выпущен LE-серт и подписка вернётся на HTTPS." >&2
+        fi
       fi
     else
       SUB_TLS_MODE="ip_tls"
@@ -14041,7 +14100,12 @@ NGINXHTTP
   # Nginx config: https (ip_tls: LE-серт, прокси на 8080) или http (http_tls
   # fallback: 8080 открыт напрямую, ACME-challenge на :80 остаётся для
   # будущего апгрейда до LE-серта повторным quickstart).
-  if [[ "$SUB_TLS_MODE" == "http_tls" ]]; then
+  if [[ "$SUB_TLS_MODE" == "domain_tls" ]]; then
+    # vhost уже нарисован _dns01_install (один TLS-сервер домена) и nginx перезагружен.
+    # IP-шаблон ниже прописал бы /etc/letsencrypt/live/$server_ip — серта для IP в этом
+    # режиме нет, nginx -t упал бы и подписка осталась бы без рабочего конфига.
+    echo "  -> Nginx vhost подписки: домен ${dns01_domain} (DNS-01) — оставляю как есть" >&2
+  elif [[ "$SUB_TLS_MODE" == "http_tls" ]]; then
   cat > "$NGINX_SITES_AVAILABLE/xrayebator-sub" << NGINXHTTPSUB
 server {
     listen 80;
@@ -14116,7 +14180,11 @@ NGINXHTTPS
   # Пишем маркеры подписки: ip_tls (LE-серт на :8443) или http_tls (fallback —
   # handler 8080 напрямую). Иначе _subscription_base_url вернёт локальный
   # http://127.0.0.1:8080 и GUI/happ-setup покажут неверный URL и mode "unknown".
-  _subscription_write_markers "8443" "$server_ip" "$server_ip" "$SUB_TLS_MODE"
+  # domain_tls — исключение: маркеры (домен + domain_tls) уже записал _dns01_install,
+  # перезапись IP-адресом вернула бы GUI мёртвый URL https://<ip>:8443.
+  if [[ "$SUB_TLS_MODE" != "domain_tls" ]]; then
+    _subscription_write_markers "8443" "$server_ip" "$server_ip" "$SUB_TLS_MODE"
+  fi
 
   # Автопродление shortlived IP-сертификатов (~6 дней) — только в ip_tls:
   # в http_tls серта нет, и таймер certbot renew каждый раз падал бы по тому же
@@ -14135,22 +14203,28 @@ NGINXHTTPS
   # Создание одиночного профиля здесь ломало HAPP ("route not shown / country n/a").
   echo "  Обеспечиваю multi-route HAPP профиль..." >&2
   if ! _happ_ensure_default_multiroute_profile >/dev/null 2>&1; then
-
-  # PQ при развёртывании (--pq): профиль получает дополнительный PQ-маршрут на tcp
-  # (отдельный инбаунд/порт, ключи из mlkem_keys). Если ключей ещё нет, деплой не
-  # падает: профиль просто остаётся без PQ, а флаг отражается в итоговом JSON.
-  local pq_route_added=false
-  if [[ "$deploy_pq" == "true" ]]; then
-    run_migration "mlkem_keys" "PQ keys" _migrate_mlkem_keys >/dev/null 2>&1 || true
-    if _pq_add_route_for_profile "$PROFILES_DIR/$HAPP_DEFAULT_PROFILE.json" tcp >/dev/null 2>&1; then
-      pq_route_added=true
-    fi
-  fi
     echo '{"ok":false,"error":"Не удалось создать HAPP multi-route профиль"}'
     _qs_nginx_rollback
     return 1
   fi
   local profile_file="$PROFILES_DIR/${HAPP_DEFAULT_PROFILE}.json"
+
+  # PQ при развёртывании (--pq): профиль получает дополнительный PQ-маршрут на tcp
+  # (отдельный инбаунд/порт, ключи из mlkem_keys). Если ключей ещё нет, деплой не
+  # падает: профиль просто остаётся без PQ, а флаг отражается в итоговом JSON.
+  # Блок обязан стоять ПОСЛЕ создания профиля: раньше он был вложен в ветку провала
+  # _happ_ensure_default_multiroute_profile — маршрут добавлялся к несуществующему
+  # профилю, и деплой всё равно завершался return 1 (то есть --pq был мёртвым кодом).
+  local pq_route_added=false
+  if [[ "$deploy_pq" == "true" ]]; then
+    run_migration "mlkem_keys" "PQ keys" _migrate_mlkem_keys >/dev/null 2>&1 || true
+    if _pq_add_route_for_profile "$PROFILES_DIR/$HAPP_DEFAULT_PROFILE.json" tcp >/dev/null 2>&1; then
+      pq_route_added=true
+      echo "  ✓ PQ-маршрут (VLESS Encryption) добавлен на tcp" >&2
+    else
+      echo "  ⚠ PQ-маршрут не добавлен (нет ключей ML-KEM?) — профиль без PQ" >&2
+    fi
+  fi
 
   # Перезапустить Xray (подхватить новые инбаунды маршрутов).
   # Без || true: если конфиг не загрузился, отдаём ok:false, а не ложный успех с мёртвым URL.
@@ -14208,13 +14282,14 @@ NGINXHTTPS
       --arg profile "$HAPP_DEFAULT_PROFILE" --argjson routes "$route_count" \
       --arg country "$result_country" --arg city "$result_city" \
       --arg flag "$result_flag" --arg os "$result_os" \
+      --argjson pq "$pq_route_added" \
       --arg cert_reason "${certbot_reason:-}" \
       '{ok:true, degraded:true, tls_mode:"http_tls", certbot_reason:$cert_reason,
         subscription_url:$url, base_url:$base, profile:$profile, routes:$routes,
-        country:$country, city:$city, flag:$flag, os:$os}'
+        country:$country, city:$city, flag:$flag, os:$os, pq_route:$pq}'
     return 0
   fi
-  echo "{\"ok\":true,\"subscription_url\":\"${subscription_url}\",\"base_url\":\"${base}\",\"profile\":\"${HAPP_DEFAULT_PROFILE}\",\"routes\":${route_count},\"country\":\"${result_country}\",\"city\":\"${result_city}\",\"flag\":\"${result_flag}\",\"os\":\"${result_os}\"}"
+  echo "{\"ok\":true,\"subscription_url\":\"${subscription_url}\",\"base_url\":\"${base}\",\"profile\":\"${HAPP_DEFAULT_PROFILE}\",\"routes\":${route_count},\"tls_mode\":\"${SUB_TLS_MODE}\",\"pq_route\":${pq_route_added},\"country\":\"${result_country}\",\"city\":\"${result_city}\",\"flag\":\"${result_flag}\",\"os\":\"${result_os}\"}"
   return 0
 }
 

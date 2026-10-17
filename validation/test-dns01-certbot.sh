@@ -207,4 +207,39 @@ grep -q 'if \[\[ "$deploy_pq" == "true" \]\]' xrayebator || fail "quickstart н�
 grep -q '_pq_add_route_for_profile "$PROFILES_DIR/$HAPP_DEFAULT_PROFILE.json" tcp' xrayebator \
   || fail "quickstart --pq не добавляет PQ-маршрут managed-профилю"
 
-echo "✓ DNS-01 (Cloudflare/Route53): валидация, аргументы certbot, credentials 0600, vhost без :80, CLI-ошибки, repair-dns01, quickstart --pq, проводка — OK"
+# Регрессия: PQ-блок обязан стоять ПОСЛЕ создания HAPP-профиля. Одно время он был
+# вложен в ветку провала _happ_ensure_default_multiroute_profile — маршрут добавлялся
+# к несуществующему профилю, а деплой всё равно заканчивался return 1, то есть --pq
+# был мёртвым кодом (и никто бы этого не заметил без проверки порядка строк).
+qs_start=$(grep -n '^quickstart_command() {' xrayebator | cut -d: -f1)
+resume_line=$(grep -n 'if ! _happ_ensure_default_multiroute_profile >/dev/null 2>&1; then' xrayebator | head -1 | cut -d: -f1)
+profile_line=$(grep -n 'local profile_file="\$PROFILES_DIR/\${HAPP_DEFAULT_PROFILE}.json"' xrayebator | head -1 | cut -d: -f1)
+pq_line=$(grep -n 'if \[\[ "$deploy_pq" == "true" \]\]' xrayebator | head -1 | cut -d: -f1)
+[[ -n "$resume_line" && -n "$profile_line" && -n "$pq_line" ]] || fail "не найдены якоря порядка строк в quickstart"
+(( resume_line > qs_start )) || fail "якорь HAPP-профиля вне quickstart_command"
+(( profile_line > resume_line )) || fail "профиль создаётся не в ожидаемом порядке"
+(( pq_line > profile_line )) || fail "PQ-блок стоит до создания профиля — --pq снова мёртвый код"
+
+# B1: DNS-01 как фолбэк развёртывания — флаги парсятся и валидируются ДО системных вызовов.
+grep -q -- '--dns01-domain) dns01_domain=' xrayebator || fail "quickstart не парсит --dns01-domain"
+grep -q -- '--dns01-provider) dns01_provider=' xrayebator || fail "quickstart не парсит --dns01-provider"
+grep -q -- '--dns01-token) dns01_token=' xrayebator || fail "quickstart не парсит --dns01-token"
+grep -q 'dns01_requested=true' xrayebator || fail "quickstart не различает «DNS-01 запрошен»"
+grep -q '"error":"DNS-01: укажите --dns01-domain' xrayebator || fail "quickstart не валидирует DNS-01-домен"
+grep -q '_dns01_install "$dns01_domain" "$dns01_provider" "$email" "$dns01_token"' xrayebator \
+  || fail "quickstart не вызывает _dns01_install в фолбэке"
+grep -q 'SUB_TLS_MODE="domain_tls"' xrayebator || fail "quickstart не переключается в domain_tls"
+
+# Порядок в фолбэке: DNS-01 пробуется ДО деградации в http_tls (иначе он бесполезен).
+dns01_line=$(grep -n '_dns01_install "$dns01_domain" "$dns01_provider" "$email" "$dns01_token"' xrayebator | head -1 | cut -d: -f1)
+http_tls_line=$(grep -n 'SUB_TLS_MODE="http_tls"' xrayebator | head -1 | cut -d: -f1)
+[[ -n "$dns01_line" && -n "$http_tls_line" ]] || fail "не найдены якоря порядка DNS-01/http_tls"
+(( http_tls_line > dns01_line )) || fail "http_tls-деградация идёт раньше DNS-01-фолбэка"
+
+# domain_tls не должен перетираться шаблонами ip_tls: ни nginx-vhost'ом, ни маркерами.
+grep -q 'if \[\[ "$SUB_TLS_MODE" == "domain_tls" \]\]; then' xrayebator \
+  || fail "quickstart не пропускает перерисовку nginx для domain_tls"
+grep -q 'if \[\[ "$SUB_TLS_MODE" != "domain_tls" \]\]; then' xrayebator \
+  || fail "quickstart перетирает маркеры подписки в domain_tls (GUI получил бы URL с IP)"
+
+echo "✓ DNS-01 (Cloudflare/Route53): валидация, аргументы certbot, credentials 0600, vhost без :80, CLI-ошибки, repair-dns01, quickstart --pq/DNS-01-фолбэк, проводка — OK"
