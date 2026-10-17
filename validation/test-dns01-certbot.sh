@@ -1,0 +1,184 @@
+#!/bin/bash
+# test-dns01-certbot.sh
+# Проверяет DNS-01-путь (Cloudflare/Route53): сертификат и HTTPS-подписка по домену
+# БЕЗ порта 80 — то, что снимает http_tls-деградацию у хостеров, фильтрующих :80.
+#   - pure-часть тестируется функционально: валидация домена/провайдера, сборка
+#     аргументов certbot, запись credentials (0600), nginx-vhost без listen 80;
+#   - CLI-валидация — герметично: до системных вызовов команда обязана вернуть
+#     {"ok":false} и ничего не записать;
+#   - серверная проводка (меню, диспатчер, firewall, маркеры, plugin-пакеты,
+#     cleanup в uninstall) — статически, потому что живые DNS-API и certbot в CI
+#     недоступны.
+#
+# Usage:  bash validation/test-dns01-certbot.sh
+# Requires: jq, bash 4+.
+
+set -euo pipefail
+
+fail() {
+  echo "✗ $*" >&2
+  exit 1
+}
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
+
+WORKDIR=$(mktemp -d /tmp/xrayebator-dns01.XXXXXX)
+trap 'rm -rf "$WORKDIR"' EXIT
+
+# shellcheck disable=SC1091
+source "$REPO_ROOT/xrayebator"
+
+# Изоляция: ни один тест не должен трогать /etc/letsencrypt и маркеры сервера.
+DNS01_CREDS_DIR="$WORKDIR/creds"
+mkdir -p "$DNS01_CREDS_DIR"
+DNS01_CLOUDFLARE_INI="$DNS01_CREDS_DIR/cloudflare.ini"
+DNS01_AWS_INI="$DNS01_CREDS_DIR/aws.ini"
+DNS01_MARKER_FILE="$WORKDIR/provider"
+CF_TOKEN="abcdefghijklmnopqrstuvwxyz0123456789"
+
+assert_json() {
+  local json="$1" expr="$2" msg="$3"
+  jq -e "$expr" <<< "$json" >/dev/null || fail "$msg: $json"
+}
+
+# ═══════════ 1. Валидация домена и провайдера ═══════════
+for good in sub.example.com example.com a.b.c.example.org my-host.example.com; do
+  _dns01_validate_domain "$good" || fail "домен должен быть валиден: $good"
+done
+for bad in "" "localhost" "1.2.3.4" "203.0.113.10" "-bad.example.com" "bad-.example.com" "bad..example.com" "exa mple.com"; do
+  if _dns01_validate_domain "$bad"; then
+    fail "домен должен быть отклонён: '$bad'"
+  fi
+done
+
+_dns01_provider_supported cloudflare || fail "cloudflare должен поддерживаться"
+_dns01_provider_supported route53 || fail "route53 должен поддерживаться"
+if _dns01_provider_supported digitalocean; then
+  fail "неподдержанный провайдер не должен проходить"
+fi
+
+# ═══════════ 2. Аргументы certbot ═══════════
+cf_args=$(_dns01_certbot_args_pure cloudflare sub.example.com ops@example.com "$DNS01_CLOUDFLARE_INI") \
+  || fail "сборка аргументов cloudflare"
+grep -qx -- "certonly" <<<"$cf_args" || fail "certonly отсутствует"
+grep -qx -- "--cert-name" <<<"$cf_args" || fail "--cert-name отсутствует"
+grep -qx -- "sub.example.com" <<<"$cf_args" || fail "домен отсутствует в аргументах"
+grep -qx -- "--dns-cloudflare" <<<"$cf_args" || fail "--dns-cloudflare отсутствует"
+grep -qx -- "--dns-cloudflare-credentials" <<<"$cf_args" || fail "credentials-флаг отсутствует"
+grep -qx -- "$DNS01_CLOUDFLARE_INI" <<<"$cf_args" || fail "путь credentials отсутствует"
+grep -qx -- "--dns-cloudflare-propagation-seconds" <<<"$cf_args" || fail "propagation-seconds отсутствует"
+grep -qx -- "30" <<<"$cf_args" || fail "значение propagation-seconds"
+grep -qx -- "systemctl reload nginx" <<<"$cf_args" || fail "deploy-hook отсутствует"
+grep -qx -- "-m" <<<"$cf_args" || fail "-m отсутствует при заданном email"
+grep -qx -- "ops@example.com" <<<"$cf_args" || fail "email отсутствует"
+if grep -qx -- "--register-unsafely-without-email" <<<"$cf_args"; then
+  fail "при заданном email не должно быть регистрации без email"
+fi
+
+no_mail_args=$(_dns01_certbot_args_pure cloudflare sub.example.com "" "$DNS01_CLOUDFLARE_INI") \
+  || fail "сборка аргументов cloudflare без email"
+grep -qx -- "--register-unsafely-without-email" <<<"$no_mail_args" \
+  || fail "без email нужна явная регистрация без уведомлений"
+if grep -qx -- "-m" <<<"$no_mail_args"; then
+  fail "без email не должно быть -m"
+fi
+
+r53_args=$(_dns01_certbot_args_pure route53 vpn.example.com "" "$DNS01_AWS_INI") \
+  || fail "сборка аргументов route53"
+grep -qx -- "--dns-route53" <<<"$r53_args" || fail "route53-флаг отсутствует"
+if grep -q -- "cloudflare" <<<"$r53_args"; then
+  fail "route53-аргументы не должны содержать cloudflare-флагов"
+fi
+
+if _dns01_certbot_args_pure digitalocean sub.example.com "" "$DNS01_CREDS_DIR/x.ini" >/dev/null 2>&1; then
+  fail "неподдержанный провайдер должен возвращать ошибку"
+fi
+
+# ═══════════ 3. Credentials-файл ═══════════
+_dns01_credentials_write cloudflare "$DNS01_CLOUDFLARE_INI" "$CF_TOKEN" || fail "запись cloudflare-credentials"
+[[ -f "$DNS01_CLOUDFLARE_INI" ]] || fail "cloudflare ini не создан"
+[[ "$(stat -c '%a' "$DNS01_CLOUDFLARE_INI")" == "600" ]] || fail "cloudflare ini должен быть 0600"
+grep -qx -- "dns_cloudflare_api_token = $CF_TOKEN" "$DNS01_CLOUDFLARE_INI" \
+  || fail "в cloudflare ini нет api-token"
+
+_dns01_credentials_write route53 "$DNS01_AWS_INI" "" AKIAEXAMPLE SECRETEXAMPLE || fail "запись aws-credentials"
+[[ "$(stat -c '%a' "$DNS01_AWS_INI")" == "600" ]] || fail "aws ini должен быть 0600"
+grep -qxF -- "[default]" "$DNS01_AWS_INI" || fail "в aws ini нет профиля default"
+grep -qx -- "aws_access_key_id = AKIAEXAMPLE" "$DNS01_AWS_INI" || fail "в aws ini нет access key"
+grep -qx -- "aws_secret_access_key = SECRETEXAMPLE" "$DNS01_AWS_INI" || fail "в aws ini нет secret key"
+
+# Пустые креды и неизвестный провайдер — ошибка, файл не создаётся.
+EMPTY_INI="$DNS01_CREDS_DIR/empty.ini"
+if _dns01_credentials_write cloudflare "$EMPTY_INI" ""; then
+  fail "пустой cloudflare-token должен отклоняться"
+fi
+if _dns01_credentials_write route53 "$EMPTY_INI" "" "" ""; then
+  fail "пустые AWS-ключи должны отклоняться"
+fi
+if _dns01_credentials_write digitalocean "$EMPTY_INI" "x"; then
+  fail "неизвестный провайдер должен отклоняться"
+fi
+[[ ! -f "$EMPTY_INI" ]] || fail "при ошибке credentials-файл создаваться не должен"
+
+# ═══════════ 4. nginx-vhost: без порта 80 ═══════════
+vhost=$(_dns01_nginx_vhost_pure sub.example.com 8443 "/etc/letsencrypt/live/sub.example.com") \
+  || fail "рендер vhost"
+grep -q -- "listen 8443 ssl http2;" <<<"$vhost" || fail "в vhost нет TLS-порта"
+grep -q -- "server_name sub.example.com;" <<<"$vhost" || fail "в vhost нет server_name"
+grep -q -- "ssl_certificate /etc/letsencrypt/live/sub.example.com/fullchain.pem;" <<<"$vhost" \
+  || fail "в vhost нет пути сертификата"
+grep -q -- "proxy_pass http://127.0.0.1:8080;" <<<"$vhost" || fail "в vhost нет proxy на handler"
+grep -q -- "proxy_buffer_size 32k;" <<<"$vhost" || fail "в vhost нет увеличенных буферов"
+grep -q -- "location /sub/" <<<"$vhost" || fail "в vhost нет location /sub/"
+if grep -q -- "listen 80" <<<"$vhost"; then
+  fail "DNS-01-vhost не должен слушать 80: в этом весь смысл режима"
+fi
+if grep -q -- "acme-challenge" <<<"$vhost"; then
+  fail "DNS-01-vhost не должен содержать ACME-location"
+fi
+[[ "$(grep -c '^server {' <<<"$vhost")" == "1" ]] || fail "vhost должен содержать ровно один server-блок"
+
+# ═══════════ 5. CLI: валидация до системных вызовов ═══════════
+out=$(dns01_setup_command --domain 203.0.113.10 --provider cloudflare --token "$CF_TOKEN" --without-email) || true
+assert_json "$out" '.ok == false and (.error | test("--domain"))' "IP вместо домена отвергается"
+
+out=$(dns01_setup_command --domain sub.example.com --provider digitalocean --token "$CF_TOKEN" --without-email) || true
+assert_json "$out" '.ok == false and (.error | test("cloudflare"))' "неизвестный провайдер отвергается"
+
+out=$(dns01_setup_command --domain sub.example.com --provider cloudflare --token "$CF_TOKEN") || true
+assert_json "$out" '.ok == false and (.error | test("--email"))' "без email и без --without-email — ошибка"
+
+out=$(dns01_setup_command --domain sub.example.com --provider cloudflare --without-email) || true
+assert_json "$out" '.ok == false and (.error | test("--token"))' "cloudflare без токена — ошибка"
+
+out=$(dns01_setup_command --domain sub.example.com --provider route53 --without-email) || true
+assert_json "$out" '.ok == false and (.error | test("aws"))' "route53 без AWS-ключей — ошибка"
+
+out=$(dns01_setup_command --domain sub.example.com --provider cloudflare --token "$CF_TOKEN" --without-email --port 70000) || true
+assert_json "$out" '.ok == false and (.error | test("--port"))' "некорректный порт — ошибка"
+
+# Ни один неуспешный вызов не должен создать credentials/маркер.
+[[ ! -f "$DNS01_MARKER_FILE" ]] || fail "маркер провайдера не должен появляться при ошибках валидации"
+
+out=$(dns01_status_command) || true
+assert_json "$out" '.ok == true and .provider == "" and .domain == "" and .days_left == 0 and .deploy_hook == false' \
+  "dns01-status на ненастроенном сервере"
+
+# ═══════════ 6. Проводка (статически: живые DNS-API в CI недоступны) ═══════════
+grep -qE '^\s+dns01-setup\)' xrayebator || fail "нет диспатчера dns01-setup"
+grep -qE '^\s+dns01-status\)' xrayebator || fail "нет диспатчера dns01-status"
+grep -q '8) install_subscription_dns01 ;;' xrayebator || fail "нет пункта меню 8 в меню подписки"
+grep -q 'Подписка по домену через DNS-01' xrayebator || fail "нет строки меню DNS-01"
+grep -q 'python3-certbot-dns-cloudflare' xrayebator || fail "нет пакета cloudflare-плагина"
+grep -q 'python3-certbot-dns-route53' xrayebator || fail "нет пакета route53-плагина"
+grep -q 'limit_firewall_port "$port" tcp' xrayebator || fail "DNS-01 не открывает TLS-порт"
+grep -q '_subscription_write_markers "$port" "$domain" "$server_ip" "domain_tls"' xrayebator \
+  || fail "DNS-01 не пишет маркеры доменного режима"
+grep -q '_certbot_register "$domain"' xrayebator || fail "cert не попадает в manifest (uninstall не удалит)"
+grep -q 'AWS_SHARED_CREDENTIALS_FILE' xrayebator || fail "route53 не передаёт профиль AWS в certbot"
+grep -q 'xrayebator-dns01-cloudflare.ini' uninstall.sh || fail "uninstall не удаляет cloudflare-credentials"
+grep -q 'xrayebator-dns01-aws.ini' uninstall.sh || fail "uninstall не удаляет AWS-credentials"
+grep -q 'dns01-setup --domain sub.example.com' xrayebator || fail "нет help-строки dns01-setup"
+
+echo "✓ DNS-01 (Cloudflare/Route53): валидация, аргументы certbot, credentials 0600, vhost без :80, CLI-ошибки, проводка — OK"

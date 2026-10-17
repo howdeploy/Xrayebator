@@ -183,6 +183,11 @@ if command -v certbot > /dev/null 2>&1 && [[ -n "$CERTBOT_SNAPSHOT" && -f "$CERT
 fi
 rm -f /tmp/xrayebator-certbot-owned.?????? 2>/dev/null || true
 rm -rf /var/www/xrayebator-ip-acme /var/www/xrayebator-selfsteal-acme 2>/dev/null
+# DNS-01: credentials провайдера (Cloudflare API-token / AWS-ключи) — секреты,
+# созданные Xrayebator, поэтому уходят вместе с ним. Сами сертификаты уже сняты
+# через манифест certbot выше.
+rm -f /etc/letsencrypt/xrayebator-dns01-cloudflare.ini \
+      /etc/letsencrypt/xrayebator-dns01-aws.ini 2>/dev/null || true
 # Убираем и webroot и защищаем: certbot delete уже удалил certs/keys/accounts.
 # UFW ownership определяется только root-owned манифестом. Порт в Xray config
 # ничего не говорит о том, кто создал firewall rule. Формат новых записей:

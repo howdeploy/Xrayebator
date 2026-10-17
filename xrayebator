@@ -8845,6 +8845,394 @@ NGINX_TLS_EOF
   read -r _
 }
 
+# ═══════════════════════════════════════════════════════════
+# DNS-01 (Cloudflare / Route53): сертификат без порта 80
+# ═══════════════════════════════════════════════════════════
+# http-01 требует доступного снаружи :80 — у части хостеров он закрыт, и подписка
+# деградирует в http_tls. DNS-01 проверяет домен через TXT-запись, поэтому :80 не
+# нужен вовсе: сервер отдаёт HTTPS-подписку по своему домену (https://sub.example.com).
+DNS01_CREDS_DIR="${DNS01_CREDS_DIR:-/etc/letsencrypt}"
+DNS01_CLOUDFLARE_INI="${DNS01_CLOUDFLARE_INI:-$DNS01_CREDS_DIR/xrayebator-dns01-cloudflare.ini}"
+DNS01_AWS_INI="${DNS01_AWS_INI:-$DNS01_CREDS_DIR/xrayebator-dns01-aws.ini}"
+DNS01_MARKER_FILE="${DNS01_MARKER_FILE:-/usr/local/etc/xray/.dns01_provider}"
+DNS01_PROVIDERS=(cloudflare route53)
+
+_dns01_provider_supported() {
+  local p="$1" known
+  for known in "${DNS01_PROVIDERS[@]}"; do
+    [[ "$p" == "$known" ]] && return 0
+  done
+  return 1
+}
+
+# Домен для сертификата: буквы/цифры/дефисы, минимум одна точка, не IP.
+_dns01_validate_domain() {
+  local d="$1"
+  [[ -n "$d" ]] || return 1
+  [[ "$d" =~ ^[0-9.]+$ ]] && return 1
+  [[ "$d" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$ ]]
+}
+
+# Аргументы certbot для провайдера (по одному на строку; pure — тестируется без сети).
+_dns01_certbot_args_pure() {
+  local provider="$1" domain="$2" email="$3" creds="$4"
+  printf '%s\n' certonly --cert-name "$domain" -d "$domain"
+  case "$provider" in
+    cloudflare)
+      printf '%s\n' --dns-cloudflare --dns-cloudflare-credentials "$creds" \
+        --dns-cloudflare-propagation-seconds 30
+      ;;
+    route53)
+      printf '%s\n' --dns-route53
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+  printf '%s\n' --non-interactive --agree-tos --deploy-hook "systemctl reload nginx"
+  if [[ -n "$email" ]]; then
+    printf '%s\n' -m "$email"
+  else
+    # Конвенция проекта: без email — только явная регистрация без уведомлений.
+    printf '%s\n' --register-unsafely-without-email
+  fi
+}
+
+# Credentials-файл провайдера: 0600, root. Cloudflare — API-token, Route53 — профиль AWS.
+_dns01_credentials_write() {
+  local provider="$1" path="$2" token="$3" aws_key="${4:-}" aws_secret="${5:-}" tmp
+  tmp=$(mktemp) || return 1
+  case "$provider" in
+    cloudflare)
+      [[ -n "$token" ]] || { rm -f "$tmp"; return 1; }
+      printf 'dns_cloudflare_api_token = %s\n' "$token" > "$tmp"
+      ;;
+    route53)
+      [[ -n "$aws_key" && -n "$aws_secret" ]] || { rm -f "$tmp"; return 1; }
+      printf '[default]\naws_access_key_id = %s\naws_secret_access_key = %s\n' \
+        "$aws_key" "$aws_secret" > "$tmp"
+      ;;
+    *)
+      rm -f "$tmp"
+      return 1
+      ;;
+  esac
+  chmod 600 "$tmp" 2>/dev/null || true
+  if ! mv "$tmp" "$path"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  chown root:root "$path" 2>/dev/null || true
+  return 0
+}
+
+# nginx-vhost подписки для DNS-01: только TLS-сервер, БЕЗ listen 80 и без
+# ACME-location — сертификат уже выдан, а порт 80 этому режиму не нужен.
+_dns01_nginx_vhost_pure() {
+  local domain="$1" port="$2" cert_dir="$3"
+  cat << VHOST
+limit_req_zone \$binary_remote_addr zone=xrayebator_sub:10m rate=30r/m;
+
+server {
+    listen ${port} ssl http2;
+    listen [::]:${port} ssl http2;
+    server_name ${domain};
+
+    ssl_certificate ${cert_dir}/fullchain.pem;
+    ssl_certificate_key ${cert_dir}/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+
+    location /sub/ {
+        access_log off;
+        limit_req zone=xrayebator_sub burst=10 nodelay;
+        add_header Cache-Control "no-store" always;
+        add_header X-Robots-Tag "noindex, nofollow, nosnippet" always;
+        proxy_buffer_size 32k;
+        proxy_buffers 8 32k;
+        proxy_busy_buffers_size 64k;
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+
+    location / {
+        return 404;
+    }
+}
+VHOST
+}
+
+# Рабочая лошадка DNS-01: пакеты → credentials → certbot → vhost → маркеры.
+# Печатает человекочитаемый прогресс; CLI-обёртка уводит его в stderr.
+_dns01_install() {
+  local domain="$1" provider="$2" email="$3" token="$4" aws_key="$5" aws_secret="$6" port="$7"
+  local creds_file="" plugin_pkg=""
+  case "$provider" in
+    cloudflare) creds_file="$DNS01_CLOUDFLARE_INI"; plugin_pkg="python3-certbot-dns-cloudflare" ;;
+    route53) creds_file="$DNS01_AWS_INI"; plugin_pkg="python3-certbot-dns-route53" ;;
+    *) return 1 ;;
+  esac
+
+  echo -e "${CYAN}  → Установка nginx + certbot + плагина DNS-01 (${provider})...${NC}"
+  if ! apt-get "${APT_LOCK_OPTS[@]}" install -y nginx certbot "$plugin_pkg" >/dev/null 2>&1; then
+    echo -e "${RED}✗ apt-get install nginx certbot ${plugin_pkg} не удалось${NC}"
+    return 1
+  fi
+
+  local certbot_bin
+  certbot_bin=$(command -v certbot 2>/dev/null || true)
+  if [[ -z "$certbot_bin" || ! -x "$certbot_bin" ]]; then
+    echo -e "${RED}✗ certbot не найден после установки${NC}"
+    return 1
+  fi
+
+  mkdir -p "$DNS01_CREDS_DIR" 2>/dev/null || true
+  chmod 700 "$DNS01_CREDS_DIR" 2>/dev/null || true
+  if ! _dns01_credentials_write "$provider" "$creds_file" "$token" "$aws_key" "$aws_secret"; then
+    echo -e "${RED}✗ Не удалось записать credentials для ${provider}${NC}"
+    return 1
+  fi
+  if ! printf '%s\n' "$provider" > "$DNS01_MARKER_FILE"; then
+    echo -e "${RED}✗ Не удалось записать маркер провайдера${NC}"
+    return 1
+  fi
+  chmod 600 "$DNS01_MARKER_FILE" 2>/dev/null || true
+  chown root:root "$DNS01_MARKER_FILE" 2>/dev/null || true
+
+  local -a args=()
+  mapfile -t args < <(_dns01_certbot_args_pure "$provider" "$domain" "$email" "$creds_file")
+
+  # Route53-плагин читает профиль AWS, а не файл из аргументов.
+  if [[ "$provider" == "route53" ]]; then
+    export AWS_SHARED_CREDENTIALS_FILE="$creds_file"
+  fi
+
+  echo -e "${CYAN}  → certbot DNS-01 для ${domain} (порт 80 не требуется)...${NC}"
+  if ! "$certbot_bin" "${args[@]}" >/tmp/certbot-dns01.log 2>&1; then
+    echo -e "${RED}✗ certbot DNS-01 не выдал сертификат. Лог: /tmp/certbot-dns01.log${NC}"
+    tail -20 /tmp/certbot-dns01.log 2>/dev/null || true
+    echo -e "${YELLOW}  Проверьте права API-токена на DNS-зону ${domain} и что домен делегирован.${NC}"
+    return 1
+  fi
+  systemctl reset-failed certbot.service 2>/dev/null || true
+  _certbot_register "$domain"
+
+  local cert_dir="/etc/letsencrypt/live/${domain}"
+  if [[ ! -f "$cert_dir/fullchain.pem" || ! -f "$cert_dir/privkey.pem" ]]; then
+    echo -e "${RED}✗ certbot завершился, но сертификата нет: $cert_dir${NC}"
+    return 1
+  fi
+
+  _dns01_nginx_vhost_pure "$domain" "$port" "$cert_dir" > "$NGINX_SITES_AVAILABLE/xrayebator-sub" || return 1
+  ln -sf "$NGINX_SITES_AVAILABLE/xrayebator-sub" "$NGINX_SITES_ENABLED/xrayebator-sub"
+  if ! nginx -t >/tmp/nginx-xrayebator-sub.log 2>&1; then
+    echo -e "${RED}✗ nginx -t failed${NC}"
+    cat /tmp/nginx-xrayebator-sub.log 2>/dev/null || true
+    return 1
+  fi
+  systemctl enable --now nginx >/dev/null 2>&1 || true
+  if ! systemctl reload nginx >/dev/null 2>&1; then
+    echo -e "${RED}✗ nginx не перечитал конфиг подписки${NC}"
+    return 1
+  fi
+
+  if command -v ufw &>/dev/null && ufw status | grep -q "Status: active"; then
+    if ! limit_firewall_port "$port" tcp; then
+      echo -e "${RED}✗ Не удалось открыть ${port}/tcp для подписки${NC}"
+      return 1
+    fi
+  fi
+
+  local server_ip
+  server_ip=$(get_server_ip)
+  _subscription_write_markers "$port" "$domain" "$server_ip" "domain_tls"
+  if ! _subscription_restart_service; then
+    echo -e "${RED}✗ xrayebator-sub.service не запустился${NC}"
+    return 1
+  fi
+  return 0
+}
+
+# xrayebator dns01-setup — DNS-01 (Cloudflare/Route53), JSON на stdout.
+dns01_setup_command() {
+  export TERM=dumb
+  export XRAYEBATOR_NONINTERACTIVE=1
+
+  local domain="" provider="" email="" token="" aws_key="" aws_secret="" port="" without_email=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --domain) domain="${2:-}"; shift 2 ;;
+      --provider) provider="${2:-}"; shift 2 ;;
+      --email) email="${2:-}"; shift 2 ;;
+      --without-email) without_email=true; shift ;;
+      --token) token="${2:-}"; shift 2 ;;
+      --aws-access-key-id) aws_key="${2:-}"; shift 2 ;;
+      --aws-secret-access-key) aws_secret="${2:-}"; shift 2 ;;
+      --port) port="${2:-}"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+
+  if ! _dns01_validate_domain "$domain"; then
+    echo '{"ok":false,"error":"Укажите --domain example.com (A/AAAA домена должна указывать на этот VPS)"}'
+    return 1
+  fi
+  if ! _dns01_provider_supported "$provider"; then
+    echo '{"ok":false,"error":"Укажите --provider cloudflare или --provider route53"}'
+    return 1
+  fi
+  if [[ "$without_email" == "true" ]]; then
+    email=""
+  elif [[ -z "$email" ]]; then
+    echo '{"ok":false,"error":"Укажите --email адрес или --without-email"}'
+    return 1
+  fi
+  if [[ "$provider" == "cloudflare" ]]; then
+    if [[ ! "$token" =~ ^[A-Za-z0-9_-]{20,}$ ]]; then
+      echo '{"ok":false,"error":"Укажите --token API-токен Cloudflare с правом DNS:Edit на зону"}'
+      return 1
+    fi
+  else
+    if [[ -z "$aws_key" || -z "$aws_secret" ]]; then
+      echo '{"ok":false,"error":"Укажите --aws-access-key-id и --aws-secret-access-key"}'
+      return 1
+    fi
+  fi
+  [[ -n "$port" ]] || port=443
+  if [[ ! "$port" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
+    echo '{"ok":false,"error":"Некорректный --port"}'
+    return 1
+  fi
+
+  local rc=0
+  exec 3>&1
+  exec 1>&2
+  _dns01_install "$domain" "$provider" "$email" "$token" "$aws_key" "$aws_secret" "$port" || rc=$?
+  exec 1>&3
+  exec 3>&-
+
+  if (( rc != 0 )); then
+    echo '{"ok":false,"error":"DNS-01 не завершился: смотрите вывод и /tmp/certbot-dns01.log"}'
+    return 1
+  fi
+
+  local url
+  url=$(_subscription_base_url 2>/dev/null || true)
+  jq -n --arg d "$domain" --arg p "$provider" --argjson port "$port" \
+    --arg url "$url" --arg mode "$(cat /usr/local/etc/xray/.subscription_mode 2>/dev/null || echo unknown)" \
+    '{ok:true, domain:$d, provider:$p, port:$port, tls_mode:$mode, subscription_url:$url,
+      cert_dir:("/etc/letsencrypt/live/" + $d), renewal:"auto (certbot.timer + deploy-hook)"}'
+  return 0
+}
+
+# xrayebator dns01-status — состояние DNS-01 и доменного сертификата (JSON).
+dns01_status_command() {
+  export TERM=dumb
+  export XRAYEBATOR_NONINTERACTIVE=1
+
+  local provider="" mode="" domain="" port="" expiry=0 days_left=0 deploy_hook=false
+  [[ -f "$DNS01_MARKER_FILE" ]] && provider=$(tr -d '\r\n' < "$DNS01_MARKER_FILE" 2>/dev/null || true)
+  mode=$(cat /usr/local/etc/xray/.subscription_mode 2>/dev/null || true)
+  domain=$(cat /usr/local/etc/xray/.subscription_domain 2>/dev/null || true)
+  port=$(cat /usr/local/etc/xray/.subscription_port 2>/dev/null || true)
+  [[ "$port" =~ ^[0-9]+$ ]] || port=0
+
+  local cert="/etc/letsencrypt/live/${domain}/fullchain.pem"
+  if [[ -n "$domain" && -f "$cert" ]] && command -v openssl >/dev/null 2>&1; then
+    local end
+    end=$(openssl x509 -enddate -noout -in "$cert" 2>/dev/null | sed 's/notAfter=//')
+    expiry=$(date -d "$end" +%s 2>/dev/null || echo 0)
+  fi
+  [[ "$expiry" =~ ^[0-9]+$ ]] || expiry=0
+  if (( expiry > 0 )); then
+    days_left=$(( (expiry - $(date +%s)) / 86400 ))
+  fi
+  if [[ -n "$domain" && -f "/etc/letsencrypt/renewal/${domain}.conf" ]] &&
+     grep -q 'deploy-hook' "/etc/letsencrypt/renewal/${domain}.conf" 2>/dev/null; then
+    deploy_hook=true
+  fi
+
+  jq -n --arg provider "$provider" --arg mode "$mode" --arg domain "$domain" \
+    --argjson port "$port" --argjson expiry "$expiry" --argjson days "$days_left" \
+    --argjson hook "$deploy_hook" \
+    --argjson creds "$([[ -f "$DNS01_CLOUDFLARE_INI" || -f "$DNS01_AWS_INI" ]] && echo true || echo false)" \
+    '{ok:true, provider:$provider, tls_mode:$mode, domain:$domain, port:$port,
+      credentials_present:$creds, cert_expiry:$expiry, days_left:$days, deploy_hook:$hook}'
+  return 0
+}
+
+# Интерактивный вход (меню подписки, пункт 8).
+install_subscription_dns01() {
+  show_ascii
+  echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
+  echo -e "${BLUE}    ПОДПИСКА ЧЕРЕЗ DNS-01 (БЕЗ ПОРТА 80)      ${NC}"
+  echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
+  echo ""
+  echo -e "${YELLOW}Let's Encrypt проверяет домен по TXT-записи, поэтому :80 не нужен:${NC}"
+  echo -e "${YELLOW}подходит хостерам, которые фильтруют 80-й порт.${NC}"
+  echo ""
+
+  local domain
+  echo -n -e "${YELLOW}Домен подписки (A/AAAA должна указывать на этот VPS): ${NC}"
+  read -r domain
+  if ! _dns01_validate_domain "$domain"; then
+    echo -e "${RED}✗ Некорректный домен${NC}"; sleep 2; return 1
+  fi
+
+  local provider_choice provider
+  echo -e "${CYAN} 1)${NC} Cloudflare (API-token с правом DNS:Edit)"
+  echo -e "${CYAN} 2)${NC} Route53 (AWS access key)"
+  echo -n -e "${YELLOW}Провайдер DNS: ${NC}"
+  read -r provider_choice
+  case "$provider_choice" in
+    1) provider="cloudflare" ;;
+    2) provider="route53" ;;
+    *) echo -e "${RED}✗ Неверный выбор${NC}"; sleep 2; return 1 ;;
+  esac
+
+  local token="" aws_key="" aws_secret=""
+  if [[ "$provider" == "cloudflare" ]]; then
+    echo -n -e "${YELLOW}Cloudflare API-token: ${NC}"
+    read -r -s token; echo ""
+  else
+    echo -n -e "${YELLOW}AWS access key id: ${NC}"
+    read -r aws_key
+    echo -n -e "${YELLOW}AWS secret access key: ${NC}"
+    read -r -s aws_secret; echo ""
+  fi
+
+  local email
+  echo -n -e "${YELLOW}Email для Let's Encrypt (Enter — без email): ${NC}"
+  read -r email
+  [[ "$email" =~ ^[^@]+@[^@]+\.[^@]+$ ]] || email=""
+
+  local port
+  port=$(_select_subscription_port)
+  echo -e "${CYAN}  → Публичный порт: ${port}${NC}"
+
+  install_subscription_server || return 1
+  if ! _dns01_install "$domain" "$provider" "$email" "$token" "$aws_key" "$aws_secret" "$port"; then
+    echo -e "${RED}✗ DNS-01 не завершился${NC}"
+    echo -n -e "${YELLOW}Нажмите Enter...${NC}"; read -r _
+    return 1
+  fi
+
+  echo ""
+  echo -e "${GREEN}✓ Подписка по домену активна (${provider}, DNS-01)${NC}"
+  local _dns01_profile
+  if _happ_ensure_default_multiroute_profile; then
+    _dns01_profile="$HAPP_DEFAULT_PROFILE"
+    _happ_print_subscription_url_for_profile "$_dns01_profile"
+  fi
+  echo ""
+  echo -n -e "${YELLOW}Нажмите Enter для продолжения...${NC}"
+  read -r _
+}
+
 # Local-only fallback installer (REQ-C03).
 # Без nginx, без certbot, БЕЗ открытия UFW (loopback bypasses firewall).
 # Доступ — только через ssh-tunnel: ssh -L 8080:127.0.0.1:8080 user@vps.
@@ -9313,6 +9701,7 @@ happ_subscription_menu() {
     echo -e "${CYAN} 5)${NC} Настройки HAPP (.happ_defaults.env)"
     echo -e "${CYAN} 6)${NC} Настроить announcement (HAPP)"
     echo -e "${CYAN} 7)${NC} Маршрутизация клиента (split для российских сервисов)"
+    echo -e "${CYAN} 8)${NC} Подписка по домену через DNS-01 ${GREEN}(Cloudflare/Route53, порт 80 не нужен)${NC}"
     echo -e "${CYAN} 0)${NC} Назад в главное меню"
     echo ""
     echo -n -e "${YELLOW}Выбор: ${NC}"
@@ -9326,6 +9715,7 @@ happ_subscription_menu() {
       5) happ_settings_menu ;;
       6) edit_happ_announce_menu ;;
       7) happ_client_routing_menu ;;
+      8) install_subscription_dns01 ;;
       0) return ;;
     esac
   done
@@ -16828,6 +17218,14 @@ if [[ "$XRAYEBATOR_SOURCED" -eq 0 ]]; then
       shift
       alerts_disable_command "$@"
       ;;
+    dns01-setup)
+      shift
+      dns01_setup_command "$@"
+      ;;
+    dns01-status)
+      shift
+      dns01_status_command "$@"
+      ;;
     fp-change)
       shift
       fp_change_command "$@"
@@ -16924,6 +17322,9 @@ if [[ "$XRAYEBATOR_SOURCED" -eq 0 ]]; then
       echo -e "  ${CYAN}sudo xrayebator alerts-test${NC} — тестовое сообщение в Telegram (JSON)"
       echo -e "  ${CYAN}sudo xrayebator alerts-enable|alerts-disable${NC} — включить/выключить алерты (JSON)"
       echo -e "  ${CYAN}sudo xrayebator monitor-check [--force-sni]${NC} — одна итерация мониторинга (--force-sni: probe SNI вне расписания) (JSON)"
+      echo -e "  ${CYAN}sudo xrayebator dns01-setup --domain sub.example.com --provider cloudflare|route53${NC}"
+      echo -e "                               — HTTPS-подписка по домену без порта 80 (DNS-01) (JSON)"
+      echo -e "  ${CYAN}sudo xrayebator dns01-status${NC} — состояние DNS-01, домен, срок сертификата (JSON)"
       echo -e "  ${CYAN}sudo xrayebator sni-list${NC} — список допустимых SNI (JSON)"
       echo -e "  ${CYAN}sudo xrayebator sni-change --name N [--route R] --sni S${NC} — сменить SNI (JSON; обновит все профили на порту)"
       echo -e "  ${CYAN}sudo xrayebator port-change --name N [--route R] --port P|random${NC} — сменить порт (JSON; reconnect клиентов)"
