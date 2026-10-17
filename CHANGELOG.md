@@ -83,9 +83,35 @@ Next `0.6.5` cut: the server manager plus the GUI traffic-limit card.
   neutral `/usr/local/etc/xrayebator/` root and the token is never printed. An undelivered alert is
   retried on the next tick without re-running the expensive SNI probe, and a failed reboot alert
   keeps the previous `boot_id` instead of losing the message.
+- **DNS-01 as a deployment fallback, and the desktop UI for the new stages.** `xrayebator quickstart`
+  now accepts `--pq` / `--without-pq` and `--dns01-domain/--dns01-provider/--dns01-token` (Cloudflare)
+  or `--dns01-aws-access-key-id/--dns01-aws-secret-access-key` (Route53). With the DNS-01 values the
+  deploy no longer degrades to `http_tls` when the hoster filters port 80: the certificate is issued
+  through a TXT record, the mode becomes `domain_tls`, and `_dns01_install` renders and reloads its own
+  TLS-only vhost (quickstart therefore does not overwrite it with the IP template, which would fail
+  `nginx -t` because no certificate exists for the IP, and does not overwrite the subscription markers
+  with the IP address, which would hand the GUI a dead `https://<ip>:8443`); renewal stays on the
+  standard `certbot.timer` with the deploy hook, while the shortlived-IP timer remains `ip_tls`-only.
+  The parameters are validated before any system change, and an incomplete set is a hard error instead
+  of a silently ignored request. `xrayebator repair-dns01 --domain D --provider P ...` replaces an
+  already-degraded `http_tls` subscription with the same flow (idempotent: an `ip_tls`/`domain_tls`
+  subscription returns `{"ok":true,"skipped":true}`). In the desktop app the deploy wizard gained the
+  two opt-in blocks (a PQ toggle and the DNS-01 domain/provider/credentials, with the deploy button
+  disabled while the DNS-01 set is incomplete), server settings gained a per-profile **PQ** button
+  (`profile-pq`, transport picker, ready link with copy), a **Subscription and TLS** card
+  (`dns01-status`; in `http_tls` it explains the degradation and offers *Fix with DNS-01* ->
+  `repair-dns01`, otherwise *Set up DNS-01* -> `dns01-setup`) and a **Notifications** card
+  (`alerts-status`, enable/disable, test message). The bot token is deliberately still configured only
+  through `alerts-setup` in the terminal, so the secret is not duplicated in the renderer.
 
 ### Fixed
 
+- **`quickstart --pq` never added a post-quantum route.** The flag was parsed and a static test
+  asserted on it, but the block calling `_pq_add_route_for_profile` sat *inside* the failure branch of
+  `_happ_ensure_default_multiroute_profile`: the route was appended to a profile that did not exist
+  yet, after which the deployment returned `1` anyway. The block now runs after the managed HAPP
+  profile is created, and the result is reported in the JSON as `pq_route` (a server without ML-KEM
+  keys keeps deploying, just without PQ).
 - **Per-profile traffic accounting counted nothing on a real server.** The feature enabled only
   `policy.system.statsInboundUplink/Downlink`, but Xray registers the per-user counters
   (`user>>>NAME>>>traffic>>>uplink`) solely from `policy.levels."0".statsUserUplink/Downlink`

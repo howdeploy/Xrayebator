@@ -103,11 +103,11 @@ Xrayebator 不会更改主机的 TCP 拥塞控制算法，也不会写入或应�
 | `sudo xrayebator update` | 仅更新 **Xray-core 内核** |
 | `sudo xrayebator update <branch>` | 从规范 raw 仓库分支 self-update 管理器，继续使用新脚本，然后更新 Xray-core；分支写入 `.current_branch` 固定，供后续 GUI 更新使用 |
 | `sudo xrayebator probe-test` | 更换 SNI 前，从 VPS 检查其可达性 |
-| `sudo xrayebator quickstart --email <邮箱>` | 桌面 GUI 使用的一次性部署路径：执行广泛设置/迁移，在 `8443` 配置 IP-TLS endpoint，创建带 `schema_version: 3` 和 7 条线路的标准 HAPP 配置档；输出带 `subscription_url` 的 JSON。非交互迁移是 best-effort，请检查最终配置档与服务 |
+| `sudo xrayebator quickstart --email <邮箱>` | 桌面 GUI 使用的一次性部署路径：执行广泛设置/迁移，在 `8443` 配置 IP-TLS endpoint，创建带 `schema_version: 3` 和 7 条线路的标准 HAPP 配置档；输出带 `subscription_url` 的 JSON。非交互迁移是 best-effort，请检查最终配置档与服务。额外标志：`--pq` —— 为配置档在 tcp 上添加 PQ 线路（默认**关闭**：不具备 ML-KEM 的客户端连接不上 PQ 端口；结果见 JSON 的 `pq_route`），`--without-pq` —— 显式关闭，`--dns01-domain D --dns01-provider cloudflare\|route53 (--dns01-token T \| --dns01-aws-access-key-id K --dns01-aws-secret-access-key S)` —— 部署期的 DNS-01 回退。DNS-01 参数在任何系统改动**之前**校验：参数集合不完整会返回 `{"ok":false,…}` 且不做任何改动 |
 | `sudo xrayebator quickstart --without-email` | 相同的一次性部署路径，但不提供 ACME 联系邮箱；Certbot 使用 `--register-unsafely-without-email`，因此没有续期通知或邮箱恢复。若 Let's Encrypt 无法通过 http-01 验证 IP（validation 主机被服务商在 80 端口上游拦截），部署不会失败而是降级为 `http_tls`：订阅以 HTTP 发布，JSON 携带 `degraded:true`，解除 80 端口封锁后重新部署即恢复 HTTPS |
 | `sudo xrayebator inspect --json` | GUI 导入时使用的只读安装检查：返回 Xray、配置档和订阅标记状态；不会安装、迁移或修改配置 |
 | `sudo xrayebator happ-setup` | 已有安装的精简 HAPP 路径：确保订阅服务和可用的多线路配置档；缺少订阅域或端口标记时，会先验证 `8443` 的产品 IP-TLS endpoint，否则失败 |
-| `quickstart` http_tls 模式 | 若 Let's Encrypt 无法对 IP 执行 http-01 验证（validation 主机报 `Connection reset by peer`——通常是服务商对境外来源过滤 80 端口），部署不失败：订阅保持仅回环访问（完全不存在公共 URL——GUI 通过 SSH 从服务器本机的 `http://127.0.0.1:8080/sub/<token>` 加载密钥），并为后续后端生成自签证书；结果 JSON 携带 `degraded:true`、`tls_mode:"http_tls"` 与 Certbot 原因。服务器以「配置不完整」并带降级标记保存；80 端口上的 ACME challenge location 保持原位——解除封锁后重新运行 quickstart 即签发 LE 证书并把订阅切回 HTTPS |
+| `quickstart` http_tls 模式 | 最后手段——只有当 http-01 与 DNS-01 都未成功时才发生：若 Let's Encrypt 无法对 IP 执行 http-01 验证（validation 主机报 `Connection reset by peer`——通常是服务商对境外来源过滤 80 端口）**且**未请求 DNS-01，部署不失败：订阅保持仅回环访问（完全不存在公共 URL——GUI 通过 SSH 从服务器本机的 `http://127.0.0.1:8080/sub/<token>` 加载密钥），并为后续后端生成自签证书；结果 JSON 携带 `degraded:true`、`tls_mode:"http_tls"` 与 Certbot 原因。服务器以「配置不完整」并带降级标记保存；80 端口上的 ACME challenge location 保持原位——解除封锁后重新运行 quickstart 即签发 LE 证书并把订阅切回 HTTPS |
 | `sudo xrayebator profiles` | 以 JSON 数组输出服务器全部配置档（供桌面 GUI「服务器设置」页使用）；有效期同时包含用于服务端执行的 epoch 秒（`expire`）和用于界面显示的服务器本地日历日期（`expire_date`），因此不同时区的客户端也会显示用户选择的日期 |
 | `sudo xrayebator profile-create --name 名称 [--transport tcp\|tcp-utls\|tcp-xudp\|tcp-mux\|grpc\|xhttp] [--port P] [--count N] [--expire 日期]` | 非交互式创建单个或多个配置档；`--expire` 接受 `YYYY-MM-DD[ HH:MM]`、epoch 秒或 13 位毫秒。只选日期时，配置档在服务器本地时区的当天 `23:59:59` 之前（含该秒）有效；指定时间时按同一服务器时区执行。过去的有效期会被拒绝；已有名称不会被覆盖——它们会进入 `errors`（GUI 在创建前也会预检名称冲突，因为删除以配置档为单位，名称唯一才能保证删除精确），打印 `{"ok":true,"names":[...],"errors":[...]}` |
 | `sudo xrayebator profile-delete --name 名称` | 非交互式删除配置档；被删配置档的后端授权会立即吊销——AWG peer 从 `awg0.conf` 移除，Hysteria 密码从 `server.yaml` 移除（不会残留孤立凭据），名称可立即复用；打印 `{"ok":true,"name":"..."}` |
@@ -116,6 +116,7 @@ Xrayebator 不会更改主机的 TCP 拥塞控制算法，也不会写入或应�
 | `sudo xrayebator expire-check` | 批量应用所有已到期的有效期；幂等，无变化时不重启 Xray。由 `xrayebator-expire.timer` 每 10 分钟触发 |
 | `sudo xrayebator profile-limit --name 名称 --limit 100GB\|none [--reset]` | 设置配置档的流量限额（`500MB`、`1.5GB`、`2TB`、直接写字节数、`none` 为不限量；大小写不敏感）和/或重置计数器（`--reset`）；打印 JSON |
 | `sudo xrayebator traffic-check` | 读取 Stats API 计数器、按配置档累计用量并应用限额（限额耗尽的配置档会被从入站移除）。由 `xrayebator-traffic.timer` 每 5 分钟触发；幂等——无变化时不改动配置 |
+| `sudo xrayebator profile-pq --name 名称 [--transport tcp\|tcp-utls\|tcp-xudp\|tcp-mux\|grpc\|xhttp]` | 为配置档添加后量子 VLESS Encryption 线路（`mlkem768x25519plus`）：服务器预留一个空闲端口，并为该线路创建独立入站（密钥是服务器级的，来自 `.vless_decryption`）；JSON 包含 `port` 和现成的链接 `link`。密钥由迁移 `mlkem_keys` 生成（Xray-core 25.9.5+），没有密钥时命令返回带提示的错误 |
 | `sudo xrayebator fp-change --name 名称 [--route R] --fp 指纹` | 修改配置档的指纹，打印 JSON 结果 |
 | `sudo xrayebator sni-change --name 名称 [--route R] --sni SNI` | 修改配置档的 SNI，并同步更新同一端口上的所有配置档，打印 JSON 结果 |
 | `sudo xrayebator sni-list` | 按类别列出 `sni_list.txt` 中的候选 SNI，打印 JSON 结果（供桌面 GUI 的 SNI 对话框使用）。`sni_list.txt` 中第一条非注释行是新配置档的默认 SNI（`www.cloudflare.com`） |
@@ -140,6 +141,7 @@ Xrayebator 不会更改主机的 TCP 拥塞控制算法，也不会写入或应�
 | `sudo xrayebator awg-31 --on\|--off` | 切换 AWG 3.1 配置格式（`HeaderProtectionKey`、`RandomTrailers`、`S3`/`S4`）；新安装默认开启 3.1，切换会在原地补齐缺失的服务端参数，警告所有已签发的客户端 `.conf` 必须重新下载（AmneziaVPN ≥ 5.0.1.5），并带回滚地重新生成接口 |
 | `sudo xrayebator dns01-setup --domain sub.example.com --provider cloudflare\|route53` | 通过 DNS-01 实现按域名的 HTTPS 订阅：不需要 80 端口，证书由 TXT 记录验证。写入 `0600` 凭据、用带 deploy-hook 的 certbot 签发证书、生成不含 `listen 80` 的 nginx vhost，并把标记切换为 `domain_tls`；打印 JSON |
 | `sudo xrayebator dns01-status` | DNS-01 状态：提供商、模式、域名、端口、凭据是否存在、证书剩余天数以及 deploy-hook 是否存在；打印 JSON |
+| `sudo xrayebator repair-dns01 --domain sub.example.com --provider cloudflare\|route53 [--token T \| --aws-*] [--email E] [--port P]` | 把已降级（`http_tls`）的订阅改为 DNS-01：同样通过 TXT 记录签发证书，vhost 只按 TLS server 重新渲染，标记变为 `domain_tls`。幂等：如果订阅已在 HTTPS（`ip_tls`/`domain_tls`）上，则返回 `{"ok":true,"skipped":true}` 且不做任何事；打印 JSON |
 | `sudo xrayebator alerts-setup --token T --chat-id C` | 接入 Telegram 通知：用 `getMe` 校验令牌、发送一条测试消息，并且**只有在投递成功之后**才保存 `alerts.json`（0600）并启用 `xrayebator-monitor.timer`；打印 JSON |
 | `sudo xrayebator alerts-status` | 监控状态：配置、定时器、上次检查时间、事件以及最近一次 SNI 探测结果（不显示机器人令牌）；打印 JSON |
 | `sudo xrayebator alerts-test` | 向已配置的会话发送测试消息（验证投递）；打印 JSON |
@@ -482,6 +484,38 @@ stdout。如果 Telegram 不可达，事件状态不会被记录——发送会�
 `ALERTS_EXPIRE_WARN_SEC`（「即将到期」时间范围，259200）、`ALERTS_SNI_INTERVAL_SEC`（86400）、
 `ALERTS_SNI_TIMEOUT`（单个 SNI 8 秒）。
 
+## PQ：任意传输上的 VLESS Encryption
+
+`mlkem768x25519plus` 是 VLESS 的后量子层：在 Reality/XHTTP 之上再加一层应用级密钥，即使外层 TLS
+有朝一日被攻破，流量依然受保护（「现在记录、以后解密」）。过去它只属于 `xhttp-pq` 线路；现在 PQ 是
+任意传输的属性。
+
+```bash
+sudo xrayebator profile-pq --name 名称                      # tcp + Vision，独立端口
+sudo xrayebator profile-pq --name 名称 --transport grpc     # grpc
+sudo xrayebator profiles | jq '.[] | select(.name == "名称") | .routes'
+```
+
+服务器上：取一个空闲端口，为所需传输创建独立入站，把它的 `settings.decryption` 切换为
+`/usr/local/etc/xray/.vless_decryption` 中的密钥（密钥在服务器范围内共用），并向配置档添加一条
+`<transport>-pq` 线路，带 `pq_enabled: true`。独立入站是必需的：`decryption` 是入站级属性，
+PQ 端口不能与普通线路共用客户端。
+
+后果：
+
+- 客户端需要 ML-KEM（HAPP 或 Xray 25.6+）——旧客户端连接不上 PQ 端口；
+- 在 v2rayNG/base64 订阅中 PQ 线路**被隐藏**，在 HAPP 订阅中可见，而在 Clash/mihomo 与
+  sing-box 中会被跳过并在 YAML 中给出说明；
+- 配置档的普通线路仍是 `encryption=none`，在所有客户端上都能工作——PQ 是并列添加，而不是
+  取代；
+- 密钥由迁移 `mlkem_keys` 生成（Xray-core 25.9.5+）；没有密钥时 `profile-pq` 会返回带提示的
+  JSON 错误；
+- 代价是零点几毫秒的 CPU 和配置中几 KB 的体积；对普通线路没有影响。
+
+部署时 PQ 通过 `quickstart --pq` 标志（默认关闭）和 GUI 向导中的「PQ 线路」开关添加；在服务器设置
+中，配置档旁的「PQ」按钮调用同一条命令并显示现成的链接。如果服务器上没有 ML-KEM 密钥，部署不会
+失败：配置档只是没有 PQ，而 JSON 携带 `pq_route:false`。
+
 ## DNS-01：无需 80 端口的证书与订阅域名
 
 常规订阅模式（`ip_tls`、`domain_tls`）通过 http-01 获取 Let's Encrypt 证书，也就是需要一个对外
@@ -524,6 +558,23 @@ sudo xrayebator dns01-status   # 提供商、域名、端口、证书有效期�
 - 凭据文件由 `xrayebator-uninstall` 删除；证书则依据 root 拥有的 `.certbot_owned` 清单处理，不会
   触碰他人的域名；
 - 切换到 DNS-01 不会使已签发的链接失效：改变的只是订阅的基础 URL。
+
+### DNS-01 作为部署回退
+
+`quickstart` 按「现有证书 → 针对 IP 的 http-01 → DNS-01 → `http_tls`」这条链依次尝试获取证书。
+DNS-01 用与 `dns01-setup` 相同的数据启用，只是加上 `--dns01-` 前缀：
+
+```bash
+sudo xrayebator quickstart --email admin@example.com --pq \
+  --dns01-domain sub.example.com --dns01-provider cloudflare --dns01-token CF_API_TOKEN
+```
+
+如果 http-01 不通过（服务商过滤 80 端口），但 DNS-01 签发了证书，模式会变为 `domain_tls`：
+`_dns01_install` 自己渲染只含一个 TLS server 的 vhost，因此 quickstart 不会用 IP 模板重新渲染
+nginx，也不会用 IP 覆盖订阅标记（否则 GUI 会拿到一个失效的 `https://<ip>:8443`）。续期是标准的
+`certbot.timer` 加 deploy-hook；shortlived 证书的 IP 定时器只在 `ip_tls` 下安装。如果 DNS-01 也
+没成功，部署会如实回退到 `http_tls` 并带 `degraded:true`——此时可以稍后用 `repair-dns01` 命令或
+服务器设置中的「用 DNS-01 修复」按钮修复订阅。
 
 ## 级联与上游节点
 

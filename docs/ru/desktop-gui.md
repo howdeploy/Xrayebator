@@ -25,6 +25,11 @@ Dashboard показывает сохранённые карточки серв�
 
 Add server принимает host и SSH-порт VPS, параметры SSH-доступа и явный выбор email для `quickstart`: либо **Указать email** (выбрано по умолчанию, адрес вводится в поле), либо **Продолжить без email**. При выборе второго варианта GUI предупреждает, что Let's Encrypt не сможет присылать уведомления о продлении и восстанавливать ACME-аккаунт. В этом режиме запускается `xrayebator quickstart --without-email`, а Certbot получает `--register-unsafely-without-email`; фиктивный адрес не подставляется.
 
+Ниже — два необязательных блока, оба выключены по умолчанию:
+
+- **PQ-маршрут** — добавляет `--pq`: профиль получает пост-квантовый маршрут VLESS Encryption на отдельном порту. GUI честно предупреждает, что маршрут не попадает в обычную v2ray-подписку и требует клиента с ML-KEM (HAPP, Xray 25.6+). Если на сервере ещё нет ключей ML-KEM, деплой не падает — профиль просто остаётся без PQ.
+- **DNS-01** — добавляет `--dns01-domain/--dns01-provider/--dns01-token` (Cloudflare) или `--dns01-aws-*` (Route53). Это фолбэк: если хостер фильтрует порт 80 и http-01 не проходит, сертификат выпускается по TXT-записи, подписка остаётся на HTTPS (`domain_tls`) вместо деградации в `http_tls`. Кнопка развёртывания заблокирована, пока набор неполный: сервер отверг бы такой запрос уже после установки Xray. Введённые креденшелы нигде локально не сохраняются.
+
 Прогресс развёртывания:
 
 1. подключение по SSH и проверка повышенных прав;
@@ -32,7 +37,7 @@ Add server принимает host и SSH-порт VPS, параметры SSH-�
 3. создание временного каталога `/tmp/xrayebator-<token>` и загрузка `install.sh` и `xrayebator`;
 4. запуск `bash install.sh` с выбранными правами;
 5. установка загруженного бинарника менеджера в `/usr/local/bin/xrayebator`;
-6. запуск `xrayebator quickstart --email <email>` или `xrayebator quickstart --without-email`;
+6. запуск `xrayebator quickstart --email <email>` или `xrayebator quickstart --without-email` — плюс `--pq` и `--dns01-*`, если оператор включил эти блоки;
 7. разбор JSON с `subscription_url`, загрузка подписки и локальное сохранение метаданных сервера и ключей.
 
 GUI показывает лог и состояние шагов, но для выполняющегося развёртывания IPC-канала отмены нет.
@@ -59,7 +64,10 @@ Server settings сначала аутентифицируется по SSH. Ес
 - удалить установку после подтверждения;
 - сбросить закреплённый SSH host key после явного подтверждения;
 - управлять мультипротокольными бэкендами (паритет с пунктами меню 11–13): общая панель «дополнительные протоколы» (они находятся в разработке — интерфейс и поведение могут меняться) показывает состояние Hysteria 2 и AmneziaWG (версия, порт, TLS-режим / интерфейс, сводка junk) с установкой/удалением, килл-свитчем строк `hysteria2://` в подписке и тумблером AWG 3.1 — последние два с явным подтверждением;
-- бэкенд-боксы по каждому профилю прямо в списке профилей: заголовок — имя профиля, в подписи протокол, зелёная строка статуса («Активен · SNI …» или «Активен · UDP <порт>»); действия — QR (плюс «QR · AmneziaVPN» у AmneziaWG), Срок, Revoke и Удалить. Удаление профиля отзывает его бэкенд-ключи немедленно — peer снимается с `awg0.conf`, пароль уходит из `server.yaml` (осиротевших креденшелов нет), имя освобождается для повторного использования. Полное копирование — на странице Server keys.
+- бэкенд-боксы по каждому профилю прямо в списке профилей: заголовок — имя профиля, в подписи протокол, зелёная строка статуса («Активен · SNI …» или «Активен · UDP <порт>»); действия — QR (плюс «QR · AmneziaVPN» у AmneziaWG), Срок, Revoke и Удалить. Удаление профиля отзывает его бэкенд-ключи немедленно — peer снимается с `awg0.conf`, пароль уходит из `server.yaml` (осиротевших креденшелов нет), имя освобождается для повторного использования. Полное копирование — на странице Server keys;
+- добавить профилю PQ-маршрут: кнопка «PQ» у профиля открывает диалог с выбором транспорта и вызывает `profile-pq`; в ответе приходит готовая VLESS-ссылка с копированием. Чип «PQ»/«PQ ×N» в строке профиля показывает, сколько пост-квантовых маршрутов у него уже есть (`pq_routes`);
+- карточка **«Подписка и TLS»**: режим подписки, домен, провайдер и остаток сертификата из `dns01-status`. Если подписка деградировала в `http_tls`, карточка объясняет причину (Let's Encrypt не смог проверить http-01, обычно из-за фильтрации порта 80) и предлагает **«Исправить через DNS-01»** — это `repair-dns01`. В остальных режимах кнопка называется «Настроить DNS-01» и вызывает `dns01-setup`. Провайдер выбирается явно (Cloudflare — токен с правом DNS:Edit, Route53 — ключи AWS); креденшелы уходят на сервер и локально не сохраняются;
+- карточка **«Уведомления»**: состояние Telegram-алертов (`alerts-status`) — включена ли отправка, chat_id, имя бота и активность таймера мониторинга; действия — вкл/выкл (`alerts-enable`/`alerts-disable`) и тестовое сообщение (`alerts-test`). Токен бота через GUI не вводится осознанно: он живёт в `alerts.json` (0600 root) и настраивается командой `alerts-setup` в терминале, чтобы не дублировать секрет в renderer'е.
 
 SNI и порт — параметры уровня inbound: их изменение может затронуть все профили, использующие тот же inbound. Fingerprint устроен иначе: это клиентское значение конкретного профиля/маршрута, оно не меняет остальные маршруты. Серверная команда сообщает результат и необходимость переподключения.
 
@@ -87,6 +95,8 @@ xrayebator profile-create --name NAME [--transport T] [--port P] [--count N] [--
 xrayebator profile-delete --name NAME
 xrayebator profile-revoke --name NAME [--full]
 xrayebator profile-expire --name NAME --expire DATE|epoch|none
+xrayebator profile-limit --name NAME --limit LIMIT|none [--reset]
+xrayebator profile-pq --name NAME [--transport T]
 xrayebator fp-change --name NAME [--route R] --fp FINGERPRINT
 xrayebator sni-change --name NAME [--route R] --sni SNI
 xrayebator sni-list
@@ -105,8 +115,17 @@ xrayebator awg-install [--grant-all] / awg-uninstall / awg-grant --name N / awg-
 При развёртывании дополнительно вызывается один из вариантов:
 
 ```text
-xrayebator quickstart --email EMAIL
-xrayebator quickstart --without-email
+xrayebator quickstart --email EMAIL [--pq] [--dns01-domain D --dns01-provider P --dns01-token T | --dns01-aws-access-key-id K --dns01-aws-secret-access-key S]
+xrayebator quickstart --without-email [--pq] [--dns01-*]
+```
+
+Подписку и мониторинг обслуживают:
+
+```text
+xrayebator dns01-status
+xrayebator dns01-setup --domain D --provider cloudflare|route53 [--token T | --aws-access-key-id K --aws-secret-access-key S] [--email E|--without-email] [--port P]
+xrayebator repair-dns01 --domain D --provider cloudflare|route53 [--token T | --aws-*] [--email E] [--port P]
+xrayebator alerts-status / alerts-test / alerts-enable / alerts-disable
 ```
 
 При импорте выполняется только read-only команда:
@@ -149,7 +168,7 @@ SSH connect + проверка host key
         ├─ SFTP upload: install.sh, xrayebator
         ├─ elevated `bash install.sh`
         ├─ elevated install → /usr/local/bin/xrayebator
-        ├─ elevated `xrayebator quickstart --email EMAIL` или `--without-email`
+        ├─ elevated `xrayebator quickstart --email EMAIL` или `--without-email` (плюс `--pq` и `--dns01-*` по выбору оператора)
         └─ parse `subscription_url` → fetch subscription → сохранить карточку сервера, настройки подключения, URL подписки и полученные VLESS-ссылки
 
 Для существующей установки импорт вместо этого выполняет read-only `xrayebator inspect --json`, проверяет подписку только при наличии публичного HTTPS endpoint и сохраняет найденное состояние без исправления или обновления VPS.

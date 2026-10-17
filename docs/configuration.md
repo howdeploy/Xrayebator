@@ -115,11 +115,11 @@ is a client-side profile/route setting; changing it does not restart Xray or alt
 | `sudo xrayebator update` | Update only the Xray-core binary |
 | `sudo xrayebator update <branch>` | Self-update the manager from the canonical raw repository branch, continue with the new script, then update Xray-core; the branch is pinned in `.current_branch` for later GUI updates |
 | `sudo xrayebator probe-test` | Check SNI reachability from the VPS before switching |
-| `sudo xrayebator quickstart --email <address>` | One-shot deploy path used by the desktop GUI: runs the broad setup/migration path, provisions the current IP-TLS endpoint on `8443`, and creates a standard HAPP profile with `schema_version: 3` and 7 routes; emits JSON with `subscription_url` |
+| `sudo xrayebator quickstart --email <address>` | One-shot deploy path used by the desktop GUI: runs the broad setup/migration path, provisions the current IP-TLS endpoint on `8443`, and creates a standard HAPP profile with `schema_version: 3` and 7 routes; emits JSON with `subscription_url`. Optional flags: `--pq` — add a PQ route on tcp to the profile (OFF by default: a client without ML-KEM cannot connect to the PQ port; the result lands in the JSON as `pq_route`), `--without-pq` — disable it explicitly, `--dns01-domain D --dns01-provider cloudflare\|route53 (--dns01-token T \| --dns01-aws-access-key-id K --dns01-aws-secret-access-key S)` — deploy-time DNS-01 fallback. DNS-01 parameters are validated **before** any system change: an incomplete set returns `{"ok":false,…}` and touches nothing |
 | `sudo xrayebator quickstart --without-email` | Same new-server path without an ACME contact email; Certbot uses `--register-unsafely-without-email`, so no renewal notices or email-based account recovery are available |
 | `sudo xrayebator inspect --json` | Read-only GUI import probe: reports manager, Xray, profile and subscription markers without installing, migrating or changing services/configuration |
 | `sudo xrayebator happ-setup` | Reduced existing-install HAPP path: ensures the subscription service and a usable multi-route profile, but does not replace the endpoint prerequisite; when `.subscription_domain` or `.subscription_port` is missing, it verifies a real public TLS endpoint before writing markers and otherwise fails |
-| `quickstart` http_tls mode | If Let's Encrypt cannot validate the IP over http-01 (`Connection reset by peer` from validation hosts — usually the hoster filters port 80 for foreign sources), the deploy does not fail: the subscription is published over HTTP (port 8080 outbound, token gate and 404 without token preserved), a self-signed certificate is generated for future backends, and the result JSON carries `degraded:true`, `tls_mode:"http_tls"` and the Certbot reason. The GUI stores the server as *Partially configured* and loads keys over SSH from the loopback handler; the ACME challenge location on port 80 stays in place — rerunning quickstart after the port is unblocked issues the LE certificate and switches the subscription back to HTTPS |
+| `quickstart` http_tls mode | Last-resort fallback, when neither http-01 nor DNS-01 worked: if Let's Encrypt cannot validate the IP over http-01 (`Connection reset by peer` from validation hosts — usually the hoster filters port 80 for foreign sources) **and** DNS-01 was not requested, the deploy does not fail: the subscription is published over HTTP (port 8080 outbound, token gate and 404 without token preserved), a self-signed certificate is generated for future backends, and the result JSON carries `degraded:true`, `tls_mode:"http_tls"` and the Certbot reason. The GUI stores the server as *Partially configured* and loads keys over SSH from the loopback handler; the ACME challenge location on port 80 stays in place — rerunning quickstart after the port is unblocked issues the LE certificate and switches the subscription back to HTTPS |
 | `sudo xrayebator profiles` | Print all server profiles as a JSON array for the desktop GUI Server Settings page; expiry includes both epoch seconds (`expire`) for enforcement and the server-local calendar date (`expire_date`) for display, so clients in another timezone still see the selected date |
 | `sudo xrayebator profile-create --name NAME [--transport tcp\|tcp-utls\|tcp-xudp\|tcp-mux\|grpc\|xhttp] [--port P] [--count N] [--expire DATE]` | Create one or more profiles non-interactively; `--expire` accepts `YYYY-MM-DD[ HH:MM]`, epoch seconds or 13-digit milliseconds. A date without time is inclusive through `23:59:59` in the server's local timezone; an explicit time uses that server-local time. Past expiries are rejected; existing names are never overwritten — they are reported in `errors` (the GUI also pre-checks a name collision before creating, since deletion is per-profile and unique names keep it precise); prints `{"ok":true,"names":[...],"errors":[...]}` |
 | `sudo xrayebator profile-delete --name NAME` | Delete a profile non-interactively; the deleted profile's backend grants are revoked immediately (the AWG peer is dropped from `awg0.conf`, the Hysteria password from `server.yaml` — no orphaned credentials) and the name is free for reuse; prints `{"ok":true,"name":"..."}` |
@@ -128,6 +128,7 @@ is a client-side profile/route setting; changing it does not restart Xray or alt
 | `sudo xrayebator expire-check` | Apply every due expiry in one batch; idempotent and never restarts Xray without changes. Driven by the `xrayebator-expire.timer` unit every 10 minutes |
 | `sudo xrayebator profile-limit --name NAME --limit 100GB\|none [--reset]` | Set a profile traffic limit (`500MB`, `1.5GB`, `2TB`, a plain byte count, `none` for unlimited; case-insensitive) and/or reset the counter (`--reset`); prints JSON |
 | `sudo xrayebator traffic-check` | Read the Stats API counters, accumulate per-profile usage and apply the limits (an exhausted limit removes the client from the inbound). Driven by the `xrayebator-traffic.timer` unit every 5 minutes; idempotent — it never touches the config without changes |
+| `sudo xrayebator profile-pq --name NAME [--transport tcp\|tcp-utls\|tcp-xudp\|tcp-mux\|grpc\|xhttp]` | Add a post-quantum VLESS Encryption route to a profile (`mlkem768x25519plus`): the server reserves a free port and creates a dedicated inbound for the route (the keys are shared server-wide, from `.vless_decryption`); the JSON carries `port` and a ready-made `link`. The keys are generated by the `mlkem_keys` migration (Xray-core 25.9.5+); without them the command returns an error with a hint |
 | `sudo xrayebator fp-change --name NAME [--route R] --fp FINGERPRINT` | Change the client fingerprint for one profile route; prints JSON |
 | `sudo xrayebator sni-change --name NAME [--route R] --sni SNI` | Change the shared inbound SNI and synchronise profiles on that port; prints JSON |
 | `sudo xrayebator sni-list` | Print SNI candidates grouped by category for the GUI SNI dialog; prints JSON. The first uncommented line of `sni_list.txt` is the default SNI for new profiles (`www.cloudflare.com`) |
@@ -152,6 +153,7 @@ is a client-side profile/route setting; changing it does not restart Xray or alt
 | `sudo xrayebator awg-31 --on\|--off` | Toggle the AWG 3.1 config format (`HeaderProtectionKey`, `RandomTrailers`, `S3`/`S4`); 3.1 is on by default for new installs, the toggle upgrades legacy server params in place, warns that every issued client `.conf` must be re-downloaded (AmneziaVPN ≥ 5.0.1.5) and regenerates the interface with rollback |
 | `sudo xrayebator dns01-setup --domain sub.example.com --provider cloudflare\|route53` | HTTPS subscription by domain through DNS-01: port 80 is not needed, ownership is proven by a TXT record. Writes `0600` credentials, issues the certbot certificate with a deploy-hook, brings up an nginx vhost without `listen 80` and switches the markers to `domain_tls`; prints JSON |
 | `sudo xrayebator dns01-status` | DNS-01 state: provider, mode, domain, port, presence of credentials, certificate lifetime in days and whether the deploy-hook is present; prints JSON |
+| `sudo xrayebator repair-dns01 --domain sub.example.com --provider cloudflare\|route53 [--token T \| --aws-*] [--email E] [--port P]` | Replace a degraded (`http_tls`) subscription with DNS-01: the same TXT-record issuance, the vhost is re-rendered with a TLS server only, and the markers become `domain_tls`. Idempotent: if the subscription is already on HTTPS (`ip_tls`/`domain_tls`) it returns `{"ok":true,"skipped":true}` and does nothing; prints JSON |
 | `sudo xrayebator alerts-setup --token T --chat-id C` | Connect Telegram notifications: validates the token through `getMe`, sends a test message and **only after successful delivery** saves `alerts.json` (0600) and enables `xrayebator-monitor.timer`; prints JSON |
 | `sudo xrayebator alerts-status` | Monitoring state: config, timer, last check time, events and the result of the last SNI probe (the bot token is never shown); prints JSON |
 | `sudo xrayebator alerts-test` | Send a test message to the configured chat (delivery check); prints JSON |
@@ -554,6 +556,41 @@ state). The thresholds are configured by the unit's environment variables: `ALER
 (reminder, 86400), `ALERTS_EXPIRE_WARN_SEC` (the "expiring" horizon, 259200),
 `ALERTS_SNI_INTERVAL_SEC` (86400), `ALERTS_SNI_TIMEOUT` (8 seconds per SNI).
 
+## PQ: VLESS Encryption on any transport
+
+`mlkem768x25519plus` is the post-quantum layer of VLESS: an application-level key on top of
+Reality/XHTTP that protects traffic even if the outer TLS layer is ever broken ("record now, decrypt
+later"). It used to exist only on the `xhttp-pq` route; now PQ is a property of any transport.
+
+```bash
+sudo xrayebator profile-pq --name NAME                    # tcp + Vision, dedicated port
+sudo xrayebator profile-pq --name NAME --transport grpc   # grpc
+sudo xrayebator profiles | jq '.[] | select(.name == "NAME") | .routes'
+```
+
+On the server: a free port is taken, a dedicated inbound of the requested transport is created, its
+`settings.decryption` is switched to the key from `/usr/local/etc/xray/.vless_decryption` (the keys
+are shared server-wide), and a `<transport>-pq` route with `pq_enabled: true` is appended to the
+profile. The dedicated inbound is mandatory: `decryption` is an inbound-level property, so a PQ port
+cannot share clients with regular routes.
+
+Consequences:
+
+- the client needs ML-KEM (HAPP or Xray 25.6+) — an old client cannot connect to the PQ port;
+- in the v2rayNG/base64 subscription PQ routes are **hidden**, in the HAPP subscription they are
+  visible, and in Clash/mihomo and sing-box they are skipped with a reason in the YAML;
+- the regular routes of the profile stay `encryption=none` and work on every client — PQ is added
+  next to them, not instead of them;
+- the keys are generated by the `mlkem_keys` migration (Xray-core 25.9.5+); without them `profile-pq`
+  returns a JSON error with a hint;
+- the cost is fractions of a millisecond of CPU and a few KB in the config; regular routes lose
+  nothing.
+
+At deployment time PQ is added with the `quickstart --pq` flag (off by default) and the "PQ route"
+toggle in the GUI wizard; in Server settings the "PQ" button next to a profile calls the same command
+and shows the ready-made link. If the server has no ML-KEM keys, the deploy does not fail: the profile
+simply stays without PQ, and the JSON reports `pq_route:false`.
+
 ## DNS-01: certificate and subscription domain without port 80
 
 The usual subscription modes (`ip_tls`, `domain_tls`) obtain the Let's Encrypt certificate over
@@ -599,6 +636,26 @@ Requirements and caveats:
   `.certbot_owned` manifest, so foreign domains are not touched;
 - switching to DNS-01 does not invalidate already-issued links: only the subscription base URL
   changes.
+
+### DNS-01 as a deployment fallback
+
+`quickstart` tries to obtain the certificate through the chain "existing certificate → http-01 for
+the IP → DNS-01 → `http_tls`". DNS-01 is enabled with the same data as `dns01-setup`, but with the
+`--dns01-` prefix:
+
+```bash
+sudo xrayebator quickstart --email admin@example.com --pq \
+  --dns01-domain sub.example.com --dns01-provider cloudflare --dns01-token CF_API_TOKEN
+```
+
+If http-01 does not pass (the hoster filters port 80) but DNS-01 did issue the certificate, the mode
+becomes `domain_tls`: `_dns01_install` renders the vhost with a single TLS server itself, so quickstart
+neither re-renders nginx with the IP template nor overwrites the subscription markers with the IP
+address (otherwise the GUI would receive a dead `https://<ip>:8443`). Renewal is the stock
+`certbot.timer` with the deploy hook; the IP timer for shortlived certificates is installed only in
+`ip_tls`. If DNS-01 did not work, the deploy honestly falls back to `http_tls` with `degraded:true` —
+the subscription can then be fixed later with the `repair-dns01` command or the "Fix with DNS-01"
+button in Server settings.
 
 ## Cascade and upstream nodes
 

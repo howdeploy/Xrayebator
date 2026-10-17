@@ -97,8 +97,8 @@ Xrayebator 同时解决这两个问题：
 | 多线路配置档 | 一个配置档 = 共享 `sub_token` 的一组线路；多个配置档可共用同一端口 | `profiles/<name>.json` |
 | HAPP 订阅 | 提供 `vless://` 列表、托管的 Global Proxy 路由及令牌保护的 geo 数据库，由 nginx 通过 HTTPS 对外发布 | `subhttp.sh`、`xrayebator-sub.service` |
 | 订阅格式 | 一个令牌四种订阅体：HAPP、面向 v2rayNG/v2rayN 的 base64、Clash/mihomo YAML 与 sing-box JSON；格式按 `?target=` 或 User-Agent 选择 | `_subscription_render_*_pure`、`subhttp.sh` |
-| DNS-01 订阅 | Let's Encrypt 证书通过 TXT 记录验证（Cloudflare/Route53），因此在服务商过滤 80 端口的服务器上也能按域名提供 HTTPS 订阅 | `dns01-setup`、`dns01-status` |
-| 后量子 XHTTP | `xhttp-pq` 线路使用 VLESS 加密 `mlkem768x25519plus` | `.vless_encryption`、`.vless_decryption` |
+| DNS-01 订阅 | Let's Encrypt 证书通过 TXT 记录验证（Cloudflare/Route53），因此在服务商过滤 80 端口的服务器上也能按域名提供 HTTPS 订阅。它同时是部署回退（`quickstart --dns01-*`）与已退化 http_tls 订阅的修复手段（`repair-dns01`，GUI 中的“用 DNS-01 修复”按钮） | `dns01-setup`、`dns01-status`、`repair-dns01` |
+| 后量子加密 | VLESS 加密 `mlkem768x25519plus` 可用于任意传输方式（`profile-pq --transport`），不再局限于 `xhttp-pq`；PQ 路由使用独立端口，可在部署时通过 `quickstart --pq` 或 GUI 向导开关添加 | `profile-pq`、`.vless_encryption`、`.vless_decryption` |
 | v2ray 兼容 | `v2rayNG` 与 `v2rayN` 获得不含 HAPP 元数据的经典 base64 订阅体 | `subhttp.sh` |
 | 吊销订阅 | 生成新的 32 位十六进制令牌，旧链接立即失效；完全吊销（`--full`）同时更换 uuid，已下载的配置随即断开 | `openssl rand -hex 16`、`profile-revoke` |
 | 配置档有效期 | 配置档可设置到期日：`xrayebator-expire.timer` 到期后把客户端从入站移除，续期后以同一 uuid 恢复 | `profile-expire`、`expire-check` |
@@ -283,10 +283,10 @@ GUI 的功能：
 | 页面 | 操作 |
 |---|---|
 | Dashboard | 服务器卡片与连通/安装状态；空页面提供“部署新服务器”或“连接现有服务器”；语言切换 |
-| 添加服务器 | 显式选择是否提供 email：`quickstart --email` 或 `quickstart --without-email`；保存服务器与公网订阅 |
+| 添加服务器 | 显式选择是否提供 email：`quickstart --email` 或 `quickstart --without-email`；向导中有两个可选区块——**PQ 路由**开关（`--pq`）与 **DNS-01 回退**（域名 + 服务商 + 凭据，`--dns01-*`），默认均关闭；保存服务器与公网订阅 |
 | 连接现有服务器 | 通过 SSH（密码或密钥）和只读 `xrayebator inspect --json` 导入已识别的 Xrayebator；部分安装会连同诊断状态保存，不自动修复 |
 | 服务器密钥 | 刷新公网订阅、复制链接、显示 `vless://` 链接与二维码 |
-| 服务器设置 | 使用 SSH 密码或私钥、直接 root 或 sudo：列出/创建/删除配置档，修改指纹、SNI 和端口，吊销订阅，设置配置档有效期，以及更新或卸载服务器上的 Xrayebator；即使桌面与 VPS 时区不同，有效期日期也按服务器本地日期显示 |
+| 服务器设置 | 使用 SSH 密码或私钥、直接 root 或 sudo：列出/创建/删除配置档，修改指纹、SNI 和端口，吊销订阅，设置配置档有效期与流量限额，添加 PQ 路由，管理订阅与 TLS（DNS-01，包括对已退化 `http_tls` 订阅的“用 DNS-01 修复”）以及 Telegram 通知（状态、测试消息、开/关），还可更新或卸载服务器上的 Xrayebator；即使桌面与 VPS 时区不同，有效期日期也按服务器本地日期显示 |
 
 选中的私钥与成功登录时使用过的 SSH 密码都会通过 `keytar` 保存在操作系统钥匙串中，之后的 SSH 操作和应用重启均可复用；服务器卡片只保存非敏感的 credential id 和显示文件名。单独的 sudo 密码与加密私钥口令不会持久化，需要时重新输入。系统钥匙串不可用时不会写入明文回退文件：密钥仅保留在 main process 内存中直到当前会话结束，界面会提示重启后需重新输入。应用还会保存 `subscription_url`、获取到的 `vless://` 链接和固定的 SSH host-key fingerprint。这些是 bearer/client credentials：请保护本地应用数据，泄露后在服务器设置中吊销订阅（完全吊销会同时更换密钥）。
 

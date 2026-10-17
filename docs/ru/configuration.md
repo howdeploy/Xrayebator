@@ -118,11 +118,11 @@ legacy-файлы и блоки, ранее созданные Xrayebator, и с
 | `sudo xrayebator update` | Обновить только бинарник Xray-core |
 | `sudo xrayebator update <branch>` | Self-update менеджера из canonical raw-репозитория (ветка branch), продолжить новым скриптом, затем обновить Xray-core; ветка закрепляется в `.current_branch` для последующих обновлений из GUI |
 | `sudo xrayebator probe-test` | Проверить SNI reachability с VPS |
-| `sudo xrayebator quickstart --email <адрес>` | Путь одноразового деплоя (используется GUI): broad setup/migration, IP-TLS endpoint на `8443` и стандартный schema-v3 HAPP-профиль из 7 маршрутов; выводит JSON с `subscription_url`. Migration calls best-effort, проверяйте итоговый профиль и сервисы |
+| `sudo xrayebator quickstart --email <адрес>` | Путь одноразового деплоя (используется GUI): broad setup/migration, IP-TLS endpoint на `8443` и стандартный schema-v3 HAPP-профиль из 7 маршрутов; выводит JSON с `subscription_url`. Migration calls best-effort, проверяйте итоговый профиль и сервисы. Дополнительные флаги: `--pq` — добавить профилю PQ-маршрут на tcp (по умолчанию **выключено**: клиент без ML-KEM к PQ-порту не подключится; результат в JSON — `pq_route`), `--without-pq` — явно выключить, `--dns01-domain D --dns01-provider cloudflare\|route53 (--dns01-token T \| --dns01-aws-access-key-id K --dns01-aws-secret-access-key S)` — DNS-01-фолбэк развёртывания. Параметры DNS-01 проверяются **до** системных изменений: неполный набор возвращает `{"ok":false,…}` и ничего не трогает |
 | `sudo xrayebator quickstart --without-email` | Тот же путь развёртывания без ACME email; Certbot регистрирует аккаунт с `--register-unsafely-without-email`, поэтому уведомления и восстановление аккаунта по email недоступны. Если LE не может проверить http-01 (хостер фильтрует порт 80), quickstart деградирует в `http_tls`: подписка поднимается по HTTP, JSON несёт `degraded:true`, повторный деплой после разблокировки :80 возвращает HTTPS |
 | `sudo xrayebator inspect --json` | Read-only проверка установки для GUI-импорта: возвращает состояние Xray, профилей и маркеров подписки; не запускает установку, миграции или изменения конфигурации |
 | `sudo xrayebator happ-setup` | Сокращённый re-entry на существующей установке: проверяет subscription service и usable multi-route profile; при отсутствии markers проверяет IP-TLS endpoint на `8443`, но не фабрикует markers |
-| `sudo xrayebator quickstart` — режим http_tls | Если Let's Encrypt не может проверить http-01 для IP (`Connection reset by peer` от validation hosts — обычно порт 80 фильтруется хостером для зарубежных источников), деплой не падает: подписка остаётся только на loopback (публичного URL вообще нет — ключи GUI тянет по SSH с `http://127.0.0.1:8080/sub/<token>` на самом сервере), self-signed серт готовится для будущих бэкендов, итоговый JSON несёт `degraded:true`, `tls_mode:"http_tls"` и причину certbot. Сервер хранится как «Настроен частично» с пометкой деградации; location ACME-challenge на :80 сохраняется — повторный quickstart после разблокировки порта выпускает LE-серт и возвращает подписку на HTTPS |
+| `sudo xrayebator quickstart` — режим http_tls | Крайний фолбэк, когда ни http-01, ни DNS-01 не сработали: если Let's Encrypt не может проверить http-01 для IP (`Connection reset by peer` от validation hosts — обычно порт 80 фильтруется хостером для зарубежных источников) **и** DNS-01 не запрошен, деплой не падает: подписка остаётся только на loopback (публичного URL вообще нет — ключи GUI тянет по SSH с `http://127.0.0.1:8080/sub/<token>` на самом сервере), self-signed серт готовится для будущих бэкендов, итоговый JSON несёт `degraded:true`, `tls_mode:"http_tls"` и причину certbot. Сервер хранится как «Настроен частично» с пометкой деградации; location ACME-challenge на :80 сохраняется — повторный quickstart после разблокировки порта выпускает LE-серт и возвращает подписку на HTTPS |
 | `sudo xrayebator profiles` | Вывести все профили сервера JSON-массивом (для «Настроек сервера» GUI); срок содержит epoch-секунды (`expire`) для принуждения и календарную дату в зоне сервера (`expire_date`) для отображения, поэтому клиент с другой временной зоной видит выбранную дату |
 | `sudo xrayebator profile-create --name ИМЯ [--transport tcp\|tcp-utls\|tcp-xudp\|tcp-mux\|grpc\|xhttp] [--port P] [--count N] [--expire ДАТА]` | Создать профили без интерактива; `--expire` принимает `ГГГГ-ММ-ДД[ ЧЧ:ММ]`, epoch-секунды или 13-значные миллисекунды. Дата без времени действует включительно до `23:59:59` по локальным часам сервера; указанное время трактуется в той же зоне. Уже прошедший срок отклоняется; существующие имена не перезаписываются — они попадают в `errors` (GUI дополнительно проверяет коллизию имени до создания, поскольку удаление идёт по профилю целиком и уникальность имён делает его прицельным); `{"ok":true,"names":[...],"errors":[...]}` |
 | `sudo xrayebator profile-delete --name ИМЯ` | Удалить профиль без интерактива; бэкенд-гранты удалённого профиля отзываются сразу — peer снимается с `awg0.conf`, пароль уходит из `server.yaml` (осиротевших креденшелов нет), имя освобождается для повторного использования; `{"ok":true,"name":"..."}` |
@@ -131,6 +131,7 @@ legacy-файлы и блоки, ранее созданные Xrayebator, и с
 | `sudo xrayebator expire-check` | Применить все наступившие сроки пакетно; идемпотентно, без изменений не перезапускает Xray. Вызывается таймером `xrayebator-expire.timer` каждые 10 минут |
 | `sudo xrayebator profile-limit --name ИМЯ --limit 100GB\|none [--reset]` | Задать лимит трафика профиля (`500MB`, `1.5GB`, `2TB`, просто число в байтах, `none` — безлимит; регистр не важен) и/или сбросить счётчик (`--reset`); JSON |
 | `sudo xrayebator traffic-check` | Снять счётчики Stats API, накопить расход по профилям и применить лимиты (исчерпанный лимит снимает клиента с инбаунда). Вызывается таймером `xrayebator-traffic.timer` каждые 5 минут; идемпотентно — без изменений конфиг не трогает |
+| `sudo xrayebator profile-pq --name ИМЯ [--transport tcp\|tcp-utls\|tcp-xudp\|tcp-mux\|grpc\|xhttp]` | Добавить профилю пост-квантовый маршрут VLESS Encryption (`mlkem768x25519plus`): сервер резервирует свободный порт и создаёт под маршрут отдельный инбаунд (ключи общие, из `.vless_decryption`); JSON содержит `port` и готовую ссылку `link`. Ключи генерирует миграция `mlkem_keys` (Xray-core 25.9.5+), без них команда возвращает ошибку с подсказкой |
 | `sudo xrayebator fp-change --name ИМЯ [--route R] --fp ОТПЕЧАТОК` | Сменить клиентский fingerprint для одного маршрута профиля; JSON |
 | `sudo xrayebator sni-change --name ИМЯ [--route R] --sni SNI` | Сменить общий inbound SNI и синхронизировать профили на этом порту; JSON |
 | `sudo xrayebator sni-list` | Вывести SNI-кандидаты по категориям для GUI; JSON. Первая незакомментированная строка `sni_list.txt` — SNI по умолчанию для новых профилей (`www.cloudflare.com`) |
@@ -155,6 +156,7 @@ legacy-файлы и блоки, ранее созданные Xrayebator, и с
 | `sudo xrayebator awg-31 --on\|--off` | Переключить формат конфига AWG 3.1 (`HeaderProtectionKey`, `RandomTrailers`, `S3`/`S4`); для новых установок 3.1 включён по умолчанию, тумблер досоздаёт недостающие параметры сервера на месте, предупреждает, что все выданные клиентские `.conf` нужно скачать заново (AmneziaVPN ≥ 5.0.1.5), и регенерирует интерфейс с откатом |
 | `sudo xrayebator dns01-setup --domain sub.example.com --provider cloudflare\|route53` | HTTPS-подписка по домену через DNS-01: порт 80 не нужен, сертификат проверяется TXT-записью. Пишет credentials `0600`, выпускает certbot-сертификат с deploy-hook, поднимает nginx-vhost без `listen 80` и переводит маркеры в `domain_tls`; JSON |
 | `sudo xrayebator dns01-status` | Состояние DNS-01: провайдер, режим, домен, порт, наличие credentials, срок сертификата в днях и наличие deploy-hook; JSON |
+| `sudo xrayebator repair-dns01 --domain sub.example.com --provider cloudflare\|route53 [--token T \| --aws-*] [--email E] [--port P]` | Заменить деградированную (`http_tls`) подписку на DNS-01: тот же выпуск сертификата по TXT-записи, vhost перерисовывается только с TLS-сервером, маркеры становятся `domain_tls`. Идемпотентно: если подписка уже на HTTPS (`ip_tls`/`domain_tls`), возвращает `{"ok":true,"skipped":true}` и ничего не делает; JSON |
 | `sudo xrayebator alerts-setup --token T --chat-id C` | Подключить Telegram-уведомления: проверяет токен через `getMe`, отправляет тестовое сообщение и **только после успешной доставки** сохраняет `alerts.json` (0600) и включает `xrayebator-monitor.timer`; JSON |
 | `sudo xrayebator alerts-status` | Состояние мониторинга: конфиг, таймер, время последней проверки, события и результат последней SNI-пробы (токен бота не показывается); JSON |
 | `sudo xrayebator alerts-test` | Тестовое сообщение в настроенный чат (проверка доставки); JSON |
@@ -575,6 +577,11 @@ sudo xrayebator profiles | jq '.[] | select(.name == "ИМЯ") | .routes'
   JSON-ошибку с подсказкой;
 - цена — доли миллисекунды CPU и несколько КБ в конфиге; для обычных маршрутов вреда нет.
 
+При развёртывании PQ добавляется флагом `quickstart --pq` (по умолчанию выключен) и тумблером
+«PQ-маршрут» в GUI-визарде; в настройках сервера кнопка «PQ» у профиля вызывает ту же команду и
+показывает готовую ссылку. Если ключей ML-KEM на сервере нет, деплой не падает: профиль просто
+остаётся без PQ, а JSON несёт `pq_route:false`.
+
 ## DNS-01: сертификат и домен подписки без порта 80
 
 Обычные режимы подписки (`ip_tls`, `domain_tls`) получают сертификат Let's Encrypt через http-01, то
@@ -618,6 +625,24 @@ sudo xrayebator dns01-status   # провайдер, домен, порт, ср�
 - credentials-файлы удаляются `xrayebator-uninstall`; сертификаты — по root-owned манифесту
   `.certbot_owned`, чужие домены не трогаются;
 - переключение на DNS-01 не отменяет уже выданные ссылки: меняется только базовый URL подписки.
+
+### DNS-01 как фолбэк развёртывания
+
+`quickstart` пробует получить сертификат по цепочке «существующий серт → http-01 для IP → DNS-01 →
+`http_tls`». DNS-01 включается теми же данными, что и `dns01-setup`, но с префиксом `--dns01-`:
+
+```bash
+sudo xrayebator quickstart --email admin@example.com --pq \
+  --dns01-domain sub.example.com --dns01-provider cloudflare --dns01-token CF_API_TOKEN
+```
+
+Если http-01 не проходит (порт 80 фильтруется хостером), но DNS-01 выпустил сертификат, режим
+становится `domain_tls`: `_dns01_install` сам рисует vhost с одним TLS-сервером, поэтому quickstart
+не перерисовывает nginx IP-шаблоном и не перезаписывает маркеры подписки IP-адресом (иначе GUI
+получил бы мёртвый `https://<ip>:8443`). Продление — штатный `certbot.timer` с deploy-hook;
+IP-таймер shortlived-сертификатов ставится только в `ip_tls`. Если DNS-01 не сработал, деплой
+честно уходит в `http_tls` с `degraded:true` — тогда подписку чинят позже командой `repair-dns01`
+или кнопкой «Исправить через DNS-01» в настройках сервера.
 
 ## Каскад и upstream-ноды
 
