@@ -13588,11 +13588,15 @@ inspect_command() {
 }
 
 quickstart_command() {
-  local email="" email_mode="provided"
+  local email="" email_mode="provided" deploy_pq=false
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --email) email="$2"; email_mode="provided"; shift 2 ;;
       --without-email) email=""; email_mode="without"; shift ;;
+      # PQ при развёртывании: по умолчанию ВЫКЛ — клиент без ML-KEM к PQ-порту
+      # не подключится, поэтому выбор делает оператор (GUI-визард или флаг).
+      --pq) deploy_pq=true; shift ;;
+      --without-pq) deploy_pq=false; shift ;;
       *) shift ;;
     esac
   done
@@ -14056,6 +14060,17 @@ NGINXHTTPS
   # Создание одиночного профиля здесь ломало HAPP ("route not shown / country n/a").
   echo "  Обеспечиваю multi-route HAPP профиль..." >&2
   if ! _happ_ensure_default_multiroute_profile >/dev/null 2>&1; then
+
+  # PQ при развёртывании (--pq): профиль получает дополнительный PQ-маршрут на tcp
+  # (отдельный инбаунд/порт, ключи из mlkem_keys). Если ключей ещё нет, деплой не
+  # падает: профиль просто остаётся без PQ, а флаг отражается в итоговом JSON.
+  local pq_route_added=false
+  if [[ "$deploy_pq" == "true" ]]; then
+    run_migration "mlkem_keys" "PQ keys" _migrate_mlkem_keys >/dev/null 2>&1 || true
+    if _pq_add_route_for_profile "$PROFILES_DIR/$HAPP_DEFAULT_PROFILE.json" tcp >/dev/null 2>&1; then
+      pq_route_added=true
+    fi
+  fi
     echo '{"ok":false,"error":"Не удалось создать HAPP multi-route профиль"}'
     _qs_nginx_rollback
     return 1
