@@ -100,9 +100,10 @@ The interactive menu uses these exact meanings:
 | `11` | Hysteria 2 backend: install/status/client link/uninstall (fast UDP transport) |
 | `12` | AmneziaWG 2.0 backend: install/status/client conf/uninstall (system VPN) |
 | `13` | Status of all multi-protocol backends |
+| `14` | Telegram alerts: setup, test, enable/disable, monitoring state |
 | `0` | Exit |
 
-Actions are numbered consecutively from `1` to `13`; `0` exits the program. SNI and port are
+Actions are numbered consecutively from `1` to `14`; `0` exits the program. SNI and port are
 shared inbound settings, so changing either can affect other profiles on that port. The fingerprint
 is a client-side profile/route setting; changing it does not restart Xray or alter other routes.
 
@@ -125,6 +126,8 @@ is a client-side profile/route setting; changing it does not restart Xray or alt
 | `sudo xrayebator profile-revoke --name NAME [--full]` | Reissue the subscription link: new `sub_token`; with `--full` also a new uuid in every inbound of the profile (already-downloaded configs are cut off); prints JSON |
 | `sudo xrayebator profile-expire --name NAME --expire DATE\|epoch\|none` | Set, extend or remove a profile expiry; a date without time is inclusive through `23:59:59` in the server's local timezone, while an explicit time is used as given in that timezone; applied immediately (a passed expiry removes the client, an extension restores it); prints JSON |
 | `sudo xrayebator expire-check` | Apply every due expiry in one batch; idempotent and never restarts Xray without changes. Driven by the `xrayebator-expire.timer` unit every 10 minutes |
+| `sudo xrayebator profile-limit --name NAME --limit 100GB\|none [--reset]` | Set a profile traffic limit (`500MB`, `1.5GB`, `2TB`, a plain byte count, `none` for unlimited; case-insensitive) and/or reset the counter (`--reset`); prints JSON |
+| `sudo xrayebator traffic-check` | Read the Stats API counters, accumulate per-profile usage and apply the limits (an exhausted limit removes the client from the inbound). Driven by the `xrayebator-traffic.timer` unit every 5 minutes; idempotent — it never touches the config without changes |
 | `sudo xrayebator fp-change --name NAME [--route R] --fp FINGERPRINT` | Change the client fingerprint for one profile route; prints JSON |
 | `sudo xrayebator sni-change --name NAME [--route R] --sni SNI` | Change the shared inbound SNI and synchronise profiles on that port; prints JSON |
 | `sudo xrayebator sni-list` | Print SNI candidates grouped by category for the GUI SNI dialog; prints JSON. The first uncommented line of `sni_list.txt` is the default SNI for new profiles (`www.cloudflare.com`) |
@@ -147,6 +150,11 @@ is a client-side profile/route setting; changing it does not restart Xray or alt
 | `sudo xrayebator awg-grant --name N` | Issue a per-profile peer (keypair + preshared key + `10.8.1.x` address in the profile's `.backends.awg`); `awg0.conf` is regenerated; prints JSON |
 | `sudo xrayebator awg-conf --name N` | Print the client `.conf` for a profile peer as JSON `{ok, name, conf}` — full-tunnel AllowedIPs, server junk parameters, endpoint; import into the AmneziaWG/AmneziaVPN client |
 | `sudo xrayebator awg-31 --on\|--off` | Toggle the AWG 3.1 config format (`HeaderProtectionKey`, `RandomTrailers`, `S3`/`S4`); 3.1 is on by default for new installs, the toggle upgrades legacy server params in place, warns that every issued client `.conf` must be re-downloaded (AmneziaVPN ≥ 5.0.1.5) and regenerates the interface with rollback |
+| `sudo xrayebator alerts-setup --token T --chat-id C` | Connect Telegram notifications: validates the token through `getMe`, sends a test message and **only after successful delivery** saves `alerts.json` (0600) and enables `xrayebator-monitor.timer`; prints JSON |
+| `sudo xrayebator alerts-status` | Monitoring state: config, timer, last check time, events and the result of the last SNI probe (the bot token is never shown); prints JSON |
+| `sudo xrayebator alerts-test` | Send a test message to the configured chat (delivery check); prints JSON |
+| `sudo xrayebator alerts-enable\|alerts-disable` | Turn delivery on or off without deleting the settings (a kill switch that keeps the token); prints JSON |
+| `sudo xrayebator monitor-check [--force-sni]` | One monitoring iteration — the one `xrayebator-monitor.timer` runs every 15 minutes: services and backends, profile expiries and limits, subscription liveness and its TLS mode, server reboot, and a daily SNI probe (`--force-sni` runs it out of schedule); prints JSON |
 | `sudo xrayebator-update [branch]` | Run the full `update.sh` project lifecycle update; without a branch, display `.current_branch` and open the interactive branch selector; with a branch, use that explicit branch |
 | `sudo xrayebator-uninstall` | Remove the service and installation |
 
@@ -417,6 +425,87 @@ VLESS, Hysteria 2 and AmneziaWG have different multi-device semantics:
   AmneziaWG (their UDP port) bypass nginx entirely, and nothing load-balances between the
   backends — they are independent services on separate ports; every device simply adds its own
   session to whichever protocol it uses.
+
+## Per-profile traffic accounting and limits
+
+Xray counts traffic per client (the client `email` equals the profile name), and the manager turns
+those counters into per-profile usage:
+
+- on a new installation `install.sh` adds the `dokodemo-door` api inbound on `127.0.0.1:10085`,
+  `policy.system.statsInboundUplink/Downlink`, the level `0` `statsUserUplink/Downlink` and the
+  first routing rule `api → api` to `config.json`, so accounting works right after installation.
+  The level flags are mandatory: Xray registers the `user>>>name>>>traffic>>>uplink` counters only
+  from them (`policy.system.statsInbound*` gives inbound statistics, not per-user ones), and on
+  older configs the `traffic_stats_2026` migration adds them on the first menu launch. Servers that
+  already ran the earlier version of that migration (its marker was already in place while the
+  flags were missing) are repaired by a separate idempotent migration `traffic_user_stats_2026` —
+  it runs on the next menu launch;
+- `xrayebator-traffic.timer` runs `xrayebator traffic-check` every 5 minutes: it reads the Stats API
+  counters (`xray api statsquery`) and accumulates the usage into the profile (`.traffic.used`),
+  subtracting the previous snapshot (`.traffic.last`) — an Xray restart does not "eat" gigabytes
+  that were already counted;
+- the limit is stored in the profile (`.traffic.limit`, bytes), `none` means unlimited. When the
+  limit is exhausted the client is removed from the inbound (snapshot — `.traffic_clients`), the
+  profile gets `.traffic_disabled: true` and the subscription answers `410 Gone`. Clearing or
+  raising the limit restores the very same client, so devices do not need to re-import the
+  subscription;
+- `subscription-userinfo` in the subscription reports the real `download` (accumulated usage) and
+  `total` (the limit), so clients with userinfo support show the remainder themselves;
+- accounting covers the profile's Xray routes only: Hysteria 2 and AmneziaWG count their own traffic
+  separately (or do not count it at all), and it does not fall into the profile limit — a profile
+  with a Hysteria 2 grant can therefore exceed its limit when the client goes through the UDP
+  backend;
+- the expiry (`expire`) and the traffic limit are independent: clearing one restriction does not
+  restore the client while the other one is still in force.
+
+```bash
+sudo xrayebator profile-limit --name NAME --limit 1.5GB   # set a limit
+sudo xrayebator profile-limit --name NAME --reset         # reset the counter
+sudo xrayebator profile-limit --name NAME --limit none    # clear the limit
+sudo xrayebator profiles | jq '.[] | {name, traffic_used, traffic_limit, traffic_disabled}'
+```
+
+In the GUI the profile card shows a "used / limit" chip (yellow from 80%, red when exhausted), and
+the "Limit" dialog sets presets, a custom value, a counter reset and clearing the limit. Limit
+management is shown only where accounting is actually wired: `profiles` returns
+`traffic_supported: true` only when the api inbound and the level `0` user-level flags are present;
+otherwise (an older server, or one updated but not yet migrated) the GUI honestly hides the
+feature.
+
+## Monitoring and Telegram alerts
+
+Monitoring is an optional layer: every 15 minutes `xrayebator-monitor.timer` runs
+`xrayebator monitor-check` and writes only state changes to Telegram (a repeat about the same event
+is sent no more than once a day, a recovery is a separate message).
+
+| What is watched | Event |
+|---|---|
+| `xray.service`, `xrayebator-sub.service` and `nginx.service` (if enabled) | service is down / is back up |
+| Hysteria 2 (`hysteria-server.service`) and the AWG interface (`awg show awg0`) | installed backends only (per the registry) |
+| Profile expiries | expiring within the next 3 days; disabled by a passed expiry |
+| Traffic limits | profiles disabled by an exhausted limit |
+| Subscription | the loopback handler does not answer (`:8080/sub/<token>`); the mode degraded to `http_tls`/`local_only` — Let's Encrypt did not validate http-01 and the subscription has no HTTPS |
+| SNI | once a day, `probe-test` over the SNIs profiles actually use: full or partial unreachability |
+| Server reboot | edge-triggered by `boot_id`: a message after a restart (repeated if the previous one was not delivered) |
+
+Setup happens from the menu (`14`) or the CLI. The bot token is issued by `@BotFather`, the
+`chat_id` by `@userinfobot` (for groups it is negative):
+
+```bash
+sudo xrayebator alerts-setup --token 123456:AA... --chat-id -1001234567890
+sudo xrayebator alerts-status                # timer, last check, events, SNI
+sudo xrayebator alerts-test                  # test message
+sudo xrayebator alerts-disable               # pause without losing the settings
+sudo xrayebator monitor-check --force-sni    # run a check and the SNI probe right now
+```
+
+Files: `/usr/local/etc/xrayebator/alerts.json` (0600 — bot token and chat_id) and `monitor-state.json`
+(deduplication state: events, `boot_id`, the result of the last SNI probe). The token is never
+printed to CLI stdout. If Telegram is unreachable, the event state is not recorded — the send is
+retried on the next tick, while the SNI probe is not repeated (its result is already saved in the
+state). The thresholds are configured by the unit's environment variables: `ALERTS_REMIND_SEC`
+(reminder, 86400), `ALERTS_EXPIRE_WARN_SEC` (the "expiring" horizon, 259200),
+`ALERTS_SNI_INTERVAL_SEC` (86400), `ALERTS_SNI_TIMEOUT` (8 seconds per SNI).
 
 ## Cascade and upstream nodes
 

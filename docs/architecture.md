@@ -51,8 +51,8 @@ configuration and systemd unit form the HAPP subscription path. The active deskt
 └── xrayebator-uninstall          # removal entry point
 
 /usr/local/etc/xray/
-├── config.json                   # inbounds, outbounds, routing and DNS
-├── profiles/<name>.json          # profile metadata, subscription token, expiry (.expire), backend grants (.backends)
+├── config.json                   # inbounds, outbounds, routing, DNS and the loopback api inbound (Stats API)
+├── profiles/<name>.json          # profile metadata, subscription token, expiry (.expire), limit and usage (.traffic), backend grants (.backends)
 ├── upstreams/cascade.json        # cascade upstream parameters
 ├── backups/                      # config backups made before runtime mutations
 ├── .private_key / .public_key    # Reality keys
@@ -64,6 +64,8 @@ configuration and systemd unit form the HAPP subscription path. The active deskt
 
 /usr/local/etc/xrayebator/         # multi-protocol backend root (neutral, Xray paths untouched)
 ├── backends.json                  # backend registry: installed/version/port/flags (644, no secrets)
+├── alerts.json                    # monitoring Telegram alerts: bot token and chat_id (0600)
+├── monitor-state.json             # monitoring state: events, boot_id, last SNI probe (0600)
 └── backends/
     ├── hysteria2/                 # server.yaml (regenerated from profiles), certs, placeholder credential
     └── awg/                       # awg0.conf (0600), server-params.json (0600)
@@ -72,6 +74,8 @@ configuration and systemd unit form the HAPP subscription path. The active deskt
 /var/log/xray/                     # runtime log directory written by the Xray service
 /etc/systemd/system/xray.service.d/security.conf
 /etc/systemd/system/xrayebator-sub.service
+/etc/systemd/system/xrayebator-traffic.service + .timer   # per-profile traffic accounting (5 minutes)
+/etc/systemd/system/xrayebator-monitor.service + .timer   # monitoring and alerts (15 minutes)
 /etc/systemd/system/hysteria-server.service   # Hysteria 2 backend (optional)
 /etc/systemd/system/awg-quick@awg0.service    # AmneziaWG backend (optional, from amneziawg-tools)
 /etc/nginx/sites-available/xrayebator-sub
@@ -170,6 +174,30 @@ propagate through `_backend_apply_profile_lifecycle` to every installed backend.
   The distro unit reads `/etc/amnezia/amneziawg/awg0.conf`, which is a symlink to the managed file.
 - Both backends are optional, installed and removed from menu items `11`–`13` or the `hysteria2-*`
   / `awg-*` CLI commands, and are never installed by default.
+
+## Traffic accounting and monitoring
+
+Both traffic accounting and monitoring are add-ons over a single principle: state lives in the
+profile JSON, and the timer only applies it.
+
+- **Traffic accounting.** `install.sh` adds the api inbound (`dokodemo-door` on `127.0.0.1:10085`),
+  `policy.system` with `statsInboundUplink/Downlink` and the routing rule `api → api` to
+  `config.json`. The `email` of every client equals the profile name, which is why the Stats API
+  (`xray api statsquery`) returns usage broken down by profile. `xrayebator-traffic.timer`
+  (5 minutes) calls `traffic-check`: it subtracts the previous snapshot (`.traffic.last`) and
+  accumulates `.traffic.used`, then applies the limit — an exhausted one removes the clients from
+  the inbounds, the snapshot goes to `.traffic_clients`, the profile gets `.traffic_disabled`, and
+  the subscription answers `410`. Migrations: `traffic_stats_2026`, `traffic_timer_2026`,
+  `subhttp_traffic_2026`.
+- **Monitoring.** `xrayebator-monitor.timer` (15 minutes) calls `monitor-check`: services and
+  installed backends, profile expiries and limits, subscription liveness and its TLS mode, reboot
+  (`boot_id`), and once a day an SNI probe over the SNIs profiles actually use. Deduplication lives
+  in `monitor-state.json`: a repeat of an event no more often than `ALERTS_REMIND_SEC`, a recovery as
+  a separate message, and an undelivered alert is retried on the next tick. The bot token is stored
+  in a `0600` `alerts.json` in the neutral root: this is not Xray state, and the
+  `/usr/local/etc/xray` path stays Xray-only. Migration: `alerts_monitor_2026`.
+
+Both migrations are registered in all three entry paths — `main_menu`, `quickstart` and `happ-setup`.
 
 ## Update paths
 

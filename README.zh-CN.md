@@ -100,6 +100,8 @@ Xrayebator 同时解决这两个问题：
 | v2ray 兼容 | `v2rayNG` 与 `v2rayN` 获得不含 HAPP 元数据的经典 base64 订阅体 | `subhttp.sh` |
 | 吊销订阅 | 生成新的 32 位十六进制令牌，旧链接立即失效；完全吊销（`--full`）同时更换 uuid，已下载的配置随即断开 | `openssl rand -hex 16`、`profile-revoke` |
 | 配置档有效期 | 配置档可设置到期日：`xrayebator-expire.timer` 到期后把客户端从入站移除，续期后以同一 uuid 恢复 | `profile-expire`、`expire-check` |
+| 流量统计与限额 | 按配置档统计 Stats API 用量：`xrayebator-traffic.timer` 累计流量，限额耗尽时移除客户端、提高或重置后恢复；订阅返回真实的 `subscription-userinfo` | `profile-limit`、`traffic-check` |
+| 监控与 Telegram 告警 | 每 15 分钟检查服务、后端（Hysteria 2、AWG）、有效期与限额、订阅存活及其 TLS 模式、服务器重启；每天一次检查配置档实际使用的 SNI 可达性；只把状态变化写入 Telegram | 菜单 `14`、`xrayebator-monitor.timer` |
 | 分流路由 | 八组域名可经 `freedom` 直连，绕过 VPN | 菜单 `7` |
 | 级联 | 把 `tcp,udp` 兜底规则切换到 `tcp` 或 `xhttp` 类型的境外 VLESS Reality 上游 | `upstreams/cascade.json` |
 | Self-steal 挡板 | 在 `127.0.0.1:9444` 部署带有效证书的 nginx，并让 Reality 回落指向它 | 菜单 `9` |
@@ -298,7 +300,7 @@ npm run dev          # Electron + Vite dev server
 npm run build        # 编译 renderer 与 main process
 ```
 
-Electron 检查：`npm test` 运行 `tests/` 中的 18 个单元测试文件；`npm run typecheck` 检查 TypeScript，
+Electron 检查：`npm test` 运行 `tests/` 中的 19 个单元测试文件；`npm run typecheck` 检查 TypeScript，
 包含 `tests/type-contracts/` 中严格的 onboarding 契约；`npm run build` 构建应用。在原生 Windows 上，POSIX 专用测试
 `tests/unit/shell-command.test.ts`
 可能因缺少 `/bin/sh` 而失败；Linux CI 是事实来源。参见[测试](docs/zh-CN/testing.md#桌面图形界面)

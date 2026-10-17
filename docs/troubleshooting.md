@@ -149,6 +149,36 @@ sudo xrayebator profile-expire --name NAME --expire none         # make unlimite
 Renewal restores the very same client (same uuid), so devices do not need to re-import the
 subscription. In the GUI the same action lives behind the “Expiry” button on the profile card.
 
+A second source of `410 Gone` is an exhausted traffic limit: the profile carries
+`.traffic_disabled: true` (the client was removed by `xrayebator traffic-check`, the
+`xrayebator-traffic.timer` unit, every 5 minutes).
+
+```bash
+sudo xrayebator profiles | jq '.[] | select(.traffic_disabled) | {name, traffic_used, traffic_limit}'
+sudo xrayebator profile-limit --name NAME --limit 2GB     # raise the limit
+sudo xrayebator profile-limit --name NAME --reset         # reset the counter
+sudo xrayebator profile-limit --name NAME --limit none    # clear the limit
+```
+
+In the GUI the same dialog opens behind the “Limit” button on the profile card. If no limit was set
+but the usage is non-zero, check that the api inbound exists in the config
+(`jq '.inbounds[] | select(.tag=="api")' /usr/local/etc/xray/config.json`) and that the accounting
+timer is enabled: `systemctl list-timers xrayebator-traffic.timer`.
+
+The opposite situation is zero usage for every profile. Xray keeps per-user counters only when
+`policy.levels."0".statsUserUplink/Downlink: true` (`policy.system.statsInbound*` is inbound
+statistics, per-user data is not taken from it). The flags are set by `install.sh`, added by the
+`traffic_stats_2026` migration, and servers that ran its early (buggy) version are repaired by a
+separate migration `traffic_user_stats_2026` — it fires on the next menu entry. Check the state:
+
+```bash
+jq '.policy.levels."0"' /usr/local/etc/xray/config.json
+ls /usr/local/etc/xray/.traffic_stats_2026 && echo "the migration has already run"
+```
+
+In the GUI the same condition shows up as a missing `traffic_supported` in the `profiles` output:
+the manager does not show limit management where accounting is not yet wired.
+
 ## Old profiles exist on the server but do not work
 
 If the profile JSON points at ports that no longer exist in `config.json`, the profile is stale.
@@ -341,6 +371,30 @@ HTTPS, ask the hoster to unblock port 80 for Let's Encrypt validation ranges
 deploy; the run is idempotent and issues the LE certificate when the challenge
 becomes reachable. `validation/test-quickstart-tls-fallback.sh` locks the
 fallback structure.
+
+## Telegram alerts do not arrive
+
+Check in order:
+
+```bash
+sudo xrayebator alerts-status   # configured/enabled, timer_installed/timer_active, last_run, events
+sudo xrayebator alerts-test     # delivery to the chat right now
+systemctl list-timers xrayebator-monitor.timer
+journalctl -u xrayebator-monitor.service -n 50 --no-pager
+```
+
+- `configured:false` — no settings: `alerts-setup --token ... --chat-id ...`.
+- `enabled:false` — delivery is off (`alerts-enable` or item 3 of the "Telegram alerts" submenu,
+  main menu → `14`); the token and the chat themselves are intact.
+- `timer_installed:false` — the monitor unit is not installed: on an existing server the
+  `alerts_monitor_2026` migration installs it on the first menu entry (or a repeated `quickstart`).
+- `alerts-test` returns a delivery error — check that the bot was added to the chat (for a group,
+  ordinary membership is enough) and that `api.telegram.org` is reachable from the server.
+- Silence while alerts work is the deduplication norm: a repeat about the same event arrives no more
+  than once a day (`ALERTS_REMIND_SEC`), a recovery is a separate message. The first run after setup
+  is silent too: `boot_id` is only remembered, so that a "reboot" is not sent on every new server.
+- `failed:[...]` in the `monitor-check` output — the event exists, but Telegram did not accept it:
+  the state is not recorded and the send is retried on the next tick (the SNI probe is not repeated).
 
 ## An error appeared during installation or use
 

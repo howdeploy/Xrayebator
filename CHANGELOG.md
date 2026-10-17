@@ -21,8 +21,9 @@ Next `0.6.5` cut: the server manager plus the GUI traffic-limit card.
   resurrect a client blocked by the other. `profiles` exposes
   `traffic_used`/`traffic_limit`/`traffic_disabled`/`traffic_supported`, and the desktop GUI shows a
   usage chip on the profile card plus a limit dialog (presets, custom value, counter reset, limit
-  removal). Migrations `traffic_stats_2026`, `traffic_timer_2026` and `subhttp_traffic_2026` are
-  registered in `main_menu`, `quickstart` and `happ-setup`; `uninstall.sh` removes the new units.
+  removal). Migrations `traffic_stats_2026`, `traffic_user_stats_2026`, `traffic_timer_2026` and
+  `subhttp_traffic_2026` are registered in `main_menu`, `quickstart` and `happ-setup`;
+  `uninstall.sh` removes the new units.
 - **Server monitoring with Telegram alerts** (menu item `14`). `xrayebator-monitor.timer` runs
   `monitor-check` every 15 minutes and reports only state changes: a repeat of the same event is not
   sent more often than `ALERTS_REMIND_SEC` (24 h), and a recovery is a separate message. Monitored:
@@ -39,6 +40,17 @@ Next `0.6.5` cut: the server manager plus the GUI traffic-limit card.
 
 ### Fixed
 
+- **Per-profile traffic accounting counted nothing on a real server.** The feature enabled only
+  `policy.system.statsInboundUplink/Downlink`, but Xray registers the per-user counters
+  (`user>>>NAME>>>traffic>>>uplink`) solely from `policy.levels."0".statsUserUplink/Downlink`
+  (`app/dispatcher` gates them on `Stats.UserUplink`/`UserDownlink`), and both default to `false`;
+  `statsInbound*` is inbound-level statistics. Without the level flags `statsquery` returned no user
+  entries, `.traffic.used` stayed zero and limits never fired — on a fresh install and on any server
+  that ran the traffic migration. `install.sh` now writes the level flags, `traffic_stats_2026` adds
+  them to existing configs, and the new idempotent `traffic_user_stats_2026` migration repairs
+  servers whose earlier migration marker already exists (the marker would otherwise block a re-run).
+  `profiles` now reports `traffic_supported: false` unless the api inbound and the level flags are
+  actually present, so the GUI hides limit management instead of offering a limit nobody enforces.
 - **AWG junk parameters could ship `S1 == S2`.** `_awg_gen_junk` guarded only `S2 != S1 + 56`, while
   the spec and `validation/test-awg-lifecycle.sh` require all of `S1..S4` to be unique: on 3000
   seeded runs the old code collided 19 times, so roughly every 160th install got equal `S1`/`S2` and

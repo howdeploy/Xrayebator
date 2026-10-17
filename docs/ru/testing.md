@@ -106,6 +106,7 @@ npm test              # Vitest unit-тесты
 | `tests/unit/backend-manager.test.ts` | Разбор backend-статуса и AWG-конфигов (hysteria2/awg, флаги 3.1) |
 | `tests/unit/calendar.test.ts` | Календарь: локальные ISO-даты без UTC-сдвига, сетка месяца, границы навигации |
 | `tests/unit/expire.test.ts` | Статусы срока действия, дата по часовому поясу сервера, приоритет флага отключения |
+| `tests/unit/traffic.test.ts` | Хелперы лимита трафика: разбор и валидация ввода (`500MB`/`1.5GB`/`2TB`/`none`), форматирование расхода и лимита, описание чипа (тона 80% и исчерпания), преобразование лимита в поле ввода |
 
 `npm run typecheck` дополнительно проверяет `tsconfig.contracts.json` — он компилирует строгие onboarding-контракты из `tests/type-contracts/` (обязательный `emailMode`, keychain-ссылка в выборщике ключа, открытый import API); Vitest-транспиляция такие регрессии типов не ловит.
 
@@ -117,7 +118,7 @@ npm test              # Vitest unit-тесты
 
 Три независимых workflow:
 
-- **ci-linux.yml** — Bash validation: `bash -n` всех скриптов + все 34 `validation/test-*.sh` на
+- **ci-linux.yml** — Bash validation: `bash -n` всех скриптов + все 36 `validation/test-*.sh` на
   ubuntu-24.04. Запускается на push в `main`, `dev`, `experimental` и на pull request.
 - **release.yml** — Electron сборка (Windows/macOS/Linux). Запускается только на теги `v*` и manual
   dispatch. Сначала `preflight`: проверяет наличие текста релиза `docs/releases/<tag>.en.md` и

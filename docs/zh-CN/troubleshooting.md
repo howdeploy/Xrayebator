@@ -97,6 +97,34 @@ sudo xrayebator profile-expire --name 名称 --expire none         # 设为永�
 
 延长后会恢复同一个客户端（同一 uuid），因此设备无需重新导入订阅。在 GUI 中同样的操作位于配置档卡片上的「有效期」按钮。
 
+`410 Gone` 的第二个来源是流量限额耗尽：配置档中带有 `.traffic_disabled: true`（客户端由
+`xrayebator traffic-check` 移除，定时器 `xrayebator-traffic.timer` 每 5 分钟运行一次）。
+
+```bash
+sudo xrayebator profiles | jq '.[] | select(.traffic_disabled) | {name, traffic_used, traffic_limit}'
+sudo xrayebator profile-limit --name 名称 --limit 2GB     # 提高限额
+sudo xrayebator profile-limit --name 名称 --reset         # 重置计数器
+sudo xrayebator profile-limit --name 名称 --limit none    # 取消限额
+```
+
+在 GUI 中，同一个对话框通过配置档卡片上的「限额」按钮打开。如果没有设置限额而用量不为零，请检查
+配置中是否存在 api 入站（`jq '.inbounds[] | select(.tag=="api")' /usr/local/etc/xray/config.json`）
+以及统计定时器是否已启用：`systemctl list-timers xrayebator-traffic.timer`。
+
+相反的情况是所有配置档的用量都为零。Xray 只有在
+`policy.levels."0".statsUserUplink/Downlink: true` 时才统计按用户计数器（`policy.system.statsInbound*`
+是入站统计，无法从中得到按用户的数据）。这些标志由 `install.sh` 写入、由迁移 `traffic_stats_2026`
+补齐，而执行过该迁移早期（有缺陷）版本的服务器由单独的迁移 `traffic_user_stats_2026` 修复——
+它在下次进入菜单时触发。检查状态：
+
+```bash
+jq '.policy.levels."0"' /usr/local/etc/xray/config.json
+ls /usr/local/etc/xray/.traffic_stats_2026 && echo "迁移已经执行过"
+```
+
+在 GUI 中，同一问题的征兆是 `profiles` 输出里没有 `traffic_supported`：管理器不会在统计尚未启用的
+地方显示限额管理。
+
 ## 服务器上有旧配置档但无法使用
 
 如果配置档 JSON 指向的端口已经不在 `config.json` 中，说明配置档已过期。新订阅不会提供这些线路。只有当配置档已经没有任何存活线路时，旧令牌才会返回 `410 Gone`；部分过期的多线路配置档仍可能以 `200` 返回剩余的存活线路。请重新创建配置档，或通过终端菜单修复存活入站；不要发布指向失效端口的链接。
@@ -247,6 +275,30 @@ GUI 将服务器标记为「配置不完整」，密钥通过 SSH 加载。此�
 URL——不会出现可泄露的 HTTP 链接。恢复 HTTPS 的方式：请服务商为 Let's Encrypt validation 网段解除 80 端口
 封锁（或将域名解析到服务器并使用域名 TLS 模式），然后重新部署；流程幂等，challenge
 可达后即签发 LE 证书。回退结构由 `validation/test-quickstart-tls-fallback.sh` 锁定。
+
+## 收不到 Telegram 告警
+
+请按顺序排查：
+
+```bash
+sudo xrayebator alerts-status   # configured/enabled, timer_installed/timer_active, last_run, events
+sudo xrayebator alerts-test     # 立即向会话投递
+systemctl list-timers xrayebator-monitor.timer
+journalctl -u xrayebator-monitor.service -n 50 --no-pager
+```
+
+- `configured:false` —— 尚未配置：执行 `alerts-setup --token ... --chat-id ...`。
+- `enabled:false` —— 投递已被关闭（`alerts-enable`，或「Telegram 通知」子菜单的第 3 项，主菜单 → `14`）；
+  令牌与会话本身完好。
+- `timer_installed:false` —— 监控单元未安装：在已有服务器上，它由迁移 `alerts_monitor_2026` 在首次
+  进入菜单时安装（或重新运行一次 `quickstart`）。
+- `alerts-test` 返回投递错误 —— 请检查机器人是否已加入会话（群组只需普通成员身份），以及服务器能否
+  访问 `api.telegram.org`。
+- 告警工作正常却没有消息 —— 这是去重的正常行为：同一事件的重复提醒每天最多一次
+  （`ALERTS_REMIND_SEC`），恢复则单独发一条消息。配置后的第一次运行同样不会出声：`boot_id` 只是被
+  记住，以免每台新服务器都发送一次「重启」。
+- `monitor-check` 输出中的 `failed:[...]` —— 事件存在，但 Telegram 没有接受：状态不会被记录，发送会
+  在下一个周期重试（SNI 探测不会随之重跑）。
 
 ## 安装或使用过程中出现报错
 

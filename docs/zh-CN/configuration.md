@@ -88,9 +88,10 @@ Xrayebator 不会更改主机的 TCP 拥塞控制算法，也不会写入或应�
 | `11` | Hysteria 2 后端：安装/状态/客户端链接/卸载（高速 UDP 传输） |
 | `12` | AmneziaWG 2.0 后端：安装/状态/客户端配置/卸载（系统级 VPN） |
 | `13` | 所有后端的统一状态 |
+| `14` | Telegram 通知：配置、测试、启用/停用、监控状态 |
 | `0` | 退出 |
 
-操作项从 `1` 到 `13` 连续编号；`0` 用于退出程序。
+操作项从 `1` 到 `14` 连续编号；`0` 用于退出程序。
 
 端口和 SNI 是共享入站的设置，修改它们可能影响同一端口上的其他配置档。指纹是配置档/线路级别的客户端参数，修改它不会重启 Xray，也不会影响其他线路。任何修改之后，请在客户端强制刷新订阅，或通过 `3) Подключиться по профилю` 重新获取原始线路。
 
@@ -113,6 +114,8 @@ Xrayebator 不会更改主机的 TCP 拥塞控制算法，也不会写入或应�
 | `sudo xrayebator profile-revoke --name 名称 [--full]` | 重新签发订阅链接：新的 `sub_token`；带 `--full` 时还会更换该配置档所有 inbound 中的 uuid（已下载的配置立即失效），打印 JSON |
 | `sudo xrayebator profile-expire --name 名称 --expire 日期\|epoch\|none` | 设置、延长或取消配置档有效期；只输入日期时，在服务器本地时区的当天 `23:59:59`（含）到期，显式输入的时间按同一时区原样使用；立即生效（已过期会移除客户端，延长则恢复），打印 JSON |
 | `sudo xrayebator expire-check` | 批量应用所有已到期的有效期；幂等，无变化时不重启 Xray。由 `xrayebator-expire.timer` 每 10 分钟触发 |
+| `sudo xrayebator profile-limit --name 名称 --limit 100GB\|none [--reset]` | 设置配置档的流量限额（`500MB`、`1.5GB`、`2TB`、直接写字节数、`none` 为不限量；大小写不敏感）和/或重置计数器（`--reset`）；打印 JSON |
+| `sudo xrayebator traffic-check` | 读取 Stats API 计数器、按配置档累计用量并应用限额（限额耗尽的配置档会被从入站移除）。由 `xrayebator-traffic.timer` 每 5 分钟触发；幂等——无变化时不改动配置 |
 | `sudo xrayebator fp-change --name 名称 [--route R] --fp 指纹` | 修改配置档的指纹，打印 JSON 结果 |
 | `sudo xrayebator sni-change --name 名称 [--route R] --sni SNI` | 修改配置档的 SNI，并同步更新同一端口上的所有配置档，打印 JSON 结果 |
 | `sudo xrayebator sni-list` | 按类别列出 `sni_list.txt` 中的候选 SNI，打印 JSON 结果（供桌面 GUI 的 SNI 对话框使用）。`sni_list.txt` 中第一条非注释行是新配置档的默认 SNI（`www.cloudflare.com`） |
@@ -135,6 +138,11 @@ Xrayebator 不会更改主机的 TCP 拥塞控制算法，也不会写入或应�
 | `sudo xrayebator awg-grant --name N` | 为配置档签发 peer（密钥对 + 预共享密钥 + `10.8.1.x` 地址，存入 `.backends.awg`）；重新生成 `awg0.conf`；JSON |
 | `sudo xrayebator awg-conf --name N` | 输出配置档 peer 的客户端 `.conf`（JSON `{ok, name, conf}`）——全隧道 AllowedIPs、服务端 junk 参数、endpoint；导入 AmneziaWG/AmneziaVPN 客户端 |
 | `sudo xrayebator awg-31 --on\|--off` | 切换 AWG 3.1 配置格式（`HeaderProtectionKey`、`RandomTrailers`、`S3`/`S4`）；新安装默认开启 3.1，切换会在原地补齐缺失的服务端参数，警告所有已签发的客户端 `.conf` 必须重新下载（AmneziaVPN ≥ 5.0.1.5），并带回滚地重新生成接口 |
+| `sudo xrayebator alerts-setup --token T --chat-id C` | 接入 Telegram 通知：用 `getMe` 校验令牌、发送一条测试消息，并且**只有在投递成功之后**才保存 `alerts.json`（0600）并启用 `xrayebator-monitor.timer`；打印 JSON |
+| `sudo xrayebator alerts-status` | 监控状态：配置、定时器、上次检查时间、事件以及最近一次 SNI 探测结果（不显示机器人令牌）；打印 JSON |
+| `sudo xrayebator alerts-test` | 向已配置的会话发送测试消息（验证投递）；打印 JSON |
+| `sudo xrayebator alerts-enable\|alerts-disable` | 启用或停用投递而不删除配置（不丢失令牌的急停开关）；打印 JSON |
+| `sudo xrayebator monitor-check [--force-sni]` | 一次监控迭代——`xrayebator-monitor.timer` 每 15 分钟正是调用它：服务与后端、配置档有效期与限额、订阅存活及其 TLS 模式、服务器重启、每天一次的 SNI 探测（`--force-sni` 为计划外立即执行）；打印 JSON |
 | `sudo xrayebator-update [branch]` | 运行完整的 `update.sh` 生命周期更新；无参数时显示 `.current_branch` 并打开交互式分支选择，有参数时使用该分支 |
 | `sudo xrayebator-uninstall` | 移除服务与配置 |
 
@@ -365,6 +373,74 @@ VLESS、Hysteria 2 与 AmneziaWG 的多设备语义不同：
 - **nginx** 只在 8443 上服务订阅端点（密钥交付）。Hysteria（UDP 443）与 AmneziaWG（各自 UDP
   端口）完全绕过 nginx，后端之间也没有任何负载均衡——它们是独立端口上的独立服务；每台设备只是
   向所用协议添加自己的会话。
+
+## 配置档流量统计与限额
+
+Xray 按客户端统计流量（客户端的 `email` = 配置档名称），而管理器把计数器转换为按配置档的用量：
+
+- 全新安装时，`install.sh` 会向 `config.json` 加入 `127.0.0.1:10085` 上的 `dokodemo-door` api 入站、
+  `policy.system.statsInboundUplink/Downlink`、级别 `0` 的 `statsUserUplink/Downlink` 以及第一条
+  `api → api` 路由规则，因此安装完成后统计立即生效。级别标志是必需的：Xray 只依据它们注册
+  `user>>>名称>>>traffic>>>uplink` 计数器（`policy.system.statsInbound*` 给出的是入站统计，而不是
+  按用户的统计），在旧配置上由迁移 `traffic_stats_2026` 在首次进入菜单时补齐。已经执行过该迁移早期
+  版本的服务器（其标记已存在，而标志并未写入）由单独的幂等迁移 `traffic_user_stats_2026` 修复——
+  它在下次进入菜单时运行；
+- `xrayebator-traffic.timer` 每 5 分钟执行 `xrayebator traffic-check`：读取 Stats API 计数器
+  （`xray api statsquery`），扣除上一次快照（`.traffic.last`）后把用量累加进配置档（`.traffic.used`）
+  ——重启 Xray 不会「吞掉」已经计入的流量；
+- 限额存放在配置档中（`.traffic.limit`，字节），`none` 表示不限量。限额耗尽时客户端会被从入站移除
+  （快照保存在 `.traffic_clients`），配置档获得 `.traffic_disabled: true`，订阅返回 `410 Gone`。
+  提高或取消限额会恢复同一个客户端，因此设备无需重新导入订阅；
+- 订阅中的 `subscription-userinfo` 返回真实的 `download`（累计用量）与 `total`（限额），
+  因此支持 userinfo 的客户端会自行显示剩余量；
+- 统计的是配置档 Xray 线路的流量：Hysteria 2 与 AmneziaWG 各自单独统计（或不统计）自己的流量，
+  不计入配置档限额——带 Hysteria 2 授权的配置档在客户端走 UDP 后端时可能超出限额；
+- 有效期（`expire`）与流量限额相互独立：只要另一项限制仍然生效，取消其中一项就不会恢复客户端。
+
+```bash
+sudo xrayebator profile-limit --name 名称 --limit 1.5GB   # 设置限额
+sudo xrayebator profile-limit --name 名称 --reset         # 重置计数器
+sudo xrayebator profile-limit --name 名称 --limit none    # 取消限额
+sudo xrayebator profiles | jq '.[] | {name, traffic_used, traffic_limit, traffic_disabled}'
+```
+
+GUI 的配置档卡片上会显示「已用 / 限额」标签（达到 80% 变黄，耗尽变红），「限额」对话框可设置预设值、
+自定义数值、重置计数器以及取消限额。限额管理只在统计真正启用的地方显示：`profiles` 仅当 api 入站与
+级别 `0` 的 user-level 标志都存在时才返回 `traffic_supported: true`，否则（旧服务器，或在更新后
+迁移尚未执行的服务器上）GUI 会如实隐藏该能力。
+
+## 监控与 Telegram 告警
+
+监控是可选的附加层：`xrayebator-monitor.timer` 每 15 分钟执行 `xrayebator monitor-check`，
+只在状态发生变化时写入 Telegram（同一事件的重复提醒每天最多一次，恢复则单独发一条消息）。
+
+| 监控对象 | 事件 |
+|---|---|
+| `xray.service`、`xrayebator-sub.service` 与 `nginx.service`（若已启用） | 服务未运行 / 已恢复运行 |
+| Hysteria 2（`hysteria-server.service`）与 AWG 接口（`awg show awg0`） | 只针对已安装的后端（依据注册表） |
+| 配置档有效期 | 未来 3 天内到期；已因到期被停用 |
+| 流量限额 | 因限额耗尽而被停用的配置档 |
+| 订阅 | 回环处理器无响应（`:8080/sub/<token>`）；模式降级为 `http_tls`/`local_only` —— Let's Encrypt 未能验证 http-01，订阅没有 HTTPS |
+| SNI | 每天一次对配置档实际使用的 SNI 执行 `probe-test`：完全或部分不可达 |
+| 服务器重启 | 基于 `boot_id` 的边沿触发：重启后发送消息（若上一条未投递则重发） |
+
+配置可通过菜单（`14`）或 CLI 完成。机器人令牌由 `@BotFather` 发放，`chat_id` 来自 `@userinfobot`
+（群组的 chat_id 为负数）：
+
+```bash
+sudo xrayebator alerts-setup --token 123456:AA... --chat-id -1001234567890
+sudo xrayebator alerts-status                # 定时器、上次检查、事件、SNI
+sudo xrayebator alerts-test                  # 测试消息
+sudo xrayebator alerts-disable               # 暂停而不丢失配置
+sudo xrayebator monitor-check --force-sni    # 立即执行一次检查与 SNI 探测
+```
+
+相关文件：`/usr/local/etc/xrayebator/alerts.json`（0600 —— 机器人令牌与 chat_id）和
+`monitor-state.json`（去重状态：事件、`boot_id`、最近一次 SNI 探测结果）。令牌从不会打印到 CLI
+stdout。如果 Telegram 不可达，事件状态不会被记录——发送会在下一个周期重试，而 SNI 探测不会随之
+重跑（其结果已保存在状态中）。阈值由单元的环境变量配置：`ALERTS_REMIND_SEC`（提醒间隔，86400）、
+`ALERTS_EXPIRE_WARN_SEC`（「即将到期」时间范围，259200）、`ALERTS_SNI_INTERVAL_SEC`（86400）、
+`ALERTS_SNI_TIMEOUT`（单个 SNI 8 秒）。
 
 ## 级联与上游节点
 

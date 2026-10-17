@@ -50,8 +50,8 @@ Xrayebator/
 └── xrayebator-uninstall          # 移除入口
 
 /usr/local/etc/xray/
-├── config.json                   # 入站、出站、路由和 DNS
-├── profiles/<name>.json          # 配置档元数据、订阅令牌、有效期（.expire）、后端授权（.backends）
+├── config.json                   # 入站、出站、路由、DNS 以及回环上的 api 入站（Stats API）
+├── profiles/<name>.json          # 配置档元数据、订阅令牌、有效期（.expire）、限额与用量（.traffic）、后端授权（.backends）
 ├── upstreams/cascade.json        # 级联上游参数
 ├── backups/                      # 运行时改动前的配置备份
 ├── .private_key / .public_key    # Reality 密钥
@@ -63,6 +63,8 @@ Xrayebator/
 
 /usr/local/etc/xrayebator/         # 多协议后端根目录（中性，不触碰 Xray 路径）
 ├── backends.json                  # 后端注册表：installed/version/port/开关（644，无机密）
+├── alerts.json                    # 监控的 Telegram 告警：机器人令牌与 chat_id（0600）
+├── monitor-state.json             # 监控状态：事件、boot_id、最近一次 SNI 探测（0600）
 └── backends/
     ├── hysteria2/                 # server.yaml（按配置档重新生成）、证书
     └── awg/                       # awg0.conf（0600）、server-params.json（0600）
@@ -71,6 +73,8 @@ Xrayebator/
 /var/log/xray/                     # Xray 服务写入的运行时日志目录
 /etc/systemd/system/xray.service.d/security.conf
 /etc/systemd/system/xrayebator-sub.service
+/etc/systemd/system/xrayebator-traffic.service + .timer   # 配置档流量统计（5 分钟）
+/etc/systemd/system/xrayebator-monitor.service + .timer   # 监控与告警（15 分钟）
 /etc/systemd/system/hysteria-server.service   # Hysteria 2 后端（可选）
 /etc/systemd/system/awg-quick@awg0.service    # AmneziaWG 后端（可选，来自 amneziawg-tools）
 /etc/nginx/sites-available/xrayebator-sub
@@ -140,6 +144,26 @@ loopback 处理器发布，JSON 携带 `degraded:true`；解除 80 端口封锁�
   `/etc/amnezia/amneziawg/awg0.conf`——它是指向受管文件的 symlink。
 - 两个后端均为可选，通过菜单项 `11`–`13` 或 `hysteria2-*` / `awg-*` CLI 命令安装与卸载，
   默认绝不安装。
+
+## 流量统计与监控
+
+两个子系统都建立在同一个原则之上：状态保存在 profile JSON 中，定时器只负责应用它。
+
+- **流量统计。** `install.sh` 会向 `config.json` 加入 api 入站（`127.0.0.1:10085` 上的
+  `dokodemo-door`）、带 `statsInboundUplink/Downlink` 的 `policy.system` 以及 `api → api` 路由规则。
+  每个客户端的 `email` 等于配置档名称，因此 Stats API（`xray api statsquery`）能按配置档给出用量。
+  `xrayebator-traffic.timer`（5 分钟）调用 `traffic-check`：它扣除上一次快照（`.traffic.last`）并把
+  增量累加到 `.traffic.used`，然后应用限额——耗尽的限额会把客户端从入站移除，快照进入
+  `.traffic_clients`，配置档获得 `.traffic_disabled`，订阅返回 `410`。迁移：`traffic_stats_2026`、
+  `traffic_timer_2026`、`subhttp_traffic_2026`。
+- **监控。** `xrayebator-monitor.timer`（15 分钟）调用 `monitor-check`：服务与已安装的后端、配置档
+  有效期与限额、订阅存活及其 TLS 模式、服务器重启（`boot_id`），以及每天一次针对配置档实际使用的
+  SNI 的探测。去重状态保存在 `monitor-state.json`：同一事件的重复提醒不高于 `ALERTS_REMIND_SEC`，
+  恢复单独发一条消息，未投递的告警会在下一个周期重试。机器人令牌以 `0600` 存放在中性根目录的
+  `alerts.json` 中：它不是 Xray 状态，`/usr/local/etc/xray` 路径保持 Xray-only。迁移：
+  `alerts_monitor_2026`。
+
+两个迁移都注册在全部三条入口路径中——`main_menu`、`quickstart` 与 `happ-setup`。
 
 ## 更新路径
 

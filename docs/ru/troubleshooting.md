@@ -141,6 +141,20 @@ sudo xrayebator profile-limit --name ИМЯ --limit none    # снять лим�
 (`jq '.inbounds[] | select(.tag=="api")' /usr/local/etc/xray/config.json`) и таймер учёта включён:
 `systemctl list-timers xrayebator-traffic.timer`.
 
+Обратная ситуация — расход у всех профилей нулевой. Счётчики по пользователям Xray ведёт только при
+`policy.levels."0".statsUserUplink/Downlink: true` (`policy.system.statsInbound*` — это статистика
+инбаунда, per-user из неё не берётся). Флаги ставит `install.sh`, досоздаёт миграция
+`traffic_stats_2026`, а серверы, прошедшие её раннюю (багованную) версию, чинит отдельная миграция
+`traffic_user_stats_2026` — она срабатывает на следующем входе в меню. Проверить состояние:
+
+```bash
+jq '.policy.levels."0"' /usr/local/etc/xray/config.json
+ls /usr/local/etc/xray/.traffic_stats_2026 && echo "миграция уже проходила"
+```
+
+В GUI признак того же самого — отсутствие `traffic_supported` в выводе `profiles`: менеджер не
+показывает управление лимитом там, где учёт ещё не включён.
+
 ## На сервере есть старые профили, но они не работают
 
 Если profile JSON указывает на порты, которых уже нет в `config.json`, это устаревший профиль. Новая
@@ -341,7 +355,8 @@ journalctl -u xrayebator-monitor.service -n 50 --no-pager
 ```
 
 - `configured:false` — настройки нет: `alerts-setup --token ... --chat-id ...`.
-- `enabled:false` — доставка выключена (`alerts-enable` или пункт 3 меню); сам токен и чат целы.
+- `enabled:false` — доставка выключена (`alerts-enable` или пункт 3 подменю «Уведомления в Telegram»,
+  главное меню → `14`); сам токен и чат целы.
 - `timer_installed:false` — юнит монитора не установлен: на существующем сервере его ставит
   миграция `alerts_monitor_2026` при первом входе в меню (или повторный `quickstart`).
 - `alerts-test` возвращает ошибку доставки — проверьте, что бот добавлен в чат (для группы хватает

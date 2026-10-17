@@ -36,12 +36,14 @@ promise that installer and updater paths behave identically.
 
 ## Validation suite
 
-`validation/` contains exactly 34 scripts. Run every `validation/test-*.sh`; the current set is:
+`validation/` contains exactly 36 scripts. Run every `validation/test-*.sh`; the current set is:
 
 | Script | What it checks |
 |---|---|
 | `test-audit-functional.sh` | Functional P0/P1 regressions from the HowDeploy integration audit |
 | `test-audit-privilege-regressions.sh` | Privilege boundaries, certificate ownership, rollback and HAPP setup regressions |
+| `test-traffic-limit-cli.sh` | Per-profile traffic accounting: limit-unit normalization, delta accumulation and watermark reset, immediate ban/unban with the flow preserved, `expire` × traffic cross-guards, the Stats inbound migration with a port collision, the traffic fields of the `profiles` output, migration registration |
+| `test-alerts-monitor.sh` | Monitoring Telegram alerts: `alerts-setup/status/enable/disable/test`, no config saved when the test is undelivered, the timer units and migration, service and backend detection (hysteria2, AWG), the subscription and its degradation to `http_tls`, the SNI probe (partial/full unreachability, recovery, interval, retry without a repeated probe), the reboot edge trigger |
 | `test-bbr-removal-migration.sh` | Safe removal of the retired BBR/TCP tuning |
 | `test-profile-revoke-expire-cli.sh` | Subscription revoke (token-only and uuid rotation, foreign clients on shared ports survive) and profile expiry (disable/enable, rebuild without a snapshot, idempotent `expire-check`) |
 | `test-cascade-routing.sh` | Cascade routing configuration |
@@ -53,7 +55,7 @@ promise that installer and updater paths behave identically.
 | `test-legacy-profile-port-sync.sh` | Legacy profiles without `routes` still receive SNI/port sync updates |
 | `test-installer-network-fallbacks.sh` | Installer network and resolver fallbacks |
 | `test-legacy-udp443-migration.sh` | One-time removal of the legacy UDP/443 block |
-| `test-main-menu-numbering.sh` | Consecutive menu numbering and matching handlers (1..13 including the backend items) |
+| `test-main-menu-numbering.sh` | Consecutive menu numbering and matching handlers (1..14 including the backend items and monitoring) |
 | `test-backend-registry.sh` | Backend registry (multi-protocol stage): source-mode registry CRUD via `safe_jq_write`, installed/field reads, the lifecycle choke point as a safe no-op, `backend-status` JSON shape |
 | `test-hysteria2-lifecycle.sh` | Hysteria 2 backend: `server.yaml` renderer (userpass map, placeholder fallback), systemd unit security model, arch mapping, TLS detection, grants/revocation/expire-restore events, deleted-regen with a pre-removed profile file, created-is-a-no-op (no auto-grant), pure `hysteria2://` builder, CLI dispatch and subscription wiring |
 | `test-awg-lifecycle.sh` | AmneziaWG backend: the Amnezia-default junk dialect (Jc=5, Jmin=10, Jmax=50, H1–H4=1..4, S1–S4 unique), key generation, server conf renderer (PostUp MASQUERADE, no peers at install), peer address allocation, client `.conf` contents, revoke/expire/restore events, deleted-regen with a pre-removed profile file, created-is-a-no-op (no auto-grant), CLI dispatch |
@@ -122,7 +124,7 @@ and a real client connection are live-server checks by design.
 
 ## Electron GUI unit tests
 
-The active Electron GUI has exactly eighteen Vitest unit files:
+The active Electron GUI has exactly nineteen Vitest unit files:
 
 | Test | What it checks |
 |---|---|
@@ -132,6 +134,7 @@ The active Electron GUI has exactly eighteen Vitest unit files:
 | `tests/unit/countryFlag.test.ts` | Country-flag lookup used by server cards |
 | `tests/unit/deployer.test.ts` | Quickstart argument building: provided/without email mode, no fake address, validation only in provided mode |
 | `tests/unit/expire.test.ts` | Expiry badge states, server-local date rendering and the disabled-flag precedence |
+| `tests/unit/traffic.test.ts` | Traffic limit helpers: input parsing and validation (`500MB`/`1.5GB`/`2TB`/`none`), usage and limit formatting, chip description (the 80% warn tone and the exhausted state), limit-to-input conversion |
 | `tests/unit/extractJson.test.ts` | JSON extraction from noisy `xrayebator` command output |
 | `tests/unit/probe-ports.test.ts` | Ports used by the Dashboard reachability probe |
 | `tests/unit/server-inspector.test.ts` | Inspection normalization: public vs local-only/unreachable subscription, partial and refused-import states |
@@ -167,7 +170,7 @@ provide useful local coverage, while CI runs the Electron typecheck and unit sui
 The workflows have separate responsibilities:
 
 - `.github/workflows/ci-linux.yml` is the Bash core gate on `ubuntu-24.04`: it installs `jq`,
-  `uuid-runtime` and `ripgrep`, runs all four Bash syntax checks, then runs all 34 validation
+  `uuid-runtime` and `ripgrep`, runs all four Bash syntax checks, then runs all 36 validation
   scripts.
 - `.github/workflows/release.yml` is the active Electron release path for `v*` tags or manual runs.
   A `preflight` job first checks that the release notes file `docs/releases/<tag>.en.md` exists and

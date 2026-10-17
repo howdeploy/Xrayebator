@@ -106,6 +106,8 @@ about.
 | v2ray compatibility | `v2rayNG` and `v2rayN` receive a classic base64 body without HAPP metadata | `subhttp.sh` |
 | Subscription revoke | Generates a new 32-character hex token; the old URL stops working. Full revocation (`--full`) also rotates the uuid, so already-downloaded configs stop connecting | `openssl rand -hex 16`, `profile-revoke` |
 | Profile expiry | A profile can carry an expiry date; `xrayebator-expire.timer` switches the client off the inbounds when it passes and restores the same uuid on renewal | `profile-expire`, `expire-check` |
+| Traffic accounting and limits | Per-profile usage from the Stats API: `xrayebator-traffic.timer` accumulates gigabytes, the limit switches the client off when exhausted and restores it on raise/reset; the subscription serves real `subscription-userinfo` | `profile-limit`, `traffic-check` |
+| Monitoring and Telegram alerts | Every 15 minutes it checks services, backends (Hysteria 2, AWG), expiries and limits, subscription liveness and its TLS mode, and reboots; once a day — SNI reachability from the profiles; it writes only changes to Telegram | menu `14`, `xrayebator-monitor.timer` |
 | Bypass routing | Eight domain groups can be sent straight through `freedom`, skipping the VPN | menu `7` |
 | Cascade | Switches the `tcp,udp` catch-all to a foreign VLESS Reality upstream of type `tcp` or `xhttp` | `upstreams/cascade.json` |
 | Self-steal stub | Puts nginx with a valid certificate on `127.0.0.1:9444` and points a Reality fallback at it | menu `9` |
@@ -314,7 +316,7 @@ npm run dev          # Electron + Vite dev server
 npm run build        # compile the renderer and the main process
 ```
 
-Electron checks: `npm test` runs the 18 unit files in `tests/`; `npm run typecheck` checks the
+Electron checks: `npm test` runs the 19 unit files in `tests/`; `npm run typecheck` checks the
 TypeScript surface, including the strict onboarding contracts in `tests/type-contracts/`.
 `npm run build` produces the app bundle. On native Windows, the POSIX-only
 `tests/unit/shell-command.test.ts` may fail because `/bin/sh` is absent; Linux CI is the source of truth.
