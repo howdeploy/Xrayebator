@@ -19,16 +19,23 @@ import {
   CalendarX,
   Gauge,
   RefreshCw,
-  Zap
+  Zap,
+  ShieldCheck,
+  Bell,
+  Send
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type {
+  AlertsStatusResult,
   BackendStatusResult,
+  Dns01StatusResult,
+  ProfilePqResult,
   Server,
   ServerProfile,
   SniEntry,
   SshAccessInput
 } from '@shared/types'
+import { isDns01Ready, type Dns01Input, type Dns01Provider } from '@shared/dns01'
 import { describeExpire, isFutureDate, presetDate } from '@shared/expire'
 import {
   describeTraffic,
@@ -185,6 +192,26 @@ export function ServerSettings({
   const [limitBusy, setLimitBusy] = useState(false)
   const [limitDone, setLimitDone] = useState(false)
 
+  // Подписка (DNS-01) и мониторинг (Telegram): грузятся параллельно с профилями,
+  // best-effort — сервер со старым менеджером не должен ломать страницу.
+  const [dns01Status, setDns01Status] = useState<Dns01StatusResult | null>(null)
+  const [dns01Error, setDns01Error] = useState<string | null>(null)
+  const [dns01Open, setDns01Open] = useState(false)
+  const [dns01Provider, setDns01Provider] = useState<Dns01Provider>('cloudflare')
+  const [dns01Domain, setDns01Domain] = useState('')
+  const [dns01Token, setDns01Token] = useState('')
+  const [dns01AwsKeyId, setDns01AwsKeyId] = useState('')
+  const [dns01AwsSecret, setDns01AwsSecret] = useState('')
+  const [dns01Busy, setDns01Busy] = useState(false)
+  const [alertsStatus, setAlertsStatus] = useState<AlertsStatusResult | null>(null)
+  const [alertsError, setAlertsError] = useState<string | null>(null)
+  const [alertsBusy, setAlertsBusy] = useState(false)
+  const [pqTarget, setPqTarget] = useState<ServerProfile | null>(null)
+  const [pqTransport, setPqTransport] = useState<string>('tcp')
+  const [pqBusy, setPqBusy] = useState(false)
+  const [pqError, setPqError] = useState<string | null>(null)
+  const [pqResult, setPqResult] = useState<ProfilePqResult | null>(null)
+
   const connected = profiles !== null
   const accessReady = isSshAccessReady(access)
 
@@ -227,6 +254,27 @@ export function ServerSettings({
       const result = await window.api.profiles.list(server.id, access)
       setProfiles(result.profiles ?? [])
       await backendsP
+      // Состояние подписки и мониторинга — параллельно и best-effort: их отсутствие
+      // (старый менеджер на сервере) не должно ронять страницу профилей.
+      void window.api.dns01
+        .status(server.id, access)
+        .then((s) => {
+          setDns01Status(s)
+          setDns01Error(null)
+          if (s.domain) setDns01Domain(s.domain)
+        })
+        .catch((err: unknown) =>
+          setDns01Error(err instanceof Error ? err.message : String(err))
+        )
+      void window.api.alerts
+        .status(server.id, access)
+        .then((s) => {
+          setAlertsStatus(s)
+          setAlertsError(null)
+        })
+        .catch((err: unknown) =>
+          setAlertsError(err instanceof Error ? err.message : String(err))
+        )
       const refreshed = await window.api.servers.get(server.id)
       setHostKeyFingerprint(refreshed?.hostKeyFingerprint ?? null)
       if (refreshed) {
@@ -260,6 +308,124 @@ export function ServerSettings({
     document.addEventListener('keydown', onEsc)
     return () => document.removeEventListener('keydown', onEsc)
   }, [keysQrUrl])
+
+  const dns01Input = (): Dns01Input => ({
+    domain: dns01Domain.trim(),
+    provider: dns01Provider,
+    token: dns01Token,
+    awsKeyId: dns01AwsKeyId,
+    awsSecret: dns01AwsSecret
+  })
+
+  /**
+   * DNS-01: `setup` — поднять подписку по домену (порт 80 не нужен), `repair` —
+   * заменить деградированную http_tls-подписку. Креденшелы после успеха забываем:
+   * они уже лежат на сервере в 0600-root файле, в renderer'е им делать нечего.
+   */
+  const runDns01 = async (kind: 'setup' | 'repair'): Promise<void> => {
+    if (!accessReady) {
+      setError(t('settings.errorPassword'))
+      return
+    }
+    const input = dns01Input()
+    if (!isDns01Ready(input)) {
+      setDns01Error(t('settings.dns01Incomplete'))
+      return
+    }
+    setDns01Busy(true)
+    setDns01Error(null)
+    try {
+      const res =
+        kind === 'repair'
+          ? await window.api.dns01.repair(server.id, access, input)
+          : await window.api.dns01.setup(server.id, access, input)
+      if (!res.ok) {
+        setDns01Error(res.error ?? t('settings.dns01Failed'))
+        return
+      }
+      setDns01Status(await window.api.dns01.status(server.id, access))
+      setDns01Token('')
+      setDns01AwsSecret('')
+      setDns01Open(false)
+      toastText(res.skipped ? t('settings.dns01Skipped') : t('settings.dns01Done'))
+    } catch (err) {
+      setDns01Error(err instanceof Error ? err.message : String(err))
+    } finally {
+      setDns01Busy(false)
+    }
+  }
+
+  /** Вкл/выкл отправку алертов. Токен бота живёт на сервере и здесь не принимается. */
+  const toggleAlerts = async (on: boolean): Promise<void> => {
+    if (!accessReady) {
+      setError(t('settings.errorPassword'))
+      return
+    }
+    setAlertsBusy(true)
+    setAlertsError(null)
+    try {
+      const res = await window.api.alerts.toggle(server.id, access, on)
+      if (!res.ok) {
+        setAlertsError(res.error ?? t('settings.alertsFailed'))
+        return
+      }
+      setAlertsStatus(await window.api.alerts.status(server.id, access))
+      toastText(on ? t('settings.alertsOn') : t('settings.alertsOff'))
+    } catch (err) {
+      setAlertsError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setAlertsBusy(false)
+    }
+  }
+
+  const testAlerts = async (): Promise<void> => {
+    if (!accessReady) {
+      setError(t('settings.errorPassword'))
+      return
+    }
+    setAlertsBusy(true)
+    setAlertsError(null)
+    try {
+      const res = await window.api.alerts.test(server.id, access)
+      if (!res.ok) {
+        setAlertsError(res.error ?? t('settings.alertsFailed'))
+        return
+      }
+      toastText(t('settings.alertsTestSent'))
+    } catch (err) {
+      setAlertsError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setAlertsBusy(false)
+    }
+  }
+
+  /**
+   * PQ-маршрут профиля: VLESS Encryption живёт на отдельном порту (decryption —
+   * свойство инбаунда), поэтому клиенту нужен ML-KEM, а в обычной v2ray-подписке
+   * маршрут скрыт — иначе клиенты без PQ получили бы мёртвый ключ.
+   */
+  const addPqRoute = async (): Promise<void> => {
+    if (!pqTarget) return
+    setPqBusy(true)
+    setPqError(null)
+    try {
+      const res = await window.api.profiles.addPq(server.id, access, {
+        name: pqTarget.name,
+        transport: pqTransport as 'tcp'
+      })
+      if (!res.ok) {
+        setPqError(res.error ?? t('settings.pqFailed'))
+        return
+      }
+      setPqResult(res)
+      const fresh = await window.api.profiles.list(server.id, access)
+      setProfiles(fresh.profiles ?? [])
+    } catch (err) {
+      setPqError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setPqBusy(false)
+    }
+  }
 
   const create = async (): Promise<void> => {
     if (!accessReady) {
@@ -1330,6 +1496,24 @@ export function ServerSettings({
                       <EthernetPort size={14} />
                       {t('settings.portBtn')}
                     </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      isDisabled={busy}
+                      onPress={() => {
+                        setPqTarget(profile)
+                        setPqResult(null)
+                        setPqError(null)
+                        setPqTransport(
+                          PROTOCOLS.some((p) => p.id === profile.transport)
+                            ? profile.transport
+                            : 'tcp'
+                        )
+                      }}
+                    >
+                      <Zap size={14} />
+                      {t('settings.pqBtn')}
+                    </Button>
                     {profile.subscription_url && (
                       <Button size="sm" variant="secondary" onPress={() => copyUrl(profile)}>
                         <Copy size={13} />
@@ -1715,6 +1899,268 @@ export function ServerSettings({
                 )}
               </div>
             </section>
+
+            <section className={styles.listCard}>
+              <h2 className={styles.sectionTitle}>
+                <Lock size={16} /> {t('settings.dns01Title')}
+              </h2>
+              <p className={styles.sectionHint}>{t('settings.dns01Hint')}</p>
+              {dns01Error && <p className={styles.error}>{dns01Error}</p>}
+              {dns01Status && (
+                <p className={styles.hint}>
+                  {t('settings.dns01Mode')}:{' '}
+                  {dns01Status.tls_mode || t('settings.dns01ModeUnknown')}
+                  {dns01Status.domain ? ` · ${dns01Status.domain}` : ''}
+                  {dns01Status.provider ? ` · ${dns01Status.provider}` : ''}
+                  {dns01Status.cert_expiry > 0
+                    ? ` · ${t('settings.dns01Cert')}: ${dns01Status.days_left} ${t('settings.dns01Days')}`
+                    : ''}
+                </p>
+              )}
+              {dns01Status?.tls_mode === 'http_tls' && (
+                <p className={styles.serverTooOld}>{t('settings.dns01Degraded')}</p>
+              )}
+
+              <div className={styles.profileActions}>
+                <Button
+                  size="sm"
+                  variant={dns01Open ? 'secondary' : 'primary'}
+                  isDisabled={dns01Busy}
+                  onPress={() => setDns01Open((v) => !v)}
+                >
+                  <ShieldCheck size={14} />
+                  {dns01Status?.tls_mode === 'http_tls'
+                    ? t('settings.dns01RepairBtn')
+                    : t('settings.dns01Btn')}
+                </Button>
+                {dns01Status?.tls_mode === 'domain_tls' && (
+                  <Chip size="sm" color="accent">
+                    {t('settings.dns01Active')}
+                  </Chip>
+                )}
+              </div>
+
+              {dns01Open && (
+                <>
+                  {/* Провайдер: креденшелы Cloudflare и Route53 не взаимозаменяемы,
+                      поэтому лишние поля не показываем и не отправляем. */}
+                  <span className={styles.fieldLabel}>{t('settings.dns01Provider')}</span>
+                  <div className={styles.profileActions}>
+                    {(['cloudflare', 'route53'] as const).map((p) => (
+                      <Button
+                        key={p}
+                        size="sm"
+                        variant={dns01Provider === p ? 'primary' : 'secondary'}
+                        isDisabled={dns01Busy}
+                        onPress={() => setDns01Provider(p)}
+                      >
+                        {p === 'cloudflare' ? 'Cloudflare' : 'Route53'}
+                      </Button>
+                    ))}
+                  </div>
+                  <TextField variant="secondary">
+                    <Label>{t('settings.dns01Domain')}</Label>
+                    <Input
+                      value={dns01Domain}
+                      placeholder="sub.example.com"
+                      disabled={dns01Busy}
+                      onChange={(e) => setDns01Domain(e.target.value)}
+                    />
+                  </TextField>
+                  <p className={styles.fpNote}>{t('settings.dns01DomainHint')}</p>
+                  {dns01Provider === 'cloudflare' ? (
+                    <TextField variant="secondary">
+                      <Label>{t('settings.dns01Token')}</Label>
+                      <Input
+                        type="password"
+                        value={dns01Token}
+                        disabled={dns01Busy}
+                        onChange={(e) => setDns01Token(e.target.value)}
+                      />
+                    </TextField>
+                  ) : (
+                    <>
+                      <TextField variant="secondary">
+                        <Label>{t('settings.dns01AwsKey')}</Label>
+                        <Input
+                          value={dns01AwsKeyId}
+                          disabled={dns01Busy}
+                          onChange={(e) => setDns01AwsKeyId(e.target.value)}
+                        />
+                      </TextField>
+                      <TextField variant="secondary">
+                        <Label>{t('settings.dns01AwsSecret')}</Label>
+                        <Input
+                          type="password"
+                          value={dns01AwsSecret}
+                          disabled={dns01Busy}
+                          onChange={(e) => setDns01AwsSecret(e.target.value)}
+                        />
+                      </TextField>
+                    </>
+                  )}
+                  <p className={styles.fpNote}>{t('settings.dns01SecretNote')}</p>
+                  <div className={styles.profileActions}>
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      isDisabled={dns01Busy || !isDns01Ready(dns01Input())}
+                      onPress={() =>
+                        void runDns01(dns01Status?.tls_mode === 'http_tls' ? 'repair' : 'setup')
+                      }
+                    >
+                      {dns01Busy ? t('settings.dns01Running') : t('settings.dns01Submit')}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      isDisabled={dns01Busy}
+                      onPress={() => setDns01Open(false)}
+                    >
+                      {t('dashboard.cancel')}
+                    </Button>
+                  </div>
+                </>
+              )}
+            </section>
+
+            <section className={styles.listCard}>
+              <h2 className={styles.sectionTitle}>
+                <Bell size={16} /> {t('settings.alertsTitle')}
+              </h2>
+              <p className={styles.sectionHint}>{t('settings.alertsHint')}</p>
+              {alertsError && <p className={styles.error}>{alertsError}</p>}
+              {alertsStatus && !alertsStatus.configured && (
+                <p className={styles.serverTooOld}>{t('settings.alertsNotConfigured')}</p>
+              )}
+              {alertsStatus?.configured && (
+                <p className={styles.hint}>
+                  {alertsStatus.enabled
+                    ? t('settings.alertsEnabled')
+                    : t('settings.alertsDisabled')}
+                  {alertsStatus.chat_id ? ` · chat ${alertsStatus.chat_id}` : ''}
+                  {alertsStatus.bot_username ? ` · @${alertsStatus.bot_username}` : ''}
+                  {` · ${t('settings.alertsTimer')}: ${
+                    alertsStatus.timer_active
+                      ? t('settings.alertsTimerActive')
+                      : t('settings.alertsTimerInactive')
+                  }`}
+                </p>
+              )}
+              <div className={styles.profileActions}>
+                {alertsStatus?.configured && (
+                  <>
+                    <Button
+                      size="sm"
+                      variant={alertsStatus.enabled ? 'secondary' : 'primary'}
+                      isDisabled={alertsBusy}
+                      onPress={() => void toggleAlerts(!alertsStatus.enabled)}
+                    >
+                      {alertsStatus.enabled
+                        ? t('settings.alertsDisable')
+                        : t('settings.alertsEnable')}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      isDisabled={alertsBusy || !alertsStatus.enabled}
+                      onPress={() => void testAlerts()}
+                    >
+                      <Send size={14} />
+                      {t('settings.alertsTest')}
+                    </Button>
+                  </>
+                )}
+                <Button size="sm" variant="secondary" isDisabled={busy} onPress={() => void load()}>
+                  <RefreshCw size={14} />
+                  {t('settings.alertsRefresh')}
+                </Button>
+              </div>
+            </section>
+
+            <AlertDialog.Root
+              isOpen={pqTarget !== null}
+              onOpenChange={(open) => {
+                if (!open) {
+                  setPqTarget(null)
+                  setPqResult(null)
+                  setPqError(null)
+                }
+              }}
+            >
+              <AlertDialog.Backdrop>
+                <AlertDialog.Container>
+                  <AlertDialog.Dialog className={styles.confirmDialog}>
+                    <AlertDialog.Header>
+                      <AlertDialog.Icon status="warning">
+                        <Zap size={20} />
+                      </AlertDialog.Icon>
+                      <AlertDialog.Heading>
+                        {t('settings.pqTitle')} — {pqTarget?.name ?? ''}
+                      </AlertDialog.Heading>
+                    </AlertDialog.Header>
+                    <AlertDialog.Body>
+                      <p className={styles.fpHint}>{t('settings.pqHint')}</p>
+                      {!pqResult && (
+                        <>
+                          <span className={styles.fieldLabel}>{t('settings.pqTransport')}</span>
+                          <div className={styles.profileActions}>
+                            {PROTOCOLS.map((p) => (
+                              <Button
+                                key={p.id}
+                                size="sm"
+                                variant={pqTransport === p.id ? 'primary' : 'secondary'}
+                                isDisabled={pqBusy}
+                                onPress={() => setPqTransport(p.id)}
+                              >
+                                {p.label}
+                              </Button>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                      {pqError && <p className={styles.error}>{pqError}</p>}
+                      {pqResult?.link && (
+                        <>
+                          <p className={styles.fpHint}>{pqResult.note ?? t('settings.pqNote')}</p>
+                          <div className={styles.profileActions}>
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              onPress={() => {
+                                void navigator.clipboard.writeText(pqResult.link ?? '')
+                                toastText(t('settings.copied'))
+                              }}
+                            >
+                              <Copy size={13} />
+                              {t('settings.pqCopy')}
+                            </Button>
+                          </div>
+                          <p className={styles.fpNote}>{pqResult.link}</p>
+                        </>
+                      )}
+                    </AlertDialog.Body>
+                    <AlertDialog.Footer>
+                      {!pqResult && (
+                        <Button variant="primary" isDisabled={pqBusy} onPress={() => void addPqRoute()}>
+                          {pqBusy ? t('settings.pqAdding') : t('settings.pqAdd')}
+                        </Button>
+                      )}
+                      <Button
+                        variant="secondary"
+                        onPress={() => {
+                          setPqTarget(null)
+                          setPqResult(null)
+                          setPqError(null)
+                        }}
+                      >
+                        {t('settings.done')}
+                      </Button>
+                    </AlertDialog.Footer>
+                  </AlertDialog.Dialog>
+                </AlertDialog.Container>
+              </AlertDialog.Backdrop>
+            </AlertDialog.Root>
           </>
         )}
       </div>
