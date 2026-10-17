@@ -1,3 +1,5 @@
+import type { Dns01Input, Dns01Provider } from './dns01'
+
 export type SshAuthMethod = 'password' | 'privateKey'
 
 export type SshPrivilegeMode = 'root' | 'sudo'
@@ -458,7 +460,96 @@ export interface DeployStartPayload {
   emailMode: EmailMode
   email?: string
   access: SshAccessInput
+  /**
+   * PQ-маршрут при развёртывании (`quickstart --pq`). По умолчанию ВЫКЛ: клиент без
+   * ML-KEM к PQ-порту не подключится, поэтому выбор делает оператор.
+   */
+  pq?: boolean
+  /**
+   * DNS-01-фолбэк развёртывания. Если сервер не может пройти http-01 (хостер фильтрует
+   * :80), сертификат выпускается по TXT-записи, и подписка не деградирует в http_tls.
+   */
+  dns01?: Dns01Input
 }
+
+/** Ответ `dns01-status`: состояние DNS-01-подписки и её сертификата. */
+export interface Dns01StatusResult {
+  ok: boolean
+  provider: string
+  tls_mode: string
+  domain: string
+  port: number
+  credentials_present: boolean
+  /** Epoch секунд истечения сертификата (0 — серта нет). */
+  cert_expiry: number
+  days_left: number
+  deploy_hook: boolean
+  error?: string
+}
+
+/** Ответ `dns01-setup` / `repair-dns01`. */
+export interface Dns01RepairResult {
+  ok: boolean
+  repaired?: boolean
+  /** true — подписка уже на HTTPS (ip_tls/domain_tls), ремонт не требовался. */
+  skipped?: boolean
+  domain?: string
+  provider?: string
+  port?: number
+  tls_mode?: string
+  subscription_url?: string
+  note?: string
+  error?: string
+}
+
+/** Ответ `alerts-status`: конфиг Telegram-алертов и состояние таймера мониторинга. */
+export interface AlertsStatusResult {
+  ok: boolean
+  /** true — alerts.json есть (токен и chat_id записаны через TUI/CLI). */
+  configured: boolean
+  enabled: boolean
+  chat_id: string
+  bot_username: string
+  timer_installed: boolean
+  timer_active: boolean
+  last_run: number
+  events: Record<string, unknown>
+  sni: Record<string, unknown>
+  error?: string
+}
+
+export interface AlertsToggleResult {
+  ok: boolean
+  enabled?: boolean
+  error?: string
+}
+
+export interface AlertsTestResult {
+  ok: boolean
+  sent?: boolean
+  error?: string
+}
+
+/** Ответ `profile-pq` — добавление пост-квантового маршрута профилю. */
+export interface ProfilePqResult {
+  ok: boolean
+  name?: string
+  transport?: string
+  port?: number
+  pq?: boolean
+  /** VLESS-ссылка PQ-маршрута (для клиентов с ML-KEM). */
+  link?: string
+  note?: string
+  error?: string
+}
+
+export interface ProfilePqInput {
+  name: string
+  transport: 'tcp' | 'tcp-utls' | 'tcp-xudp' | 'tcp-mux' | 'grpc' | 'xhttp'
+}
+
+/** Провайдер DNS-01 в payload'ах IPC (алиас для читаемости вызовов). */
+export type { Dns01Provider }
 
 export interface DeployDonePayload {
   serverId: string
@@ -538,6 +629,40 @@ export interface ElectronAPI {
       access: SshAccessInput,
       input: ProfileLimitInput
     ) => Promise<ProfileLimitResult>
+    /** Добавить профилю пост-квантовый маршрут (VLESS Encryption, отдельный порт). */
+    addPq: (
+      serverId: string,
+      access: SshAccessInput,
+      input: ProfilePqInput
+    ) => Promise<ProfilePqResult>
+  }
+  dns01: {
+    /** Состояние DNS-01-подписки (провайдер, домен, серт, deploy-hook). */
+    status: (serverId: string, access: SshAccessInput) => Promise<Dns01StatusResult>
+    /** Включить DNS-01 на сервере, где подписки ещё нет/она на IP-серте. */
+    setup: (
+      serverId: string,
+      access: SshAccessInput,
+      input: Dns01Input
+    ) => Promise<Dns01RepairResult>
+    /** Заменить деградированную (http_tls) подписку на DNS-01. */
+    repair: (
+      serverId: string,
+      access: SshAccessInput,
+      input: Dns01Input
+    ) => Promise<Dns01RepairResult>
+  }
+  alerts: {
+    /** Конфиг Telegram-алертов + состояние таймера мониторинга. */
+    status: (serverId: string, access: SshAccessInput) => Promise<AlertsStatusResult>
+    /** Тестовое сообщение в настроенный чат. */
+    test: (serverId: string, access: SshAccessInput) => Promise<AlertsTestResult>
+    /** Включить/выключить отправку (конфиг с токеном остаётся на месте). */
+    toggle: (
+      serverId: string,
+      access: SshAccessInput,
+      on: boolean
+    ) => Promise<AlertsToggleResult>
   }
   server: {
     /**

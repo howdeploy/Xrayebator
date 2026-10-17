@@ -11,12 +11,14 @@ import type {
   ProfileFingerprintInput,
   ProfileLimitInput,
   ProfilePortInput,
+  ProfilePqInput,
   ProfileRevokeInput,
   ProfileSniInput,
   Server,
   ServerMaintenanceResult,
   SshAccessInput
 } from '@shared/types'
+import type { Dns01Input } from '@shared/dns01'
 import type { ServerConnectionMetadata, ServerStore } from './core/servers'
 import { Deployer } from './core/deployer'
 import { fetchSubscription, parseSubscription } from './core/subscription'
@@ -26,6 +28,7 @@ import { ProfileManager } from './core/profiles'
 import { BackendManager } from './core/backend-manager'
 import { ServerManager } from './core/server-manager'
 import { ServerInspector } from './core/server-inspector'
+import { MaintenanceManager } from './core/maintenance'
 import { probePortsFor } from './core/probe-ports'
 import {
   createSshCredentials,
@@ -248,6 +251,8 @@ export function registerIpcHandlers({ store }: IpcContext): void {
         const result = await deployer.deploy({
           emailMode: payload.emailMode === 'without' ? 'without' : 'provided',
           email: payload.email,
+          pq: payload.pq === true,
+          dns01: payload.dns01,
           credentials
         })
         await persistSshPassword(access)
@@ -426,8 +431,17 @@ export function registerIpcHandlers({ store }: IpcContext): void {
     return new ProfileManager(credentials)
   }
 
-  ipcMain.handle('profiles:list', async (_e, serverId: string, access: SshAccessInput) => {
-    const manager = await profileManagerFor(serverId, access)
+  const maintenanceManagerFor = async (
+    serverId: string,
+    access: SshAccessInput
+  ): Promise<MaintenanceManager> => {
+    const server = store.get(serverId)
+    if (!server) throw new Error('Сервер не найден')
+    const { credentials } = await credentialsFor(server, server, access)
+    return new MaintenanceManager(credentials)
+  }
+
+  ipcMain.handle('profiles:list', async (_e, serverId: string, access: SshAccessInput) => {    const manager = await profileManagerFor(serverId, access)
     const result = await manager.list()
     if (!result.ok) throw new Error(result.error ?? 'Не удалось получить список профилей')
     return result
@@ -519,6 +533,54 @@ export function registerIpcHandlers({ store }: IpcContext): void {
     async (_e, serverId: string, access: SshAccessInput, input: ProfileLimitInput) => {
       const manager = await profileManagerFor(serverId, access)
       return manager.setLimit(input)
+    }
+  )
+
+  // PQ-маршрут профиля: отдельный инбаунд/порт (VLESS decryption — свойство инбаунда).
+  ipcMain.handle(
+    'profiles:addPq',
+    async (_e, serverId: string, access: SshAccessInput, input: ProfilePqInput) => {
+      const manager = await profileManagerFor(serverId, access)
+      return manager.addPq(input)
+    }
+  )
+
+  ipcMain.handle('dns01:status', async (_e, serverId: string, access: SshAccessInput) => {
+    const manager = await maintenanceManagerFor(serverId, access)
+    return manager.dns01Status()
+  })
+
+  ipcMain.handle(
+    'dns01:setup',
+    async (_e, serverId: string, access: SshAccessInput, input: Dns01Input) => {
+      const manager = await maintenanceManagerFor(serverId, access)
+      return manager.dns01Setup(input)
+    }
+  )
+
+  ipcMain.handle(
+    'dns01:repair',
+    async (_e, serverId: string, access: SshAccessInput, input: Dns01Input) => {
+      const manager = await maintenanceManagerFor(serverId, access)
+      return manager.repairDns01(input)
+    }
+  )
+
+  ipcMain.handle('alerts:status', async (_e, serverId: string, access: SshAccessInput) => {
+    const manager = await maintenanceManagerFor(serverId, access)
+    return manager.alertsStatus()
+  })
+
+  ipcMain.handle('alerts:test', async (_e, serverId: string, access: SshAccessInput) => {
+    const manager = await maintenanceManagerFor(serverId, access)
+    return manager.alertsTest()
+  })
+
+  ipcMain.handle(
+    'alerts:toggle',
+    async (_e, serverId: string, access: SshAccessInput, on: boolean) => {
+      const manager = await maintenanceManagerFor(serverId, access)
+      return manager.alertsToggle(Boolean(on))
     }
   )
 

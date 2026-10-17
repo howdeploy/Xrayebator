@@ -5,6 +5,7 @@ import { SshClient, SshCredentials } from './ssh-client'
 import { shellCommand, shellQuote } from './shell-command'
 import { fetchSubscription, parseSubscription } from './subscription'
 import { maskSubscriptionUrl } from './server-inspector'
+import { dns01CliArgs, isDns01Ready, type Dns01Input } from '@shared/dns01'
 import type { DeployStep, EmailMode, VlessLink } from '@shared/types'
 
 export type DeployStepListener = (step: DeployStep, message: string) => void
@@ -14,6 +15,10 @@ export interface DeployInput {
   emailMode: EmailMode
   email?: string
   credentials: SshCredentials
+  /** PQ-маршрут при развёртывании (`--pq`): opt-in, по умолчанию выключен. */
+  pq?: boolean
+  /** DNS-01-фолбэк: домен + провайдер + креденшелы (см. shared/dns01.ts). */
+  dns01?: Dns01Input
 }
 
 export interface DeployResult {
@@ -25,6 +30,10 @@ export interface DeployResult {
   flag: string | null
   /** true — подписка в http_tls-fallback (LE не смог проверить http-01). */
   degraded: boolean
+  /** Режим TLS подписки из ответа quickstart: ip_tls | http_tls | domain_tls. */
+  tlsMode: string | null
+  /** true — профиль получил PQ-маршрут (VLESS Encryption). */
+  pqRoute: boolean
 }
 
 /** Путь к сценариям: в собранном приложении — resources/scripts, в dev — корень проекта. */
@@ -80,14 +89,44 @@ function extractInstallFailure(stdout: string, stderr: string): string {
  * Собирает аргументы quickstart: с email — `--email`, без — `--without-email`.
  * В without-режиме присланный email игнорируется: фиктивный адрес не подставляется,
  * `-m` не передаётся (серверный Certbot сам использует --register-unsafely-without-email).
+ *
+ * PQ — только при явном `pq:true`: PQ-маршрут живёт на отдельном порту со своим
+ * `decryption`, и клиент без ML-KEM к нему не подключится.
+ * DNS-01 — только при полном наборе креденшелов: сервер отвергнет неполный запрос,
+ * но лучше не гонять SSH-раунд ради заведомой ошибки.
  */
-export function buildQuickstartArgs(input: { emailMode: EmailMode; email?: string }): string[] {
-  if (input.emailMode === 'without') return ['quickstart', '--without-email']
-  const email = (input.email ?? '').trim()
-  if (!email || email.length > 254 || /[\r\n\0]/.test(email) || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+export function buildQuickstartArgs(input: {
+  emailMode: EmailMode
+  email?: string
+  pq?: boolean
+  dns01?: Dns01Input
+}): string[] {
+  const args =
+    input.emailMode === 'without'
+      ? ['quickstart', '--without-email']
+      : ['quickstart', '--email', requireEmail(input.email)]
+  if (input.pq) args.push('--pq')
+  if (input.dns01) {
+    if (!isDns01Ready(input.dns01)) {
+      throw new Error('Неполные параметры DNS-01: домен, провайдер и его креденшелы обязательны')
+    }
+    args.push(...dns01CliArgs(input.dns01, '--dns01-'))
+  }
+  return args
+}
+
+/** Email обязателен в режиме provided: без него серверный quickstart упадёт. */
+function requireEmail(email: string | undefined): string {
+  const value = (email ?? '').trim()
+  if (
+    !value ||
+    value.length > 254 ||
+    /[\r\n\0]/.test(value) ||
+    !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value)
+  ) {
     throw new Error('Некорректный email')
   }
-  return ['quickstart', '--email', email]
+  return value
 }
 
 export class Deployer {
@@ -181,6 +220,20 @@ export class Deployer {
       if (!payload.ok) {
         throw new Error(payload.error ?? 'quickstart не завершился успешно')
       }
+      const tlsMode = payload.tls_mode ?? null
+      const pqRoute = payload.pq_route === true
+      if (tlsMode === 'domain_tls') {
+        this.onLog(
+          `Подписка по домену ${input.dns01?.domain ?? ''} (DNS-01): :80 не использовался, серт выпущен по TXT-записи`
+        )
+      }
+      if (input.pq && !pqRoute) {
+        this.onLog(
+          'PQ-маршрут не добавлен (на сервере нет ключей ML-KEM) — профиль без PQ, остальное работает'
+        )
+      } else if (pqRoute) {
+        this.onLog('PQ-маршрут (VLESS Encryption) добавлен: в подписке он скрыт, нужен клиент с ML-KEM')
+      }
 
       this.onStep('save', 'Сохраняю результат...')
       // http_tls-fallback: публичного HTTPS нет (LE не смог проверить http-01 —
@@ -216,7 +269,9 @@ export class Deployer {
         country: payload.country ?? null,
         city: payload.city ?? null,
         flag: payload.flag ?? null,
-        degraded
+        degraded,
+        tlsMode,
+        pqRoute
       }
     } finally {
       client.close()
@@ -235,6 +290,8 @@ interface QuickstartJson {
   degraded?: boolean
   tls_mode?: string
   certbot_reason?: string
+  /** true — профиль получил PQ-маршрут (--pq); false — ключей ML-KEM нет. */
+  pq_route?: boolean
 }
 
 function parseQuickstartJson(raw: string): QuickstartJson {
