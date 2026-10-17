@@ -323,6 +323,29 @@ curl -s "http://127.0.0.1:8080/sub/<token>?target=singbox" | jq '.outbounds | le
 - **v2rayNG/HAPP 开始收到 YAML** —— 保存的链接里显式写了 `?target=`，它会覆盖 User-Agent：去掉该
   参数，或改成 `?target=v2ray`/`?target=happ`。
 
+## DNS-01 无法签发证书
+
+`dns01-setup` 失败时，订阅会保持原有模式（该命令只在签发成功之后才切换标记，因此可用的 URL 不会
+被破坏）。
+
+```bash
+sudo xrayebator dns01-status                 # 提供商、域名、证书有效期、deploy-hook
+tail -30 /tmp/certbot-dns01.log              # certbot 输出：失败原因
+dig +short TXT _acme-challenge.sub.example.com   # 签发期间应出现 TXT 记录
+```
+
+- **Cloudflare：`Invalid token` / `unauthorized`** —— 令牌没有被授予针对该区域的 `DNS:Edit` 权限
+  （Zone → API → Tokens）。全局 API key 不适用：需要 API Token。
+- **Route53：`AccessDenied` / `Unable to locate credentials`** —— 密钥缺少
+  `route53:ChangeResourceRecordSets`/`ListHostedZones` 权限，或区域属于另一个账户。文件
+  `/etc/letsencrypt/xrayebator-dns01-aws.ini` 通过 `AWS_SHARED_CREDENTIALS_FILE` 传给 certbot。
+- **`NXDOMAIN` / `No valid IP addresses`** —— 域名未委派，或 A/AAAA 记录没有指向本 VPS：DNS-01 只
+  确认区域归属，但订阅本身仍必须解析到这台服务器。
+- **TXT 记录未能及时出现** —— 在 certbot 参数中调大 `--dns-cloudflare-propagation-seconds`
+  （默认 30）；响应较慢的区域可用 60–120。
+- **续期** —— 由标准的 `certbot.timer` 完成；renewal 配置中保留 `systemctl reload nginx` 的
+  deploy-hook，因此订阅会自动采用新证书，无需人工操作（`dns01-status` 会显示 `deploy_hook: true`）。
+
 ## 安装或使用过程中出现报错
 
 请完整复制终端中的报错文本。如果问题出在 Xrayebator 代码上，请提交 issue。

@@ -138,6 +138,8 @@ Xrayebator 不会更改主机的 TCP 拥塞控制算法，也不会写入或应�
 | `sudo xrayebator awg-grant --name N` | 为配置档签发 peer（密钥对 + 预共享密钥 + `10.8.1.x` 地址，存入 `.backends.awg`）；重新生成 `awg0.conf`；JSON |
 | `sudo xrayebator awg-conf --name N` | 输出配置档 peer 的客户端 `.conf`（JSON `{ok, name, conf}`）——全隧道 AllowedIPs、服务端 junk 参数、endpoint；导入 AmneziaWG/AmneziaVPN 客户端 |
 | `sudo xrayebator awg-31 --on\|--off` | 切换 AWG 3.1 配置格式（`HeaderProtectionKey`、`RandomTrailers`、`S3`/`S4`）；新安装默认开启 3.1，切换会在原地补齐缺失的服务端参数，警告所有已签发的客户端 `.conf` 必须重新下载（AmneziaVPN ≥ 5.0.1.5），并带回滚地重新生成接口 |
+| `sudo xrayebator dns01-setup --domain sub.example.com --provider cloudflare\|route53` | 通过 DNS-01 实现按域名的 HTTPS 订阅：不需要 80 端口，证书由 TXT 记录验证。写入 `0600` 凭据、用带 deploy-hook 的 certbot 签发证书、生成不含 `listen 80` 的 nginx vhost，并把标记切换为 `domain_tls`；打印 JSON |
+| `sudo xrayebator dns01-status` | DNS-01 状态：提供商、模式、域名、端口、凭据是否存在、证书剩余天数以及 deploy-hook 是否存在；打印 JSON |
 | `sudo xrayebator alerts-setup --token T --chat-id C` | 接入 Telegram 通知：用 `getMe` 校验令牌、发送一条测试消息，并且**只有在投递成功之后**才保存 `alerts.json`（0600）并启用 `xrayebator-monitor.timer`；打印 JSON |
 | `sudo xrayebator alerts-status` | 监控状态：配置、定时器、上次检查时间、事件以及最近一次 SNI 探测结果（不显示机器人令牌）；打印 JSON |
 | `sudo xrayebator alerts-test` | 向已配置的会话发送测试消息（验证投递）；打印 JSON |
@@ -479,6 +481,49 @@ stdout。如果 Telegram 不可达，事件状态不会被记录——发送会�
 重跑（其结果已保存在状态中）。阈值由单元的环境变量配置：`ALERTS_REMIND_SEC`（提醒间隔，86400）、
 `ALERTS_EXPIRE_WARN_SEC`（「即将到期」时间范围，259200）、`ALERTS_SNI_INTERVAL_SEC`（86400）、
 `ALERTS_SNI_TIMEOUT`（单个 SNI 8 秒）。
+
+## DNS-01：无需 80 端口的证书与订阅域名
+
+常规订阅模式（`ip_tls`、`domain_tls`）通过 http-01 获取 Let's Encrypt 证书，也就是需要一个对外
+可达的 80 端口。部分服务商会过滤该端口——此时订阅会降级为 `http_tls`（没有证书的 HTTP）。DNS-01
+通过 TXT 记录验证域名归属，因此完全不需要 80 端口，订阅运行在自己的域名上：
+`https://sub.example.com/sub/<token>`。
+
+```bash
+# Cloudflare：具有该区域 DNS:Edit 权限的 API token
+sudo xrayebator dns01-setup --domain sub.example.com --provider cloudflare \
+  --token CF_API_TOKEN --email admin@example.com
+
+# Route53：具有 Route53:ChangeResourceRecordSets 权限的密钥
+sudo xrayebator dns01-setup --domain sub.example.com --provider route53 \
+  --aws-access-key-id AKIA... --aws-secret-access-key ... --without-email
+
+sudo xrayebator dns01-status   # 提供商、域名、端口、证书有效期、deploy-hook
+```
+
+该命令做了什么：
+
+1. 安装 `certbot` 与该提供商的插件（`python3-certbot-dns-cloudflare` 或
+   `python3-certbot-dns-route53`）；
+2. 写入 `0600` root 的凭据文件——`/etc/letsencrypt/xrayebator-dns01-cloudflare.ini`
+   （`dns_cloudflare_api_token = …`）或 `xrayebator-dns01-aws.ini`（`[default]` 配置节，
+   通过 `AWS_SHARED_CREDENTIALS_FILE` 传给 certbot）；
+3. 以 `certbot certonly --dns-cloudflare|--dns-route53 -d <域名>` 签发证书，并带
+   `--deploy-hook "systemctl reload nginx"`（续期由标准的 `certbot.timer` 完成，证书重新签发不会
+   中断订阅）；
+4. 写入**只含 TLS server 的 nginx vhost**（既没有 `listen 80`，也没有 ACME location——该模式下
+   它们并不需要），在 UFW 中只开放订阅的公共端口（默认 `443`）；
+5. 把订阅标记切换为 `domain_tls`，因此 `_subscription_base_url` 与 GUI 都会返回 `https://<域名>`。
+
+要求与注意事项：
+
+- 域名必须已委派，且其 A/AAAA 记录指向本 VPS（不执行 DNS 检查：split-DNS 与被代理的区域会产生
+  误判）；
+- 不提供邮箱时，证书以 `--register-unsafely-without-email` 签发——无法收到续期通知，也无法通过
+  邮箱恢复账户（与 `quickstart` 相同）；
+- 凭据文件由 `xrayebator-uninstall` 删除；证书则依据 root 拥有的 `.certbot_owned` 清单处理，不会
+  触碰他人的域名；
+- 切换到 DNS-01 不会使已签发的链接失效：改变的只是订阅的基础 URL。
 
 ## 级联与上游节点
 

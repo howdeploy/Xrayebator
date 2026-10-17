@@ -15,7 +15,7 @@ for test_file in validation/*.sh; do bash "$test_file" || exit; done
 
 ## 测试覆盖范围
 
-`validation/` 中有 37 个静态与本地回归测试：
+`validation/` 中有 38 个静态与本地回归测试：
 
 | 测试 | 检查内容 |
 |---|---|
@@ -56,6 +56,7 @@ for test_file in validation/*.sh; do bash "$test_file" || exit; done
 | `test-traffic-limit-cli.sh` | 配置档流量统计：限额单位归一化、增量累计与 watermark 重置、保留 flow 的即时封禁/解封、`expire` × 流量的交叉守卫、端口冲突下的 Stats 入站迁移、`profiles` 输出中的流量字段、迁移注册 |
 | `test-alerts-monitor.sh` | 监控的 Telegram 告警：`alerts-setup/status/enable/disable/test`、测试未投递时不保存配置、定时器单元与迁移、服务与后端（hysteria2、AWG）检测、订阅及其降级到 `http_tls`、SNI 探测（部分/完全不可达、恢复、间隔、重试时不重跑探测）、重启的边沿触发 |
 | `test-subscription-formats.sh` | 订阅格式：`vless://`（7 种传输方式）与 `hysteria2://` 的归一化、IPv6/percent-decoding、Clash/mihomo YAML（reality-opts、flow、packet-encoding、grpc-opts、hysteria2，有 PyYAML 时做校验）、通过 `jq` 校验 sing-box JSON、带说明地跳过 PQ 与 xhttp、边界情况（无存活线路、只有 PQ）、处理器 heredoc 中的内容协商、迁移注册与 `profiles` 的 CLI 契约 |
+| `test-dns01-certbot.sh` | DNS-01（Cloudflare/Route53）：域名与提供商校验（IP 与单标签名称会被拒绝）、按提供商组装 certbot 参数（插件、凭据、propagation、deploy-hook、`-m` 或免邮箱注册）、按提供商写入 `0600` 凭据内容、nginx vhost **不含** `listen 80` 与 ACME location、CLI 校验失败时不写盘，以及静态接线（分发器、菜单项、插件包、UFW 端口、`domain_tls` 标记、certbot 清单、uninstall 清理） |
 
 > 静态测试不能替代一次性 VPS 上的实测：创建与删除配置档、校验配置、重启服务、回滚以及真实客户端连接。
 
@@ -116,7 +117,7 @@ npm test              # Vitest 单元测试
 
 三个独立 workflow：
 
-- **ci-linux.yml** — Bash validation：在 ubuntu-24.04 上对所有脚本执行 `bash -n`，并运行全部 37 个
+- **ci-linux.yml** — Bash validation：在 ubuntu-24.04 上对所有脚本执行 `bash -n`，并运行全部 38 个
   `validation/test-*.sh`；在 push 到 `main`、`dev`、`experimental` 以及 pull request 时运行。
 - **release.yml** — Electron 构建（Windows/macOS/Linux）。只在 `v*` tag 和手动触发时运行；先由
   `preflight` 检查发布说明 `docs/releases/<tag>.en.md` 是否存在，以及仓库密钥 `AP3X0`（若已设置）

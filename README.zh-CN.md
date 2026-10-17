@@ -97,6 +97,7 @@ Xrayebator 同时解决这两个问题：
 | 多线路配置档 | 一个配置档 = 共享 `sub_token` 的一组线路；多个配置档可共用同一端口 | `profiles/<name>.json` |
 | HAPP 订阅 | 提供 `vless://` 列表、托管的 Global Proxy 路由及令牌保护的 geo 数据库，由 nginx 通过 HTTPS 对外发布 | `subhttp.sh`、`xrayebator-sub.service` |
 | 订阅格式 | 一个令牌四种订阅体：HAPP、面向 v2rayNG/v2rayN 的 base64、Clash/mihomo YAML 与 sing-box JSON；格式按 `?target=` 或 User-Agent 选择 | `_subscription_render_*_pure`、`subhttp.sh` |
+| DNS-01 订阅 | Let's Encrypt 证书通过 TXT 记录验证（Cloudflare/Route53），因此在服务商过滤 80 端口的服务器上也能按域名提供 HTTPS 订阅 | `dns01-setup`、`dns01-status` |
 | 后量子 XHTTP | `xhttp-pq` 线路使用 VLESS 加密 `mlkem768x25519plus` | `.vless_encryption`、`.vless_decryption` |
 | v2ray 兼容 | `v2rayNG` 与 `v2rayN` 获得不含 HAPP 元数据的经典 base64 订阅体 | `subhttp.sh` |
 | 吊销订阅 | 生成新的 32 位十六进制令牌，旧链接立即失效；完全吊销（`--full`）同时更换 uuid，已下载的配置随即断开 | `openssl rand -hex 16`、`profile-revoke` |

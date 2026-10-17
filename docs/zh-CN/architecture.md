@@ -134,6 +134,12 @@ sing-box 中的 xhttp、未加 `?xhttp=1` 时的 Clash xhttp）会被跳过并�
 `network` 的配置，因此这里「随便画点什么」比跳过更糟。`subscription-userinfo` 在所有格式中都会返回：
 Clash UI 与 sing-box 客户端都能识别它。
 
+订阅的 TLS 模式（`ip_tls` / `domain_tls` / `http_tls` / `local_only`）只决定基础 URL 以及 Let's
+Encrypt 验证域名的方式：`dns01-setup` 通过 DNS-01（Cloudflare/Route53）签发证书，因此不需要 80
+端口，vhost 只包含一个 TLS server，提供商凭据存放在 `/etc/letsencrypt/xrayebator-dns01-*.ini`
+（0600 root），并以参数形式（Cloudflare）或通过 `AWS_SHARED_CREDENTIALS_FILE`（Route53）传给
+certbot；续期使用标准的 `certbot.timer` 加 reload nginx 的 deploy-hook。
+
 ## 多协议后端
 
 除 Xray 外，管理器可以在同一台 VPS 上安装其他传输。所有后端状态位于中性根目录
