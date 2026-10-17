@@ -14306,12 +14306,18 @@ profiles_command() {
       sub_url_singbox="${sub_url}?target=singbox"
     fi
 
+    # PQ-маршруты живут в routes[] (в т.ч. добавленные profile-pq), а top-level
+    # .pq_enabled отражает только первый маршрут — GUI нужен честный счётчик.
+    local pq_routes
+    pq_routes=$(jq -r '[(.routes // [])[] | select(.pq_enabled == true)] | length' "$file" 2>/dev/null)
+    [[ "$pq_routes" =~ ^[0-9]+$ ]] || pq_routes=0
+
     jq -n \
       --arg name "$name" --arg uuid "$uuid" --arg transport "$transport" \
       --argjson port "$port" --arg fingerprint "$fingerprint" --arg sni "$sni" \
       --arg created "$created" --arg sub_token "$sub_token" \
       --argjson multi_route "$multi_route" --argjson routes "$rcount" \
-      --argjson pq "$pq" --arg subscription_url "$sub_url" \
+      --argjson pq "$pq" --argjson pq_routes "$pq_routes" --arg subscription_url "$sub_url" \
       --arg subscription_url_clash "$sub_url_clash" --arg subscription_url_singbox "$sub_url_singbox" \
       --argjson expire "$expire" --arg expire_date "$expire_date" \
       --argjson expire_disabled "$expire_disabled" \
@@ -14322,7 +14328,7 @@ profiles_command() {
       '{name: $name, uuid: $uuid, transport: $transport, port: $port,
         fingerprint: $fingerprint, sni: $sni, created: $created,
         sub_token: $sub_token, multi_route: $multi_route, routes: $routes,
-        pq_enabled: $pq, subscription_url: $subscription_url,
+        pq_enabled: $pq, pq_routes: $pq_routes, subscription_url: $subscription_url,
         subscription_url_clash: $subscription_url_clash,
         subscription_url_singbox: $subscription_url_singbox,
         expire: $expire, expire_date: $expire_date, expire_disabled: $expire_disabled,
