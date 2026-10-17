@@ -2,6 +2,49 @@
 
 User-facing Xrayebator changes. The server manager and Electron application are published from the canonical `howdeploy/Xrayebator` repository.
 
+## [Unreleased]
+
+Next `0.6.5` cut: the server manager plus the GUI traffic-limit card.
+
+### Added
+
+- **Per-profile traffic accounting and limits.** `install.sh` adds a loopback `dokodemo-door` API
+  inbound (`127.0.0.1:10085`), `policy.system` stats and the `api → api` routing rule, so accounting
+  works on a fresh install; the client `email` equals the profile name, which makes the Stats API
+  per-profile. `xrayebator-traffic.timer` runs `xrayebator traffic-check` every 5 minutes,
+  accumulating deltas from a watermark that survives Xray restarts.
+  `xrayebator profile-limit --name N --limit 500MB|1.5GB|2TB|none [--reset]` sets the limit; an
+  exhausted limit removes the client from the inbound (snapshot in `.traffic_clients`, transport
+  flow preserved) and marks the profile `traffic_disabled`, so the subscription answers `410 Gone`
+  and `subscription-userinfo` carries real `download`/`total`. Raising or clearing the limit
+  restores the same client, and `expire` and traffic limits stay independent — clearing one does not
+  resurrect a client blocked by the other. `profiles` exposes
+  `traffic_used`/`traffic_limit`/`traffic_disabled`/`traffic_supported`, and the desktop GUI shows a
+  usage chip on the profile card plus a limit dialog (presets, custom value, counter reset, limit
+  removal). Migrations `traffic_stats_2026`, `traffic_timer_2026` and `subhttp_traffic_2026` are
+  registered in `main_menu`, `quickstart` and `happ-setup`; `uninstall.sh` removes the new units.
+- **Server monitoring with Telegram alerts** (menu item `14`). `xrayebator-monitor.timer` runs
+  `monitor-check` every 15 minutes and reports only state changes: a repeat of the same event is not
+  sent more often than `ALERTS_REMIND_SEC` (24 h), and a recovery is a separate message. Monitored:
+  `xray`/`sub`/`nginx` services, the installed Hysteria 2 unit and the AWG interface, profile
+  expiry (approaching within 3 days and already expired), profiles disabled by a traffic limit,
+  subscription handler liveness and its TLS mode (`http_tls`/`local_only` means Let's Encrypt could
+  not validate http-01 and the subscription went HTTP-only), a daily SNI reachability probe over the
+  SNIs profiles actually use, and server reboots via `boot_id`. Configuration is verified before it
+  is saved: `alerts-setup` checks the token with `getMe` and delivers a test message first, so a
+  broken chat never leaves a half-configured setup. `alerts.json` (0600, bot token) lives in the
+  neutral `/usr/local/etc/xrayebator/` root and the token is never printed. An undelivered alert is
+  retried on the next tick without re-running the expensive SNI probe, and a failed reboot alert
+  keeps the previous `boot_id` instead of losing the message.
+
+### Fixed
+
+- **AWG junk parameters could ship `S1 == S2`.** `_awg_gen_junk` guarded only `S2 != S1 + 56`, while
+  the spec and `validation/test-awg-lifecycle.sh` require all of `S1..S4` to be unique: on 3000
+  seeded runs the old code collided 19 times, so roughly every 160th install got equal `S1`/`S2` and
+  CI failed at random. The legacy `_awg_ensure_31_params` upgrade path also generated `S3`/`S4` in
+  `12..150` instead of the `12..64` Amnezia validator limit.
+
 ## [0.6.5-beta.2] - 2026-10-14
 
 Second beta cut: the manager and GUI code are unchanged from `0.6.5-beta.1` — this

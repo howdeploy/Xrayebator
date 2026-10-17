@@ -51,8 +51,8 @@ Bash-управлению, а не вторая реализация серве�
 └── xrayebator-uninstall          # точка входа удаления
 
 /usr/local/etc/xray/
-├── config.json                   # инбаунды, outbounds, routing и DNS
-├── profiles/<name>.json          # метаданные профиля, токен подписки, срок действия (.expire), гранты бэкендов (.backends)
+├── config.json                   # инбаунды, outbounds, routing, DNS и api-inbound на loopback (Stats API)
+├── profiles/<name>.json          # метаданные профиля, токен подписки, срок (.expire), лимит и расход (.traffic), гранты бэкендов (.backends)
 ├── upstreams/cascade.json        # параметры upstream каскада
 ├── backups/                      # бэкапы конфига перед runtime-мутациями
 ├── .private_key / .public_key    # ключи Reality
@@ -64,6 +64,8 @@ Bash-управлению, а не вторая реализация серве�
 
 /usr/local/etc/xrayebator/         # корень мультипротокольных бэкендов (нейтральный, пути Xray не трогает)
 ├── backends.json                  # реестр бэкендов: installed/version/port/флаги (644, без секретов)
+├── alerts.json                    # Telegram-алерты мониторинга: токен бота и chat_id (0600)
+├── monitor-state.json             # состояние мониторинга: события, boot_id, последняя SNI-проба (0600)
 └── backends/
     ├── hysteria2/                 # server.yaml (регенерируется из профилей), сертификаты
     └── awg/                       # awg0.conf (0600), server-params.json (0600)
@@ -72,6 +74,8 @@ Bash-управлению, а не вторая реализация серве�
 /var/log/xray/                     # каталог логов, куда пишет сервис Xray
 /etc/systemd/system/xray.service.d/security.conf
 /etc/systemd/system/xrayebator-sub.service
+/etc/systemd/system/xrayebator-traffic.service + .timer   # учёт трафика профилей (5 минут)
+/etc/systemd/system/xrayebator-monitor.service + .timer   # мониторинг и алерты (15 минут)
 /etc/systemd/system/hysteria-server.service   # бэкенд Hysteria 2 (опционально)
 /etc/systemd/system/awg-quick@awg0.service    # бэкенд AmneziaWG (опционально, из amneziawg-tools)
 /etc/nginx/sites-available/xrayebator-sub
@@ -163,6 +167,29 @@ HAPP routing profile. HAPP получает routing metadata, а v2rayNG и v2ra
   symlink на управляемый файл.
 - Оба бэкенда опциональны: ставятся и снимаются из меню (пункты `11`–`13`) или CLI-командами
   `hysteria2-*` / `awg-*` и никогда не устанавливаются по умолчанию.
+
+## Учёт трафика и мониторинг
+
+Обе подсистемы — надстройки над одним принципом: состояние живёт в profile JSON, а таймер лишь
+применяет его.
+
+- **Учёт трафика.** `install.sh` добавляет в `config.json` api-инбаунд (`dokodemo-door` на
+  `127.0.0.1:10085`), `policy.system` со `statsInboundUplink/Downlink` и routing-правило `api → api`.
+  `email` каждого клиента равен имени профиля, поэтому Stats API (`xray api statsquery`) отдаёт
+  расход в разрезе профилей. `xrayebator-traffic.timer` (5 минут) вызывает `traffic-check`: тот
+  вычитает предыдущий снапшот (`.traffic.last`) и накапливает `.traffic.used`, а затем применяет
+  лимит — исчерпанный снимает клиентов с инбаундов, снимок уходит в `.traffic_clients`, профиль
+  получает `.traffic_disabled`, подписка отвечает `410`. Миграции: `traffic_stats_2026`,
+  `traffic_timer_2026`, `subhttp_traffic_2026`.
+- **Мониторинг.** `xrayebator-monitor.timer` (15 минут) вызывает `monitor-check`: сервисы и
+  установленные бэкенды, сроки и лимиты профилей, живость подписки и её TLS-режим, перезагрузка
+  (`boot_id`), а раз в сутки — SNI-проба по SNI, реально используемым профилями. Дедупликация живёт
+  в `monitor-state.json`: повтор события не чаще `ALERTS_REMIND_SEC`, восстановление — отдельным
+  сообщением, недоставленный алерт повторяется на следующем тике. Токен бота хранится в `0600`
+  `alerts.json` в нейтральном корне: это не состояние Xray, и путь `/usr/local/etc/xray` остаётся
+  Xray-only. Миграция: `alerts_monitor_2026`.
+
+Обе миграции зарегистрированы во всех трёх входных путях — `main_menu`, `quickstart` и `happ-setup`.
 
 ## Пути обновления
 

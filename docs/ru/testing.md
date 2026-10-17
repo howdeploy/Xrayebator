@@ -16,7 +16,7 @@ for test_file in validation/*.sh; do bash "$test_file" || exit; done
 
 ## Что покрывают тесты
 
-В `validation/` лежат 34 статических и локальных регрессионных теста:
+В `validation/` лежат 36 статических и локальных регрессионных тестов:
 
 | Тест | Что проверяет |
 |---|---|
@@ -38,7 +38,7 @@ for test_file in validation/*.sh; do bash "$test_file" || exit; done
 | `test-installer-network-fallbacks.sh` | Сетевые fallback'и установщика |
 | `test-bbr-removal-migration.sh` | Безопасное удаление удалённого BBR/TCP tuning на всех путях |
 | `test-legacy-udp443-migration.sh` | Одноразовое удаление legacy правила блокировки UDP/443 |
-| `test-main-menu-numbering.sh` | Нумерацию пунктов меню и их соответствие обработчикам (1..13 с бэкенд-пунктами) |
+| `test-main-menu-numbering.sh` | Нумерацию пунктов меню и их соответствие обработчикам (1..14 с бэкенд-пунктами и мониторингом) |
 | `test-backend-registry.sh` | Реестр бэкендов (мультипротокольный этап): source-mode CRUD через `safe_jq_write`, чтение installed/field, lifecycle-точка как безопасный no-op, форма JSON `backend-status` |
 | `test-hysteria2-lifecycle.sh` | Бэкенд Hysteria 2: рендер `server.yaml` (userpass-карта, placeholder-fallback), модель безопасности юнита, arch-маппинг, TLS-детект, события грантов/revoke/expire-restore, реген deleted при заранее удалённом файле профиля, created = no-op (без авто-выдачи), pure-строитель `hysteria2://`, проводка диспетчера и подписки |
 | `test-awg-lifecycle.sh` | Бэкенд AmneziaWG: junk-диалект по умолчанию Amnezia (Jc=5, Jmin=10, Jmax=50, H1–H4=1..4, S1–S4 уникальные), генерация ключей, рендер серверного конфига (PostUp MASQUERADE, без peer-ов при установке), аллокация адресов, содержимое клиентского `.conf`, события revoke/expire/restore, реген deleted при заранее удалённом файле профиля, created = no-op (без авто-выдачи), диспетчер CLI |
@@ -54,6 +54,8 @@ for test_file in validation/*.sh; do bash "$test_file" || exit; done
 | `test-quickstart-tls-fallback.sh` | Ветку graceful-degradation `http_tls`: переключение SUB_TLS_MODE, HTTP-only vhost (без ssl и proxy), маркеры с учётом режима, renew-таймер только в ip_tls и degraded-метаданные JSON |
 | `test-audit-functional.sh` | Функциональные regression-проверки аудита HowDeploy (P0/P1) |
 | `test-audit-privilege-regressions.sh` | Regression границ привилегий |
+| `test-traffic-limit-cli.sh` | Учёт трафика профилей: нормализацию единиц лимита, накопление дельт и сброс watermark, мгновенный бан/разбан с сохранением flow, кросс-гарды `expire` × трафик, миграцию Stats-инбаунда с коллизией порта, трафик-поля вывода `profiles`, регистрацию миграций |
+| `test-alerts-monitor.sh` | Telegram-алерты мониторинга: `alerts-setup/status/enable/disable/test`, отсутствие сохранения конфига при недоставленном тесте, unit'ы и миграцию таймера, детекцию сервисов и бэкендов (hysteria2, AWG), подписку и её деградацию до `http_tls`, SNI-пробу (частичная/полная недоступность, восстановление, интервал, retry без повторной пробы), edge-триггер перезагрузки |
 
 > Статические тесты не заменяют проверку на disposable VPS: создание и удаление профиля, валидацию
 > конфига, рестарт сервисов, rollback и реальное подключение клиента.

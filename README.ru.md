@@ -106,6 +106,8 @@ Xrayebator решает обе задачи так:
 | Совместимость с v2ray | `v2rayNG`/`v2rayN` получают классический base64-body без HAPP-метаданных | `subhttp.sh` |
 | Revoke подписки | Генерирует новый 32-символьный hex-токен, старый URL перестаёт работать; полный отзыв (`--full`) меняет ещё и uuid — уже скачанные конфиги отваливаются | `openssl rand -hex 16`, `profile-revoke` |
 | Срок действия профиля | У профиля может быть дата окончания: `xrayebator-expire.timer` снимает клиента с inbound при наступлении срока и возвращает его при продлении (тот же uuid) | `profile-expire`, `expire-check` |
+| Учёт трафика и лимиты | Расход по профилю из Stats API: `xrayebator-traffic.timer` накапливает гигабайты, лимит снимает клиента при исчерпании и возвращает при поднятии/сбросе; подписка отдаёт реальные `subscription-userinfo` | `profile-limit`, `traffic-check` |
+| Мониторинг и Telegram-алерты | Раз в 15 минут проверяет сервисы, бэкенды (Hysteria 2, AWG), сроки и лимиты, живость подписки и её TLS-режим, перезагрузку; раз в сутки — доступность SNI из профилей; пишет в Telegram только изменения | меню `14`, `xrayebator-monitor.timer` |
 | Bypass routing | Восемь групп доменов можно отправить напрямую через `freedom`, минуя VPN | меню `7` |
 | Каскад | Переключает catch-all `tcp,udp` на зарубежный VLESS Reality upstream типа `tcp` или `xhttp` | `upstreams/cascade.json` |
 | Self-steal заглушка | Ставит nginx с валидным сертификатом на `127.0.0.1:9444` и заводит Reality fallback на него | меню `9` |

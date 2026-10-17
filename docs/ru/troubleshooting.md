@@ -126,6 +126,21 @@ sudo xrayebator profile-expire --name ИМЯ --expire none         # сдела�
 Продление возвращает того же клиента (тот же uuid), поэтому устройствам не нужно переимпортировать
 подписку. В GUI то же самое делается кнопкой «Срок» на карточке профиля.
 
+Второй источник `410 Gone` — исчерпанный лимит трафика: в профиле стоит `.traffic_disabled: true`
+(клиента снял `xrayebator traffic-check`, таймер `xrayebator-traffic.timer`, каждые 5 минут).
+
+```bash
+sudo xrayebator profiles | jq '.[] | select(.traffic_disabled) | {name, traffic_used, traffic_limit}'
+sudo xrayebator profile-limit --name ИМЯ --limit 2GB     # поднять лимит
+sudo xrayebator profile-limit --name ИМЯ --reset         # сбросить счётчик
+sudo xrayebator profile-limit --name ИМЯ --limit none    # снять лимит
+```
+
+В GUI тот же диалог открывается кнопкой «Лимит» на карточке профиля. Если лимита не задавали, а
+расход ненулевой, проверьте, что api-инбаунд есть в конфиге
+(`jq '.inbounds[] | select(.tag=="api")' /usr/local/etc/xray/config.json`) и таймер учёта включён:
+`systemctl list-timers xrayebator-traffic.timer`.
+
 ## На сервере есть старые профили, но они не работают
 
 Если profile JSON указывает на порты, которых уже нет в `config.json`, это устаревший профиль. Новая
@@ -313,6 +328,30 @@ validation-диапазонов Let's Encrypt (или направьте дом�
 доменный TLS-режим), затем повторите деплой — он идемпотентен и выпустит LE-серт,
 когда challenge станет доступен. Структуру fallback закрепляет
 `validation/test-quickstart-tls-fallback.sh`.
+
+## Алерты в Telegram не приходят
+
+Проверяйте по порядку:
+
+```bash
+sudo xrayebator alerts-status   # configured/enabled, timer_installed/timer_active, last_run, events
+sudo xrayebator alerts-test     # доставка в чат прямо сейчас
+systemctl list-timers xrayebator-monitor.timer
+journalctl -u xrayebator-monitor.service -n 50 --no-pager
+```
+
+- `configured:false` — настройки нет: `alerts-setup --token ... --chat-id ...`.
+- `enabled:false` — доставка выключена (`alerts-enable` или пункт 3 меню); сам токен и чат целы.
+- `timer_installed:false` — юнит монитора не установлен: на существующем сервере его ставит
+  миграция `alerts_monitor_2026` при первом входе в меню (или повторный `quickstart`).
+- `alerts-test` возвращает ошибку доставки — проверьте, что бот добавлен в чат (для группы хватает
+  обычного участия) и что с сервера доступен `api.telegram.org`.
+- Тишина при работающих алертах — норма дедупликации: повтор об одном и том же событии приходит не
+  чаще раза в сутки (`ALERTS_REMIND_SEC`), восстановление — отдельным сообщением. Первый прогон
+  после настройки тоже молчит: `boot_id` только запоминается, чтобы не присылать «перезагрузку» на
+  каждом новом сервере.
+- `failed:[...]` в выводе `monitor-check` — событие есть, но Telegram его не принял: состояние не
+  фиксируется, отправка повторится на следующем тике (SNI-проба при этом не повторяется).
 
 ## Вылезла ошибка при установке или работе
 
