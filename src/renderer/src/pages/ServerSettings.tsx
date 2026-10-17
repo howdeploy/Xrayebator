@@ -17,6 +17,8 @@ import {
   ShieldOff,
   CalendarClock,
   CalendarX,
+  Gauge,
+  RefreshCw,
   Zap
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -28,6 +30,12 @@ import type {
   SshAccessInput
 } from '@shared/types'
 import { describeExpire, isFutureDate, presetDate } from '@shared/expire'
+import {
+  describeTraffic,
+  formatBytes,
+  isValidTrafficLimitInput,
+  trafficLimitToInput
+} from '@shared/traffic'
 import { todayIso } from '@shared/calendar'
 import { buildAwgVpnUrl, stripAwgComments } from '@shared/awg'
 import { isSshAccessReady, SshAccessForm } from '../components/SshAccessForm'
@@ -70,6 +78,9 @@ export const SNI_CATEGORIES = [
 ] as const
 
 export const PORT_PRESETS = [443, 8443, 2053, 2083, 2087, 2096, 9443, 8080] as const
+
+/** Пресеты лимита трафика для диалога профиля. */
+export const TRAFFIC_PRESETS = ['10GB', '50GB', '100GB', '500GB', '1TB'] as const
 
 export function ServerSettings({
   server,
@@ -167,6 +178,12 @@ export function ServerSettings({
   const [expireDate, setExpireDate] = useState('')
   const [expireBusy, setExpireBusy] = useState(false)
   const [expireDone, setExpireDone] = useState(false)
+
+  const [limitTarget, setLimitTarget] = useState<ServerProfile | null>(null)
+  const [limitValue, setLimitValue] = useState('')
+  const [limitReset, setLimitReset] = useState(false)
+  const [limitBusy, setLimitBusy] = useState(false)
+  const [limitDone, setLimitDone] = useState(false)
 
   const connected = profiles !== null
   const accessReady = isSshAccessReady(access)
@@ -558,6 +575,96 @@ export function ServerSettings({
    * Без этой проверки GUI молча показывал «бессрочно» — как будто срока нет.
    */
   const expireSupported = (profiles ?? []).some((p) => p.expire_supported === true)
+
+  const openLimit = (profile: ServerProfile): void => {
+    setLimitTarget(profile)
+    setLimitValue(trafficLimitToInput(profile.traffic_limit ?? 0))
+    setLimitReset(false)
+    setLimitDone(false)
+  }
+
+  const applyLimit = async (limit: string | null, reset: boolean): Promise<void> => {
+    if (!limitTarget || !accessReady) return
+    setLimitBusy(true)
+    setError(null)
+    try {
+      const result = await window.api.profiles.setLimit(server.id, access, {
+        name: limitTarget.name,
+        limit,
+        reset
+      })
+      if (result.ok) {
+        if (limit === 'none') {
+          toastText(t('settings.trafficCleared', { name: limitTarget.name }))
+        } else if (limit) {
+          toastText(t('settings.trafficChanged', { name: limitTarget.name, limit }))
+        } else {
+          toastText(t('settings.trafficResetDone', { name: limitTarget.name }))
+        }
+        const fresh = await window.api.profiles.list(server.id, access)
+        setProfiles(fresh.profiles ?? [])
+        setLimitDone(true)
+        setTimeout(() => {
+          setLimitTarget(null)
+          setLimitDone(false)
+        }, 400)
+      } else {
+        setError(result.error ?? t('settings.trafficFailed'))
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setLimitBusy(false)
+    }
+  }
+
+  /** Чип трафика в карточке профиля: «использовано / лимит» или «лимит исчерпан». */
+  const trafficChip = (profile: ServerProfile): React.JSX.Element | null => {
+    if (!profile.traffic_supported) return null
+    const used = profile.traffic_used ?? 0
+    const limit = profile.traffic_limit ?? 0
+    const info = describeTraffic(used, limit, profile.traffic_disabled === true)
+    if (info.status === 'none') return null
+    const danger = info.status === 'disabled' || info.status === 'exceeded'
+    const warn = info.status === 'warn'
+    const label = danger
+      ? t('settings.trafficChipExceeded')
+      : limit > 0
+        ? `${formatBytes(used)} / ${formatBytes(limit)}`
+        : formatBytes(used)
+    const title =
+      info.status === 'disabled'
+        ? t('settings.trafficDisabledTitle')
+        : info.status === 'exceeded'
+          ? t('settings.trafficChipExceededTitle')
+          : warn
+            ? t('settings.trafficChipWarnTitle')
+            : t('settings.trafficChipTitle')
+    return (
+      <Chip
+        size="sm"
+        color="default"
+        className={`${styles.expireChip} ${
+          danger ? styles.expireChipDanger : warn ? styles.expireChipWarn : ''
+        }`}
+        title={title}
+      >
+        {label}
+      </Chip>
+    )
+  }
+
+  /**
+   * Сервер старой версии не отдаёт traffic-поля: управление лимитом скрыто.
+   * Как и у expire, отличает «лимита нет» от «сервер не умеет лимиты».
+   */
+  const trafficSupported = (profiles ?? []).some((p) => p.traffic_supported === true)
+
+  const limitInputValue = limitValue.trim()
+  const limitInputValid =
+    limitInputValue === '' || isValidTrafficLimitInput(limitInputValue)
+  const canSaveLimit =
+    limitInputValue !== '' ? isValidTrafficLimitInput(limitInputValue) : limitReset
 
   const updateServer = async (branch?: 'main' | 'dev' | 'experimental'): Promise<void> => {
     if (!accessReady) return
@@ -1161,6 +1268,7 @@ export function ServerSettings({
                       <Chip size="sm" color="default">:{profile.port}</Chip>
                       <span className={styles.profileSni}>{profile.sni}</span>
                       {expireChip(profile)}
+                      {trafficChip(profile)}
                     </div>
                     {profile.subscription_url && (
                       <div className={styles.profileUrl} title={profile.subscription_url}>
@@ -1225,6 +1333,17 @@ export function ServerSettings({
                       <CalendarClock size={14} />
                       {t('settings.expireBtn')}
                     </Button>
+                    {trafficSupported && (
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        isDisabled={busy}
+                        onPress={() => openLimit(profile)}
+                      >
+                        <Gauge size={14} />
+                        {t('settings.trafficBtn')}
+                      </Button>
+                    )}
                     {profile.subscription_url && (
                       <Button
                         size="sm"
@@ -1914,6 +2033,122 @@ export function ServerSettings({
                   {expireDone
                     ? t('settings.done')
                     : t(expireBusy ? 'settings.expireSaving' : 'settings.expireSave')}
+                </Button>
+              </AlertDialog.Footer>
+            </AlertDialog.Dialog>
+          </AlertDialog.Container>
+        </AlertDialog.Backdrop>
+      </AlertDialog.Root>
+
+      <AlertDialog.Root
+        isOpen={limitTarget !== null}
+        onOpenChange={(open) => {
+          if (!open && !limitBusy) setLimitTarget(null)
+        }}
+      >
+        <AlertDialog.Backdrop className={styles.blurBackdrop}>
+          <AlertDialog.Container placement="top">
+            <AlertDialog.Dialog className={styles.confirmDialog}>
+              <AlertDialog.Header>
+                <AlertDialog.Heading>
+                  {t('settings.trafficTitle')} — {limitTarget?.name ?? ''}
+                </AlertDialog.Heading>
+              </AlertDialog.Header>
+              <AlertDialog.Body>
+                <p className={styles.fpHint}>{t('settings.trafficHintBody')}</p>
+                {limitTarget && (
+                  <p className={styles.fpCurrent}>
+                    {limitTarget.traffic_disabled
+                      ? t('settings.trafficDisabledNote')
+                      : (limitTarget.traffic_limit ?? 0) > 0
+                        ? t('settings.trafficUsedOf', {
+                            used: formatBytes(limitTarget.traffic_used ?? 0),
+                            limit: formatBytes(limitTarget.traffic_limit ?? 0)
+                          })
+                        : t('settings.trafficUsedOnly', {
+                            used: formatBytes(limitTarget.traffic_used ?? 0)
+                          })}
+                  </p>
+                )}
+                <div className={styles.fpField}>
+                  <span className={styles.fieldLabel}>{t('settings.trafficPresets')}</span>
+                  <div className={styles.inlineRow}>
+                    {TRAFFIC_PRESETS.map((preset) => (
+                      <Button
+                        key={preset}
+                        size="sm"
+                        variant="secondary"
+                        isDisabled={limitBusy}
+                        onPress={() => setLimitValue(preset)}
+                      >
+                        {preset.replace('GB', ' GB').replace('TB', ' TB')}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+                <div className={styles.fpField}>
+                  <span className={styles.fieldLabel}>{t('settings.trafficCustom')}</span>
+                  <TextField variant="secondary" className={styles.nameField}>
+                    <Input
+                      value={limitValue}
+                      disabled={limitBusy}
+                      placeholder={t('settings.trafficPlaceholder')}
+                      onChange={(e) => setLimitValue(e.target.value)}
+                    />
+                  </TextField>
+                  {limitInputValue !== '' && !limitInputValid && (
+                    <p className={styles.fpNote}>{t('settings.trafficInvalid')}</p>
+                  )}
+                </div>
+                <div className={styles.expireClearRow}>
+                  <Button
+                    size="sm"
+                    variant={limitReset ? 'primary' : 'secondary'}
+                    isDisabled={limitBusy}
+                    onPress={() => setLimitReset((value) => !value)}
+                  >
+                    <RefreshCw size={14} />
+                    {t('settings.trafficReset')}
+                  </Button>
+                  <span className={styles.expireClearHint}>{t('settings.trafficResetHint')}</span>
+                </div>
+                {limitTarget && (limitTarget.traffic_limit ?? 0) > 0 ? (
+                  <div className={styles.expireClearRow}>
+                    <Button
+                      variant="danger-soft"
+                      size="sm"
+                      isDisabled={limitBusy}
+                      onPress={() => void applyLimit('none', false)}
+                    >
+                      <Gauge size={14} />
+                      {t('settings.trafficClear')}
+                    </Button>
+                    <span className={styles.expireClearHint}>
+                      {t('settings.trafficClearHint')}
+                    </span>
+                  </div>
+                ) : null}
+              </AlertDialog.Body>
+              <AlertDialog.Footer>
+                <Button
+                  variant="secondary"
+                  isDisabled={limitBusy}
+                  onPress={() => setLimitTarget(null)}
+                >
+                  {t('dashboard.cancel')}
+                </Button>
+                <Button
+                  variant="primary"
+                  className={
+                    limitDone ? styles.btnSuccess : limitBusy ? styles.glowPulse : undefined
+                  }
+                  isDisabled={limitBusy || limitDone || !canSaveLimit}
+                  onPress={() => void applyLimit(limitInputValue || null, limitReset)}
+                >
+                  {limitDone ? <Check size={16} /> : null}
+                  {limitDone
+                    ? t('settings.done')
+                    : t(limitBusy ? 'settings.trafficSaving' : 'settings.trafficSave')}
                 </Button>
               </AlertDialog.Footer>
             </AlertDialog.Dialog>

@@ -21,6 +21,8 @@ import type {
   ProfileExpireResult,
   ProfileFingerprintInput,
   ProfileFingerprintResult,
+  ProfileLimitInput,
+  ProfileLimitResult,
   ProfilePortInput,
   ProfilePortResult,
   ProfileRevokeInput,
@@ -124,7 +126,13 @@ const api: ElectronAPI = {
       access: SshAccessInput,
       input: ProfileExpireInput
     ): Promise<ProfileExpireResult> =>
-      ipcRenderer.invoke('profiles:setExpire', serverId, access, input)
+      ipcRenderer.invoke('profiles:setExpire', serverId, access, input),
+    setLimit: (
+      serverId: string,
+      access: SshAccessInput,
+      input: ProfileLimitInput
+    ): Promise<ProfileLimitResult> =>
+      ipcRenderer.invoke('profiles:setLimit', serverId, access, input)
   },
 
   backends: {

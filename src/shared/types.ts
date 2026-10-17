@@ -263,6 +263,17 @@ export interface ServerProfile {
    * показывал бы бессрочность там, где управление сроком недоступно.
    */
   expire_supported?: boolean
+  /** Накопленный сервером трафик профиля в байтах (Stats API). */
+  traffic_used?: number
+  /** Лимит трафика в байтах; 0 = без лимита. */
+  traffic_limit?: number
+  /** true — профиль отключён из-за исчерпания лимита (клиент снят с inbound'ов). */
+  traffic_disabled?: boolean
+  /**
+   * false/отсутствует — сервер старой версии не умеет учёт трафика.
+   * Как и expire_supported, отличает «лимита нет» от «сервер не умеет лимиты».
+   */
+  traffic_supported?: boolean
   /**
    * Мультипротокольный этап: гранты опциональных бэкендов. Пустой объект или
    * отсутствие поля — профиль не имеет доступа к hysteria2/awg.
@@ -371,6 +382,26 @@ export interface ProfileExpireResult {
   name?: string
   expire?: number
   expired?: boolean
+  error?: string
+}
+
+export interface ProfileLimitInput {
+  name: string
+  /** '100GB' / '1.5TB' / байты / 'none'; null/undefined — лимит не менять. */
+  limit?: string | number | null
+  /** true — обнулить накопленный счётчик (можно вместе со сменой лимита). */
+  reset?: boolean
+}
+
+export interface ProfileLimitResult {
+  ok: boolean
+  name?: string
+  /** Лимит в байтах после применения; 0 = без лимита. */
+  traffic_limit?: number
+  /** Накопленный трафик после применения (с учётом --reset). */
+  traffic_used?: number
+  /** true — профиль сейчас отключён из-за исчерпания лимита. */
+  traffic_disabled?: boolean
   error?: string
 }
 
@@ -490,6 +521,11 @@ export interface ElectronAPI {
       access: SshAccessInput,
       input: ProfileExpireInput
     ) => Promise<ProfileExpireResult>
+    setLimit: (
+      serverId: string,
+      access: SshAccessInput,
+      input: ProfileLimitInput
+    ) => Promise<ProfileLimitResult>
   }
   server: {
     /**

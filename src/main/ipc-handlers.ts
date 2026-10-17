@@ -9,6 +9,7 @@ import type {
   ProfileCreateInput,
   ProfileExpireInput,
   ProfileFingerprintInput,
+  ProfileLimitInput,
   ProfilePortInput,
   ProfileRevokeInput,
   ProfileSniInput,
@@ -510,6 +511,14 @@ export function registerIpcHandlers({ store }: IpcContext): void {
     async (_e, serverId: string, access: SshAccessInput, input: ProfileExpireInput) => {
       const manager = await profileManagerFor(serverId, access)
       return manager.setExpire(input)
+    }
+  )
+
+  ipcMain.handle(
+    'profiles:setLimit',
+    async (_e, serverId: string, access: SshAccessInput, input: ProfileLimitInput) => {
+      const manager = await profileManagerFor(serverId, access)
+      return manager.setLimit(input)
     }
   )
 
