@@ -9884,6 +9884,73 @@ _migrate_subhttp_hysteria2_2026() {
   return 0
 }
 
+# PQ-маршрут для произвольного транспорта (VLESS Encryption).
+# VLESS `decryption` — свойство инбаунда, поэтому PQ-маршрут не может делить порт с
+# обычными: создаём отдельный инбаунд через build_transport_defaults и переключаем
+# его decryption на ключ из .vless_decryption (ключи общие на сервер, не на маршрут).
+# Args: profile_file, transport (tcp|tcp-utls|tcp-xudp|tcp-mux|grpc|xhttp).
+_pq_add_route_for_profile() {
+  local profile_file="$1" transport="$2"
+  [[ -f "$profile_file" ]] || return 1
+  case "$transport" in
+    tcp|tcp-utls|tcp-xudp|tcp-mux|grpc|xhttp) ;;
+    *) return 1 ;;
+  esac
+  local decryption=""
+  if [[ -f "$VLESS_DECRYPTION_FILE" ]]; then
+    decryption=$(cat "$VLESS_DECRYPTION_FILE" 2>/dev/null)
+  fi
+  if [[ "$decryption" != mlkem768x25519plus.* ]]; then
+    return 1
+  fi
+
+  local defaults port rest sni
+  defaults=$(build_transport_defaults "$transport") || return 1
+  port="${defaults%%|*}"
+  rest="${defaults#*|}"
+  [[ "$port" =~ ^[0-9]+$ ]] || return 1
+  reserve_port "$port" || return 1
+
+  # Инбаунд этого транспорта становится PQ: клиенты без ML-KEM к порту не подключатся.
+  if ! safe_jq_write --argjson p "$port" --arg d "$decryption" '
+    .inbounds |= map(if .port == $p then .settings.decryption = $d else . end)
+  ' "$CONFIG_FILE"; then
+    return 1
+  fi
+
+  # serviceName/path берём из того же defaults, что использует build_transport_defaults.
+  local grpc_service_name="" xhttp_path=""
+  case "$transport" in
+    grpc) grpc_service_name="${rest%%|*}" ;;
+    xhttp) xhttp_path="${rest#*|}"; xhttp_path="${xhttp_path%%|*}" ;;
+  esac
+  [[ -n "$grpc_service_name" && "$grpc_service_name" == "$port" ]] && grpc_service_name=""
+  [[ -n "$xhttp_path" && "$xhttp_path" == "$port" ]] && xhttp_path=""
+
+  sni=$(_default_sni_for_transport "$transport" 2>/dev/null || echo "")
+  [[ -n "$sni" ]] || sni=$(_default_sni_for_transport "tcp" 2>/dev/null || echo "")
+  [[ -n "$sni" ]] || return 1
+
+  local tmp
+  tmp=$(mktemp) || return 1
+  if ! jq --argjson port "$port" --arg transport "$transport" --arg sni "$sni" \
+       --arg label "${transport}-pq" --arg gs "$grpc_service_name" --arg xp "$xhttp_path" \
+       '.routes = ((.routes // []) + [{
+          label: $label, transport: $transport, port: $port, sni: $sni,
+          fingerprint: (.fingerprint // "chrome"), pq_enabled: true, schema_version: 2
+        }
+        + (if $gs != "" then {grpc_service_name: $gs} else {} end)
+        + (if $xp != "" then {xhttp_path: $xp} else {} end)])' \
+       "$profile_file" > "$tmp" 2>/dev/null; then
+    rm -f "$tmp"
+    return 1
+  fi
+  chmod 644 "$tmp" 2>/dev/null || true
+  mv "$tmp" "$profile_file" || { rm -f "$tmp"; return 1; }
+  return 0
+}
+
+
 # Регенерация subhttp.sh: форматы Clash/mihomo и sing-box (существующие установки).
 # Обработчик живёт в heredoc менеджера, поэтому новая логика появляется на сервере
 # только после повторной генерации. Маркер проверяем и внутри — так миграция
@@ -15211,6 +15278,65 @@ traffic_check_command() {
   return 0
 }
 
+# xrayebator profile-pq --name NAME [--transport tcp|grpc|...] — добавить PQ-маршрут.
+# Транспорт по умолчанию tcp (Vision без настроек — самый совместимый клиент).
+profile_pq_command() {
+  export TERM=dumb
+  export XRAYEBATOR_NONINTERACTIVE=1
+
+  local name="" transport="tcp"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --name) name="${2:-}"; shift 2 ;;
+      --transport) transport="${2:-}"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  if [[ -z "$name" || ! "$name" =~ ^[a-zA-Z0-9_-]{1,48}$ ]]; then
+    echo '{"ok":false,"error":"Укажите --name профиля"}'
+    return 1
+  fi
+  local profile_file="$PROFILES_DIR/$name.json"
+  if [[ ! -f "$profile_file" ]]; then
+    echo '{"ok":false,"error":"Профиль не найден"}'
+    return 1
+  fi
+  if [[ ! -f "$VLESS_DECRYPTION_FILE" ]] || ! grep -q '^mlkem768x25519plus\.' "$VLESS_DECRYPTION_FILE" 2>/dev/null; then
+    echo '{"ok":false,"error":"PQ-ключи не сгенерированы: обновите Xray-core до 25.9.5+ и войдите в меню (миграция mlkem_keys)"}'
+    return 1
+  fi
+  if jq -e --arg t "$transport" 'any((.routes // [])[]; .pq_enabled == true and .transport == $t)' \
+       "$profile_file" >/dev/null 2>&1; then
+    echo "{\"ok\":false,\"error\":\"У профиля уже есть PQ-маршрут ${transport}\"}"
+    return 1
+  fi
+
+  local rc=0 port=""
+  exec 3>&1
+  exec 1>&2
+  if _pq_add_route_for_profile "$profile_file" "$transport"; then
+    port=$(jq -r --arg t "$transport" '(.routes // []) | map(select(.transport == $t and .pq_enabled == true)) | .[-1].port // 0' "$profile_file" 2>/dev/null)
+  else
+    rc=1
+  fi
+  exec 1>&3
+  exec 3>&-
+
+  if (( rc != 0 )); then
+    echo '{"ok":false,"error":"Не удалось добавить PQ-маршрут (проверьте config.json и свободные порты)"}'
+    return 1
+  fi
+  local link=""
+  link=$(_generate_vless_url_pure "$profile_file" \
+    "$(jq -r --arg t "$transport" '(.routes // []) | to_entries | map(select(.value.transport == $t and .value.pq_enabled == true)) | .[-1].key' "$profile_file")" 2>/dev/null || true)
+
+  jq -n --arg name "$name" --arg t "$transport" --argjson port "${port:-0}" --arg link "$link" \
+    '{ok:true, name:$name, transport:$t, port:$port,
+      pq:true, link:$link,
+      note:"PQ-маршрут живёт на отдельном порту: клиенту нужен ML-KEM (HAPP или Xray 25.6+), в v2rayNG/base64-подписке он скрыт"}'
+  return 0
+}
+
 # xrayebator profile-limit --name NAME [--limit 100GB|none] [--reset]
 # Лимит трафика и/или сброс счётчика. Применяется сразу: превышение →
 # отключение, подъём выше used / сброс → включение (контракт expire).
@@ -17197,6 +17323,10 @@ if [[ "$XRAYEBATOR_SOURCED" -eq 0 ]]; then
     profile-limit)
       shift
       profile_limit_command "$@"
+      ;;
+    profile-pq)
+      shift
+      profile_pq_command "$@"
       ;;
     monitor-check)
       shift
