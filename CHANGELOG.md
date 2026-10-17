@@ -8,6 +8,19 @@ Next `0.6.5` cut: the server manager plus the GUI traffic-limit card.
 
 ### Added
 
+- **VLESS Encryption (post-quantum) on every transport.** The PQ layer (`mlkem768x25519plus`)
+  used to be reachable only through the dedicated `xhttp-pq` route — the `encryption` field, the
+  inbound-matching guard and the subscription filter were hard-wired to xhttp. It is now a property
+  of any transport (`tcp`, `tcp-utls`, `tcp-xudp`, `tcp-mux`, `grpc`, `xhttp`), and
+  `xrayebator profile-pq --name N [--transport T]` adds a PQ route for the chosen one. VLESS
+  `decryption` is inbound-level, so each PQ route gets its own inbound and port whose `decryption`
+  is switched to the shared `.vless_decryption` key, and the profile gains a `<transport>-pq` route
+  with `pq_enabled: true`. Ordinary routes keep `encryption=none` and remain usable by every client;
+  PQ routes are hidden from the v2rayNG/base64 body (a client without ML-KEM could not connect) and
+  skipped with an explanatory comment in the Clash/mihomo and sing-box formats. Clients need ML-KEM
+  support (HAPP or Xray 25.6+), and `profile-pq` returns a JSON error while the `mlkem_keys`
+  migration has not produced keys. `profiles` gained the additive `pq_routes` counter so the desktop
+  GUI can show PQ honestly (top-level `pq_enabled` only describes the first route).
 - **DNS-01 certificates and a domain-based subscription (Cloudflare / Route53).** `xrayebator
   dns01-setup --domain sub.example.com --provider cloudflare|route53` issues a Let's Encrypt
   certificate by proving domain ownership with a TXT record, so **port 80 is not needed at all** —
