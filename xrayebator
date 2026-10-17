@@ -937,6 +937,390 @@ _profile_live_route_count() {
 }
 
 # ═══════════════════════════════════════════════════════════
+# Форматы подписки: Clash/mihomo (YAML) и sing-box (JSON)
+# ═══════════════════════════════════════════════════════════
+# Один генератор — три формата. Маршруты профиля уже описаны ссылками (vless:// из
+# _generate_vless_urls_for_profile и hysteria2:// бэкенда), поэтому Clash и sing-box
+# строятся из нормализованных записей _subscription_links_json: формат не может
+# разойтись с тем, что получают v2rayNG/HAPP, и не перечитывает config.json второй раз.
+#
+# Поддержка транспортов у клиентов разная, и «нарисовать хоть что-нибудь» здесь хуже,
+# чем пропустить маршрут: mihomo не грузит конфиг с неизвестным network, а sing-box не
+# знает xhttp вовсе. Поэтому у записи есть флаги поддержки, а пропуски уходят в тело
+# комментарием — оператор видит, почему маршрута нет.
+
+# Percent-decoding значений query (path/host/имена приходят percent-encoded).
+_url_decode() {
+  local s="$1"
+  s="${s//+/ }"
+  printf '%b' "${s//%/\\x}"
+}
+
+# Разбор "<scheme>://[userinfo@]host:port[?query][#frag]" → "userinfo|host|port|query|frag".
+# host отдаётся без IPv6-скобок (скобки нужны только в самой ссылке).
+_url_split() {
+  local url="$1" scheme="$2" body frag="" query=""
+  [[ "$url" == "${scheme}://"* ]] || return 1
+  body="${url#"${scheme}://"}"
+  if [[ "$body" == *"#"* ]]; then
+    frag="${body#*#}"
+    body="${body%%#*}"
+  fi
+  if [[ "$body" == *"?"* ]]; then
+    query="${body#*\?}"
+    body="${body%%\?*}"
+  fi
+  # Путь отбрасываем: hysteria2://user:pass@host:port/?sni=… приходит со слешем,
+  # а данных для форматов он не несёт (у vless пути в authority не бывает).
+  body="${body%%/*}"
+  local userinfo=""
+  if [[ "$body" == *"@"* ]]; then
+    userinfo="${body%@*}"
+    body="${body#*@}"
+  fi
+  local host port
+  if [[ "$body" == \[*\]* ]]; then
+    host="${body#[}"
+    host="${host%%]*}"
+    port="${body##*]:}"
+  else
+    host="${body%:*}"
+    port="${body##*:}"
+  fi
+  [[ -n "$host" && "$port" =~ ^[0-9]+$ ]] || return 1
+  printf '%s|%s|%s|%s|%s\n' "$userinfo" "$host" "$port" "$query" "$(_url_decode "$frag")"
+}
+
+# Значение параметра из "a=1&b=2" (пусто, если параметра нет).
+_url_param() {
+  local query="$1" want="$2" pair key val
+  [[ -n "$query" ]] || return 0
+  local -a pairs=()
+  IFS='&' read -r -a pairs <<< "$query"
+  for pair in "${pairs[@]}"; do
+    key="${pair%%=*}"
+    [[ "$key" == "$want" ]] || continue
+    if [[ "$pair" == *=* ]]; then
+      val="${pair#*=}"
+    else
+      val=""
+    fi
+    _url_decode "$val"
+    return 0
+  done
+  return 0
+}
+
+# vless:// → нормализованная запись (JSON). 1 — не vless или не разобран.
+_vless_url_to_record() {
+  local url="$1" split userinfo host port query frag
+  split=$(_url_split "$url" vless) || return 1
+  IFS='|' read -r userinfo host port query frag <<< "$split"
+  [[ -n "$userinfo" ]] || return 1
+
+  local type security sni fp pbk sid flow path host_hdr service mode packet_encoding encryption
+  type=$(_url_param "$query" type)
+  security=$(_url_param "$query" security)
+  sni=$(_url_param "$query" sni)
+  fp=$(_url_param "$query" fp)
+  pbk=$(_url_param "$query" pbk)
+  sid=$(_url_param "$query" sid)
+  flow=$(_url_param "$query" flow)
+  path=$(_url_param "$query" path)
+  host_hdr=$(_url_param "$query" host)
+  service=$(_url_param "$query" serviceName)
+  mode=$(_url_param "$query" mode)
+  packet_encoding=$(_url_param "$query" packetEncoding)
+  encryption=$(_url_param "$query" encryption)
+  [[ -n "$encryption" ]] || encryption="none"
+
+  local clash=true singbox=true xhttp=false reason=""
+  if [[ "$encryption" != "none" ]]; then
+    clash=false
+    singbox=false
+    reason="VLESS Encryption (post-quantum) не поддержан клиентом"
+  fi
+  case "$type" in
+    tcp|"") ;;
+    grpc) ;;
+    xhttp)
+      xhttp=true
+      singbox=false
+      reason="${reason:+${reason}; }xhttp не поддержан sing-box"
+      ;;
+    *)
+      clash=false
+      singbox=false
+      reason="${reason:+${reason}; }транспорт ${type} не поддержан"
+      ;;
+  esac
+  if [[ "$security" != "reality" && "$security" != "tls" ]]; then
+    clash=false
+    singbox=false
+    reason="${reason:+${reason}; }security=${security:-?} не поддержан"
+  fi
+
+  jq -n --arg name "$frag" --arg server "$host" --argjson port "$port" \
+    --arg uuid "$userinfo" --arg network "${type:-tcp}" --arg security "$security" \
+    --arg sni "$sni" --arg fp "$fp" --arg pbk "$pbk" --arg sid "$sid" \
+    --arg flow "$flow" --arg path "$path" --arg host_hdr "$host_hdr" \
+    --arg service "$service" --arg mode "$mode" --arg packet_encoding "$packet_encoding" \
+    --arg encryption "$encryption" --arg reason "$reason" \
+    --argjson clash "$clash" --argjson singbox "$singbox" --argjson xhttp "$xhttp" \
+    '{protocol: "vless", name: $name, server: $server, port: $port, uuid: $uuid,
+      network: $network, security: $security, sni: $sni, fp: $fp, pbk: $pbk, sid: $sid,
+      flow: $flow, path: $path, host: $host_hdr, service: $service, mode: $mode,
+      packet_encoding: $packet_encoding, encryption: $encryption,
+      clash: $clash, singbox: $singbox, xhttp: $xhttp, reason: $reason}'
+}
+
+# hysteria2:// → нормализованная запись. userinfo ("user:pass") остаётся auth-строкой:
+# сервер Hysteria 2 сверяет её целиком по userpass-карте.
+_hysteria2_url_to_record() {
+  local url="$1" split userinfo host port query frag
+  split=$(_url_split "$url" hysteria2) || return 1
+  IFS='|' read -r userinfo host port query frag <<< "$split"
+  [[ -n "$userinfo" ]] || return 1
+  local sni insecure insecure_bool=false
+  sni=$(_url_param "$query" sni)
+  insecure=$(_url_param "$query" insecure)
+  [[ "$insecure" == "1" || "$insecure" == "true" ]] && insecure_bool=true
+
+  jq -n --arg name "$frag" --arg server "$host" --argjson port "$port" \
+    --arg auth "$userinfo" --arg sni "$sni" --argjson insecure "$insecure_bool" \
+    '{protocol: "hysteria2", name: $name, server: $server, port: $port, auth: $auth,
+      sni: $sni, insecure: $insecure, clash: true, singbox: true, xhttp: false, reason: ""}'
+}
+
+# Все ссылки профиля одной нормализованной JSON-строкой (порядок = порядок ссылок).
+# Args: profile_file, [дополнительная ссылка hysteria2://]
+_subscription_links_json() {
+  local profile_file="$1" extra_link="${2:-}"
+  [[ -f "$profile_file" ]] || return 1
+  local urls line rec out="[]"
+  urls=$(_generate_vless_urls_for_profile "$profile_file" 2>/dev/null) || return 1
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    rec=$(_vless_url_to_record "$line" 2>/dev/null) || continue
+    out=$(jq -c --argjson r "$rec" '. + [$r]' <<<"$out") || return 1
+  done <<< "$urls"
+  if [[ -n "$extra_link" ]]; then
+    if rec=$(_hysteria2_url_to_record "$extra_link" 2>/dev/null); then
+      out=$(jq -c --argjson r "$rec" '. + [$r]' <<<"$out") || return 1
+    fi
+  fi
+  printf '%s' "$out"
+}
+
+# YAML-строка в двойных кавычках (JSON-строка — валидный YAML): имена маршрутов
+# содержат эмодзи, «·» и двоеточия, поэтому без кавычек YAML поедет.
+_clash_yaml_str() { jq -rn --arg s "$1" '$s|@json'; }
+
+# Clash/mihomo YAML.
+# Args: profile_file, [hysteria2 uri], [include_xhttp true|false], [title]
+# xhttp по умолчанию НЕ включается: network: xhttp появился в mihomo сравнительно
+# недавно, а неизвестный network ломает загрузку всего конфига — лучше пропустить
+# маршрут, чем отдать клиенту нерабочий профиль (?xhttp=1 в URL подписки включает).
+_subscription_render_clash_pure() {
+  local profile_file="$1" hysteria2_uri="${2:-}" include_xhttp="${3:-false}" title="${4:-}"
+  [[ -f "$profile_file" ]] || return 1
+  [[ -n "$title" ]] || title=$(basename "$profile_file" .json)
+
+  local links
+  links=$(_subscription_links_json "$profile_file" "$hysteria2_uri") || return 1
+
+  local -a names=() skipped=()
+  local rec name
+  while IFS= read -r rec; do
+    [[ -n "$rec" ]] || continue
+    name=$(jq -r '.name' <<<"$rec")
+    if [[ "$(jq -r '.clash' <<<"$rec")" != "true" ]]; then
+      skipped+=("$name — $(jq -r '.reason // ""' <<<"$rec")")
+      continue
+    fi
+    if [[ "$(jq -r '.xhttp' <<<"$rec")" == "true" && "$include_xhttp" != "true" ]]; then
+      skipped+=("$name — xhttp: нужен ?xhttp=1 (mihomo ≥ 1.19)")
+      continue
+    fi
+    names+=("$name")
+  done < <(jq -c '.[]' <<<"$links")
+
+  printf '# Xrayebator subscription (Clash / mihomo)\n'
+  printf '# profile: %s\n' "$title"
+  if (( ${#skipped[@]} > 0 )); then
+    printf '# skipped: %s\n' "${skipped[*]}"
+  fi
+  printf 'mixed-port: 7890\n'
+  printf 'allow-lan: false\n'
+  printf 'mode: rule\n'
+  printf 'log-level: warning\n'
+  printf 'unified-delay: true\n'
+  printf 'tcp-concurrent: true\n'
+  printf 'proxies:\n'
+
+  local net pe security
+  while IFS= read -r rec; do
+    [[ -n "$rec" ]] || continue
+    [[ "$(jq -r '.clash' <<<"$rec")" == "true" ]] || continue
+    if [[ "$(jq -r '.xhttp' <<<"$rec")" == "true" && "$include_xhttp" != "true" ]]; then
+      continue
+    fi
+    printf '  - name: %s\n' "$(_clash_yaml_str "$(jq -r '.name' <<<"$rec")")"
+    case "$(jq -r '.protocol' <<<"$rec")" in
+      vless)
+        net=$(jq -r '.network' <<<"$rec")
+        pe=$(jq -r '.packet_encoding' <<<"$rec")
+        security=$(jq -r '.security' <<<"$rec")
+        printf '    type: vless\n'
+        printf '    server: %s\n' "$(jq -r '.server' <<<"$rec")"
+        printf '    port: %s\n' "$(jq -r '.port' <<<"$rec")"
+        printf '    uuid: %s\n' "$(jq -r '.uuid' <<<"$rec")"
+        printf '    udp: true\n'
+        printf '    tls: true\n'
+        printf '    servername: %s\n' "$(_clash_yaml_str "$(jq -r '.sni' <<<"$rec")")"
+        if [[ -n "$(jq -r '.fp' <<<"$rec")" ]]; then
+          printf '    client-fingerprint: %s\n' "$(jq -r '.fp' <<<"$rec")"
+        fi
+        if [[ -n "$(jq -r '.flow' <<<"$rec")" ]]; then
+          printf '    flow: %s\n' "$(jq -r '.flow' <<<"$rec")"
+        fi
+        case "$net" in
+          grpc)
+            printf '    network: grpc\n'
+            printf '    grpc-opts:\n'
+            printf '      grpc-service-name: %s\n' "$(_clash_yaml_str "$(jq -r '.service' <<<"$rec")")"
+            ;;
+          xhttp)
+            printf '    network: xhttp\n'
+            printf '    xhttp-opts:\n'
+            printf '      path: %s\n' "$(_clash_yaml_str "$(jq -r '.path' <<<"$rec")")"
+            printf '      host: %s\n' "$(_clash_yaml_str "$(jq -r '.host' <<<"$rec")")"
+            printf '      mode: %s\n' "$(jq -r 'if .mode == "" then "auto" else .mode end' <<<"$rec")"
+            ;;
+          *)
+            printf '    network: tcp\n'
+            ;;
+        esac
+        if [[ "$pe" == "xudp" ]]; then
+          printf '    packet-encoding: xudp\n'
+        fi
+        if [[ "$security" == "reality" ]]; then
+          printf '    reality-opts:\n'
+          printf '      public-key: %s\n' "$(_clash_yaml_str "$(jq -r '.pbk' <<<"$rec")")"
+          printf '      short-id: %s\n' "$(_clash_yaml_str "$(jq -r '.sid' <<<"$rec")")"
+        fi
+        ;;
+      hysteria2)
+        printf '    type: hysteria2\n'
+        printf '    server: %s\n' "$(jq -r '.server' <<<"$rec")"
+        printf '    port: %s\n' "$(jq -r '.port' <<<"$rec")"
+        printf '    password: %s\n' "$(_clash_yaml_str "$(jq -r '.auth' <<<"$rec")")"
+        printf '    sni: %s\n' "$(_clash_yaml_str "$(jq -r '.sni' <<<"$rec")")"
+        printf '    skip-cert-verify: %s\n' "$(jq -r '.insecure' <<<"$rec")"
+        printf '    udp: true\n'
+        ;;
+    esac
+  done < <(jq -c '.[]' <<<"$links")
+
+  # Пустой список прокси — валидный YAML, но нерабочая группа: явно оставляем DIRECT.
+  local -a group_entries=("${names[@]}")
+  if (( ${#group_entries[@]} == 0 )); then
+    group_entries=("DIRECT")
+  fi
+
+  printf 'proxy-groups:\n'
+  printf '  - name: PROXY\n'
+  printf '    type: select\n'
+  printf '    proxies:\n'
+  if (( ${#names[@]} > 0 )); then
+    printf '      - AUTO\n'
+  fi
+  local g
+  for g in "${group_entries[@]}"; do
+    if [[ "$g" != "DIRECT" ]]; then
+      printf '      - %s\n' "$(_clash_yaml_str "$g")"
+    else
+      printf '      - DIRECT\n'
+    fi
+  done
+  printf '  - name: AUTO\n'
+  printf '    type: url-test\n'
+  printf '    url: http://cp.cloudflare.com/generate_204\n'
+  printf '    interval: 300\n'
+  printf '    tolerance: 50\n'
+  printf '    proxies:\n'
+  for g in "${group_entries[@]}"; do
+    if [[ "$g" != "DIRECT" ]]; then
+      printf '      - %s\n' "$(_clash_yaml_str "$g")"
+    else
+      printf '      - DIRECT\n'
+    fi
+  done
+  printf 'rules:\n'
+  printf '  - GEOIP,LAN,DIRECT,no-resolve\n'
+  printf '  - GEOIP,PRIVATE,DIRECT,no-resolve\n'
+  printf '  - MATCH,PROXY\n'
+  return 0
+}
+
+# sing-box JSON.
+# Args: profile_file, [hysteria2 uri], [title]
+# xhttp в sing-box нет вовсе (ни legacy, ни PQ) — такие маршруты пропускаются.
+_subscription_render_singbox_pure() {
+  local profile_file="$1" hysteria2_uri="${2:-}" title="${3:-}"
+  [[ -f "$profile_file" ]] || return 1
+  [[ -n "$title" ]] || title=$(basename "$profile_file" .json)
+
+  local links proxies
+  links=$(_subscription_links_json "$profile_file" "$hysteria2_uri") || return 1
+  proxies=$(jq -c '[.[] | select(.singbox == true)]' <<<"$links") || return 1
+
+  jq -n --argjson proxies "$proxies" --arg title "$title" '
+    ($proxies | map(.name)) as $tags |
+    ($proxies | map(
+      if .protocol == "vless" then
+        {type: "vless", tag: .name, server: .server, server_port: .port, uuid: .uuid}
+        + (if .flow != "" then {flow: .flow} else {} end)
+        + (if .packet_encoding != "" then {packet_encoding: .packet_encoding} else {} end)
+        + {tls: ({enabled: true, server_name: .sni}
+                 + (if .fp != "" then {utls: {enabled: true, fingerprint: .fp}} else {} end)
+                 + (if .security == "reality"
+                    then {reality: ({enabled: true, public_key: .pbk}
+                                    + (if .sid != "" then {short_id: .sid} else {} end))}
+                    else {} end))}
+        + (if .network == "grpc" then {transport: {type: "grpc", service_name: .service}} else {} end)
+      elif .protocol == "hysteria2" then
+        {type: "hysteria2", tag: .name, server: .server, server_port: .port, password: .auth,
+         tls: ({enabled: true, server_name: .sni}
+               + (if .insecure then {insecure: true} else {} end))}
+      else empty end
+    )) as $out |
+    {
+      log: {level: "warn", timestamp: true},
+      experimental: {cache_file: {enabled: true}},
+      inbounds: [
+        {type: "mixed", tag: "mixed-in", listen: "127.0.0.1", listen_port: 2080}
+      ],
+      outbounds: (
+        $out
+        + [{type: "selector", tag: "proxy", default: (if ($tags | length) > 0 then "auto" else "direct" end),
+            outbounds: (if ($tags | length) > 0 then ($tags + ["auto", "direct"]) else ["direct"] end)}]
+        + (if ($tags | length) > 0
+           then [{type: "urltest", tag: "auto", outbounds: $tags,
+                  url: "http://cp.cloudflare.com/generate_204", interval: "5m", tolerance: 50}]
+           else [] end)
+        + [{type: "direct", tag: "direct"}]
+      ),
+      route: {
+        rules: [{ip_is_private: true, outbound: "direct"}],
+        final: "proxy",
+        auto_detect_interface: true
+      }
+    }
+  '
+}
+
+# ═══════════════════════════════════════════════════════════
 # Subscription base URL builder (Phase 7, Plan 7.2 / REQ-C03)
 # ═══════════════════════════════════════════════════════════
 # Читает /usr/local/etc/xray/.subscription_domain и .subscription_port (создаются Plan 7.3
@@ -7406,6 +7790,35 @@ if [[ "$query_lc" == *"format=v2ray"* || "$query_lc" == *"format=base64"* || "$q
   universal_sub=true
 fi
 
+# Формат ответа (один генератор — четыре тела): v2ray/base64, HAPP, Clash/mihomo
+# YAML, sing-box JSON. Приоритет: явный ?target= (или ?format=), затем User-Agent,
+# затем текущее поведение — HAPP-тело для HAPP и «неизвестных» клиентов, base64
+# для v2rayNG/v2rayN (их UA ловится выше). ?xhttp=1 добавляет xhttp-маршруты в
+# Clash-вывод для mihomo ≥ 1.19 (по умолчанию пропускаются: неизвестный network
+# ломает загрузку конфига на старых сборках).
+sub_format="happ"
+[[ "$universal_sub" == "true" ]] && sub_format="v2ray"
+include_xhttp=false
+case "$query_lc" in
+  *"target=clash"*|*"target=mihomo"*|*"format=clash"*) sub_format="clash" ;;
+  *"target=singbox"*|*"target=sing-box"*|*"format=singbox"*) sub_format="singbox" ;;
+  *"target=v2ray"*|*"target=base64"*|*"format=base64"*) sub_format="v2ray" ;;
+  *"target=happ"*) sub_format="happ" ;;
+esac
+case "$query_lc" in
+  *"xhttp=1"*|*"xhttp=true"*) include_xhttp=true ;;
+esac
+if [[ "$sub_format" == "happ" ]]; then
+  case "$ua_lc" in
+    *clash*|*mihomo*|*stash*|*flclash*)
+      sub_format="clash"
+      ;;
+    *sing-box*|*singbox*|*sfa*|*sfi*|*sfm*|*nekobox*|*hiddify*|*karing*)
+      sub_format="singbox"
+      ;;
+  esac
+fi
+
 prepare_happ_vless_urls() {
   local input line has_legacy_xhttp=false
   local -a tcp_vision=() tcp_xudp=() tcp_utls=() grpc_routes=() tcp_mux=() xhttp_legacy=() other=()
@@ -7543,7 +7956,18 @@ sub_userinfo="upload=0; download=${traffic_used}; total=${traffic_limit}; expire
 body_tmp=$(mktemp /tmp/xrayebator-subhttp-body.XXXXXX) ||
   emit_500 "cannot create response buffer"
 trap 'rm -f -- "$body_tmp"' EXIT
-if [[ "$universal_sub" == "true" ]]; then
+if [[ "$sub_format" == "clash" ]]; then
+  # Clash/mihomo YAML: транспорт-специфичные опции (reality-opts, flow, grpc-opts,
+  # packet-encoding) собирает pure-билдер; неподдержанные маршруты он пропускает
+  # комментарием, а не отдаёт нерабочий конфиг.
+  if ! _subscription_render_clash_pure "$profile_file" "$hysteria2_uri" "$include_xhttp" "$subscription_title" > "$body_tmp"; then
+    emit_500 "cannot render Clash YAML"
+  fi
+elif [[ "$sub_format" == "singbox" ]]; then
+  if ! _subscription_render_singbox_pure "$profile_file" "$hysteria2_uri" "$subscription_title" > "$body_tmp"; then
+    emit_500 "cannot render sing-box JSON"
+  fi
+elif [[ "$universal_sub" == "true" ]]; then
   # v2rayNG сначала пытается Base64-decode subscription body. Даём ему
   # классический v2ray-sub: только proxy URI, без HAPP comments/routing.
   # Фильтруем PQ xhttp (encryption=mlkem768...): клиенты без ML-KEM не смогут
@@ -7577,26 +8001,44 @@ fi
 body_size=$(stat -c%s "$body_tmp" 2>/dev/null || wc -c < "$body_tmp")
 
 # Response: те же metadata-ключи дублируются как HTTP headers (REQ-C07 symmetry).
+# content-type/имя файла зависят от формата: Clash-UI и sing-box-клиенты ругаются на
+# text/plain с чужим расширением, хотя тело бы и распарсилось.
+case "$sub_format" in
+  clash)
+    response_ct="text/yaml; charset=utf-8"
+    response_fname="xrayebator-${short_token}.yaml"
+    ;;
+  singbox)
+    response_ct="application/json; charset=utf-8"
+    response_fname="xrayebator-${short_token}.json"
+    ;;
+  *)
+    response_ct="text/plain; charset=utf-8"
+    response_fname="xrayebator-${short_token}.txt"
+    ;;
+esac
 printf 'HTTP/1.1 200 OK\r\n'
-printf 'content-type: text/plain; charset=utf-8\r\n'
-printf 'content-disposition: attachment; filename="xrayebator-%s.txt"\r\n' "$short_token"
+printf 'content-type: %s\r\n' "$response_ct"
+printf 'content-disposition: attachment; filename="%s"\r\n' "$response_fname"
 printf 'content-length: %s\r\n' "$body_size"
 printf 'connection: close\r\n'
 printf 'cache-control: no-store\r\n'
-if [[ "$universal_sub" != "true" ]]; then
+if [[ "$sub_format" == "happ" ]]; then
   printf 'profile-update-interval: %s\r\n' "$HAPP_PROFILE_UPDATE_INTERVAL"
   printf 'profile-title: base64:%s\r\n' "$profile_title_b64"
   printf 'no-limit-xhttp-enabled: 1\r\n'
   if [[ -n "$ANNOUNCE_HEADER" ]]; then
     printf '%s\r\n' "$ANNOUNCE_HEADER"
   fi
-  printf 'subscription-userinfo: %s\r\n' "$sub_userinfo"
   printf 'support-url: %s\r\n' "$HAPP_SUPPORT_URL"
   printf 'profile-web-page-url: %s\r\n' "$HAPP_WEB_URL"
   if [[ -n "$routing_uri" ]]; then
     printf 'routing: %s\r\n' "$routing_uri"
   fi
 fi
+# userinfo понимают все четыре типа клиентов (v2rayNG/HAPP, Clash Verge/Mihomo Party,
+# Hiddify/Karing) — отдаём его в любом формате, а не только в HAPP-теле.
+printf 'subscription-userinfo: %s\r\n' "$sub_userinfo"
 printf '\r\n'
 cat "$body_tmp"
 
@@ -7933,6 +8375,12 @@ _happ_print_subscription_url_for_profile() {
     echo -e "${BLUE}URL:${NC} ${GREEN}${url}${NC}"
     qrencode -t ANSIUTF8 "$url"
   fi
+  # Тот же токен, другие тела: обработчик выбирает формат по ?target= или User-Agent.
+  echo ""
+  echo -e "${CYAN}Другие форматы той же подписки:${NC}"
+  echo -e "  Clash/mihomo: ${GREEN}${url}?target=clash${NC}  (xhttp-маршруты: добавьте &xhttp=1, mihomo ≥ 1.19)"
+  echo -e "  sing-box:     ${GREEN}${url}?target=singbox${NC}"
+  echo -e "  v2rayNG/v2rayN: ${GREEN}${url}?target=v2ray${NC}"
   echo ""
   return 0
 }
@@ -9042,6 +9490,21 @@ _migrate_subhttp_hysteria2_2026() {
   return 0
 }
 
+# Регенерация subhttp.sh: форматы Clash/mihomo и sing-box (существующие установки).
+# Обработчик живёт в heredoc менеджера, поэтому новая логика появляется на сервере
+# только после повторной генерации. Маркер проверяем и внутри — так миграция
+# остаётся безопасной при повторном вызове.
+_migrate_subhttp_formats_2026() {
+  [[ -f /usr/local/etc/xray/.subhttp_formats_2026 ]] && return 1
+  if [[ -f /usr/local/etc/xray/.subscription_installed ]]; then
+    if ! _subscription_repair_handler; then
+      echo -e "${RED}✗ Не удалось регенерировать subhttp.sh (форматы подписки)${NC}"
+      return 2
+    fi
+  fi
+  return 0
+}
+
 # Главное меню
 main_menu() {
   # Run migrations on first launch after upgrade.
@@ -9098,6 +9561,7 @@ main_menu() {
   run_migration "subhttp_happ_xhttp_compat_2026" "HAPP subscription: XHTTP mode/no-limit compatibility" _migrate_subhttp_happ_xhttp_compat_2026 || ((migration_failures++))
   run_migration "subhttp_happ_legacy_xhttp_2026" "HAPP subscription: prefer legacy XHTTP route" _migrate_subhttp_happ_legacy_xhttp_2026 || ((migration_failures++))
   run_migration "subhttp_hysteria2_2026" "Subhttp: hysteria2-ссылка в телах подписки (мультибэкенд)" _migrate_subhttp_hysteria2_2026 || ((migration_failures++))
+  run_migration "subhttp_formats_2026" "Subhttp: форматы Clash/mihomo и sing-box" _migrate_subhttp_formats_2026 || ((migration_failures++))
   run_migration "traffic_stats_2026" "Stats API: учёт трафика профилей" _migrate_traffic_stats_2026 || ((migration_failures++))
   run_migration "traffic_user_stats_2026" "User-level статистика трафика (ремонт F1)" _migrate_traffic_user_stats_2026 || ((migration_failures++))
   run_migration "traffic_timer_2026" "Таймер учёта трафика профилей (5 мин)" _migrate_traffic_timer_2026 || ((migration_failures++))
@@ -12714,6 +13178,7 @@ quickstart_command() {
   run_migration "subhttp_expired_410_2026" "Subhttp expired 410" _migrate_subhttp_expired_410_2026 >/dev/null 2>&1 || true
   run_migration "subhttp_happ_legacy_xhttp_2026" "Subhttp HAPP legacy XHTTP route" _migrate_subhttp_happ_legacy_xhttp_2026 >/dev/null 2>&1 || true
   run_migration "subhttp_hysteria2_2026" "Subhttp hysteria2 links" _migrate_subhttp_hysteria2_2026 >/dev/null 2>&1 || true
+  run_migration "subhttp_formats_2026" "Subhttp Clash/sing-box formats" _migrate_subhttp_formats_2026 >/dev/null 2>&1 || true
   run_migration "traffic_stats_2026" "Stats API traffic accounting" _migrate_traffic_stats_2026 >/dev/null 2>&1 || true
   run_migration "traffic_user_stats_2026" "User-level traffic statistics (repair)" _migrate_traffic_user_stats_2026 >/dev/null 2>&1 || true
   run_migration "traffic_timer_2026" "Traffic accounting timer" _migrate_traffic_timer_2026 >/dev/null 2>&1 || true
@@ -13222,6 +13687,7 @@ happ_setup_command() {
   run_migration "traffic_timer_2026" "Traffic accounting timer" _migrate_traffic_timer_2026 >/dev/null 2>&1 || true
   run_migration "subhttp_traffic_2026" "Subhttp traffic userinfo" _migrate_subhttp_traffic_2026 >/dev/null 2>&1 || true
   run_migration "alerts_monitor_2026" "Telegram alerts monitor timer" _migrate_alerts_monitor_2026 >/dev/null 2>&1 || true
+  run_migration "subhttp_formats_2026" "Subhttp Clash/sing-box formats" _migrate_subhttp_formats_2026 >/dev/null 2>&1 || true
   fix_xray_permissions >/dev/null 2>&1 || true
 
   # 1. Убедиться, что subscription server установлен и запущен
@@ -13371,9 +13837,12 @@ profiles_command() {
     backends=$(jq -c '.backends // {}' "$file" 2>/dev/null)
     [[ -n "$backends" ]] || backends="{}"
 
-    local sub_url=""
+    local sub_url="" sub_url_clash="" sub_url_singbox=""
     if _profile_cli_subscription_url "$sub_token" >/dev/null 2>&1; then
       sub_url="$base/sub/$sub_token"
+      # Тот же токен — другое тело ответа (content negotiation в subhttp).
+      sub_url_clash="${sub_url}?target=clash"
+      sub_url_singbox="${sub_url}?target=singbox"
     fi
 
     jq -n \
@@ -13382,6 +13851,7 @@ profiles_command() {
       --arg created "$created" --arg sub_token "$sub_token" \
       --argjson multi_route "$multi_route" --argjson routes "$rcount" \
       --argjson pq "$pq" --arg subscription_url "$sub_url" \
+      --arg subscription_url_clash "$sub_url_clash" --arg subscription_url_singbox "$sub_url_singbox" \
       --argjson expire "$expire" --arg expire_date "$expire_date" \
       --argjson expire_disabled "$expire_disabled" \
       --argjson traffic_used "$traffic_used" --argjson traffic_limit "$traffic_limit" \
@@ -13392,6 +13862,8 @@ profiles_command() {
         fingerprint: $fingerprint, sni: $sni, created: $created,
         sub_token: $sub_token, multi_route: $multi_route, routes: $routes,
         pq_enabled: $pq, subscription_url: $subscription_url,
+        subscription_url_clash: $subscription_url_clash,
+        subscription_url_singbox: $subscription_url_singbox,
         expire: $expire, expire_date: $expire_date, expire_disabled: $expire_disabled,
         expire_supported: true, backends: $backends,
         traffic_used: $traffic_used, traffic_limit: $traffic_limit,
