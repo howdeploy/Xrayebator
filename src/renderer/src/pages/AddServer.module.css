@@ -25,6 +25,30 @@
   align-items: center;
 }
 
+/* Подсказка о host key: футером карточки прогресса. margin-top: auto прижимает
+   её к низу — карточка растянута на высоту формы, и низ иначе пустует. */
+.statusNote {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.statusNote > svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--success);
+}
+
+.statusNote > span {
+  min-width: 0;
+}
+
 .body {
   display: grid;
   grid-template-columns: 480px minmax(0, 1fr);
@@ -35,7 +59,15 @@
 .form {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 14px;
+}
+
+/* IP и SSH-порт в одну строку: порт — три символа, отдельная строка под него
+   была самой дорогой пустотой формы. */
+.row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 104px;
+  gap: 12px;
 }
 
 .form :global(input:focus),
@@ -45,7 +77,6 @@
 }
 
 .deployBtn {
-  margin-top: 8px;
   font-weight: 600;
 }
 
@@ -113,7 +144,7 @@
 
 .choice small {
   color: var(--text-2);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.35;
 }
 
@@ -292,6 +323,13 @@
   background: color-mix(in srgb, var(--warning) 8%, var(--bg-2));
 }
 
+.logHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .logTitle {
   font-size: 12px;
   font-weight: 600;
@@ -299,6 +337,15 @@
   letter-spacing: 0.06em;
   color: var(--text-2);
   opacity: 0.8;
+}
+
+.logNotice {
+  font-size: 12px;
+  color: var(--danger);
+}
+
+.logNotice[data-ok='true'] {
+  color: var(--success);
 }
 
 .logPanel {
@@ -311,6 +358,10 @@
   border: 1px solid var(--border);
   font-family: var(--font-mono);
   font-size: 12px;
+  /* body { user-select: none }: лог — то, что оператор несёт в чат поддержки,
+     поэтому его текст обязан выделяться мышью. */
+  user-select: text;
+  cursor: text;
 }
 
 .logLine {

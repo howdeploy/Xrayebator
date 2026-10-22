@@ -36,22 +36,35 @@ promise that installer and updater paths behave identically.
 
 ## Validation suite
 
-`validation/` contains exactly 28 scripts. Run every `validation/test-*.sh`; the current set is:
+`validation/` contains exactly 42 scripts. Run every `validation/test-*.sh`; the current set is:
 
 | Script | What it checks |
 |---|---|
 | `test-audit-functional.sh` | Functional P0/P1 regressions from the HowDeploy integration audit |
 | `test-audit-privilege-regressions.sh` | Privilege boundaries, certificate ownership, rollback and HAPP setup regressions |
+| `test-traffic-limit-cli.sh` | Per-profile traffic accounting: limit-unit normalization, delta accumulation and watermark reset, immediate ban/unban with the flow preserved, `expire` × traffic cross-guards, the Stats inbound migration with a port collision, the traffic fields of the `profiles` output, migration registration |
+| `test-alerts-monitor.sh` | Monitoring Telegram alerts: `alerts-setup/status/enable/disable/test`, no config saved when the test is undelivered, the timer units and migration, service and backend detection (hysteria2, AWG), the subscription and its degradation to `http_tls`, the SNI probe (partial/full unreachability, recovery, interval, retry without a repeated probe), the reboot edge trigger |
+| `test-subscription-formats.sh` | Subscription formats: normalization of `vless://` (7 transports) and `hysteria2://`, IPv6/percent-decoding, Clash/mihomo YAML (reality-opts, flow, packet-encoding, grpc-opts, hysteria2, PyYAML validation when available), sing-box JSON through `jq`, PQ and xhttp skipping with a reason, edge cases (no live routes, PQ only), content negotiation in the handler heredoc, migration registration and the `profiles` CLI contract |
+| `test-channel-test-cli.sh` | `channel-test` CLI: the link → client-config seam, free SOCKS port picking and the JSON contract (the network run itself is live-only) |
+| `test-jq-keyword-compat.sh` | jq 1.6 compatibility: `label: $label` style object pairs are a syntax error on jq 1.6 (Ubuntu 22.04, Debian 12), so the route label travels as `$lbl` |
+| `test-pq-routes.sh` | PQ route on any transport: a dedicated inbound with `decryption`, ML-KEM in the link, the ordinary route untouched, the single-route shape expanded before appending, the port union used by delete, duplicate refusal |
+| `test-sni-reachability.sh` | Default SNI selection: an unreachable candidate is replaced by a reachable one, total unreachability keeps the previous default, one probe per SNI per run, the strict TLS 1.3 + HTTP criterion checked against real `openssl` output, candidate order (head of the list, then global fallbacks), and the required second attempt |
+| `test-dns01-certbot.sh` | DNS-01 (Cloudflare/Route53): domain/provider validation (IP addresses and single-label local names rejected), certbot argument assembly per provider (plugin, credentials, propagation, deploy-hook, `-m` vs email-less registration), `0600` credentials content per provider, an nginx vhost **without** `listen 80` and ACME location, CLI validation errors that write nothing to disk, and the static wiring (dispatcher, menu item, plugin packages, UFW port, `domain_tls` markers, the certbot manifest, uninstall cleanup) |
 | `test-bbr-removal-migration.sh` | Safe removal of the retired BBR/TCP tuning |
 | `test-profile-revoke-expire-cli.sh` | Subscription revoke (token-only and uuid rotation, foreign clients on shared ports survive) and profile expiry (disable/enable, rebuild without a snapshot, idempotent `expire-check`) |
 | `test-cascade-routing.sh` | Cascade routing configuration |
 | `test-cascade-upstream-import.sh` | Cascade upstream import from a VLESS link |
 | `test-dead-stealth-route-pruning.sh` | Pruning dead stealth routes |
 | `test-fingerprint-subscription-sync.sh` | Fingerprint changes and subscription synchronisation |
-| `test-happ-subscription-static.sh` | Static HAPP subscription handler behavior |
+| `test-happ-subscription-static.sh` | Static HAPP subscription handler behavior (routing placeholders, schema validation order) |
+| `test-happ-client-routing.sh` | HAPP client split-profile: generator from bypass bundles (258 domains, placeholders, `geoip:ru`), nginx proxy buffers, menu wiring |
+| `test-legacy-profile-port-sync.sh` | Legacy profiles without `routes` still receive SNI/port sync updates |
 | `test-installer-network-fallbacks.sh` | Installer network and resolver fallbacks |
 | `test-legacy-udp443-migration.sh` | One-time removal of the legacy UDP/443 block |
-| `test-main-menu-numbering.sh` | Consecutive menu numbering and matching handlers |
+| `test-main-menu-numbering.sh` | Consecutive menu numbering and matching handlers (1..14 including the backend items and monitoring) |
+| `test-backend-registry.sh` | Backend registry (multi-protocol stage): source-mode registry CRUD via `safe_jq_write`, installed/field reads, the lifecycle choke point as a safe no-op, `backend-status` JSON shape |
+| `test-hysteria2-lifecycle.sh` | Hysteria 2 backend: `server.yaml` renderer (userpass map, placeholder fallback), systemd unit security model, arch mapping, TLS detection, grants/revocation/expire-restore events, deleted-regen with a pre-removed profile file, created-is-a-no-op (no auto-grant), pure `hysteria2://` builder, CLI dispatch and subscription wiring |
+| `test-awg-lifecycle.sh` | AmneziaWG backend: the Amnezia-default junk dialect (Jc=5, Jmin=10, Jmax=50, H1–H4=1..4, S1–S4 unique), key generation, server conf renderer (PostUp MASQUERADE, no peers at install), peer address allocation, client `.conf` contents, revoke/expire/restore events, deleted-regen with a pre-removed profile file, created-is-a-no-op (no auto-grant), CLI dispatch |
 | `test-main-readiness-regressions.sh` | Main-menu readiness and first-run regression checks |
 | `test-multiroute-argument-preservation.sh` | Preservation of multiroute transport arguments |
 | `test-port-change-cli.sh` | Port-change CLI scenarios, firewall moves and route selection |
@@ -61,6 +74,7 @@ promise that installer and updater paths behave identically.
 | `test-quickstart-email-and-inspect.sh` | Explicit `quickstart` email mode (`--without-email` without a fake address) and the read-only invariants of `inspect --json` |
 | `test-quickstart-migration-parity.sh` | Parity between quickstart and main-menu migrations |
 | `test-quickstart-subscription-port.sh` | Ensures quickstart uses the canonical subscription base helper and does not regress to an unrelated hardcoded URL |
+| `test-quickstart-tls-fallback.sh` | The http_tls graceful-degradation branch: SUB_TLS_MODE switching, HTTP-only vhost (no ssl, no proxy), mode-aware markers, the ip_tls-only renew timer and degraded JSON metadata |
 | `test-sni-change-cli.sh` | SNI-change JSON output, transport fields, profile sync and rollback |
 | `test-subscription-server-name.sh` | HAPP subscription display name |
 | `test-transaction-safety.sh` | Transactional safety of configuration operations |
@@ -96,29 +110,56 @@ sudo systemctl status xrayebator-sub --no-pager -l
 curl -sS -i http://127.0.0.1:8080/sub/                            # expected: 404
 jq -r '.routes[] | [.label,.transport,.port,(.pq_enabled // false)] | @tsv' \
   /usr/local/etc/xray/profiles/<profile>.json
+sudo xrayebator channel-test --name <profile>                     # real traffic through every route
 ```
+
+`channel-test` is the only check that proves a route actually carries traffic: it starts a local Xray
+client from each subscription link and pushes an HTTP request through it, reporting `ok`, `http` and
+latency per route, PQ routes included. Run it twice — the first run right after an Xray restart pays
+connection warm-up (a live profile went from ~5.1 s to ~150 ms on the second run), so a single slow
+measurement is not evidence of a broken channel.
 
 The local subscription self-test must return `404` without a token and `200` with a valid token and
 VLESS lines. Check that a newly provisioned standard HAPP profile has `schema_version: 3` and seven
-live routes while the published list intentionally contains six. An existing profile reused by HAPP
+live routes, and that the HAPP body publishes all seven: the PQ route is no longer filtered out of it
+(the base64 body for v2rayNG/v2rayN drops PQ routes instead, so it carries six). An existing profile reused by HAPP
 setup may only satisfy the seven-live-route minimum, so inspect its actual labels and schema; a
 migration does not retrofit missing routes. If UFW is already active, compare the numbered rules
 before and after an operation: the installer adds the fixed project service TCP list and must not
 change the default policy, while uninstall should remove only rules recorded as owned.
 
+For the optional backends, a disposable VPS run should additionally cover: `hysteria2-install
+--grant-all` (service active, UDP listener present, grant in `server.yaml`), `awg-install
+--grant-all` (module in `lsmod`, `awg show awg0` shows the peer), a `profile-revoke` cycle rotating
+both grants, an expire/restore cycle, and both subscription bodies containing exactly one
+`hysteria2://` line per granted profile. CI covers the renderers, registry integration and dispatch
+wiring with mocked binaries; the package installation itself (network, DKMS build, real systemctl)
+and a real client connection are live-server checks by design.
+
 ## Electron GUI unit tests
 
-The active Electron GUI has exactly fourteen Vitest unit files:
+The active Electron GUI has exactly twenty-five Vitest unit files:
 
 | Test | What it checks |
 |---|---|
+| `tests/unit/awg-shared.test.ts` | AWG shared helpers: `.conf` parsing, comment stripping, `vpn://` body/URL builder and the qCompress round-trip |
+| `tests/unit/backend-manager.test.ts` | Backend status JSON and AWG conf parsing (hysteria2 + awg, 3.1 flags) |
+| `tests/unit/calendar.test.ts` | Calendar grid helpers: local (non-UTC-shifted) ISO dates, month cells, navigation bounds |
 | `tests/unit/countryFlag.test.ts` | Country-flag lookup used by server cards |
+| `tests/unit/clipboard.test.ts` | Clipboard helper: a refused copy returns `false` instead of rejecting, so the UI never claims a silent success (all three failure modes) |
 | `tests/unit/deployer.test.ts` | Quickstart argument building: provided/without email mode, no fake address, validation only in provided mode |
+| `tests/unit/expire.test.ts` | Expiry badge states, server-local date rendering and the disabled-flag precedence |
+| `tests/unit/traffic.test.ts` | Traffic limit helpers: input parsing and validation (`500MB`/`1.5GB`/`2TB`/`none`), usage and limit formatting, chip description (the 80% warn tone and the exhausted state), limit-to-input conversion |
 | `tests/unit/extractJson.test.ts` | JSON extraction from noisy `xrayebator` command output |
 | `tests/unit/probe-ports.test.ts` | Ports used by the Dashboard reachability probe |
 | `tests/unit/server-inspector.test.ts` | Inspection normalization: public vs local-only/unreachable subscription, partial and refused-import states |
+| `tests/unit/dns01.test.ts` | DNS-01 (Cloudflare/Route53) validation: domain rules, token and AWS key/secret shapes, cli argument assembly and readiness |
+| `tests/unit/gui-cache-wiring.test.ts` | Wiring of the GUI caches: a server page is opened with the card re-read from the store, and the Keys page resolves expiry through the cache |
+| `tests/unit/i18n-parity.test.ts` | Key parity of the three locales (ru/en/zh) |
+| `tests/unit/server-keys-render.test.ts` | Server keys page SSR: the cached expiry date is present in the very first render, and a profile absent from both sources shows no line |
+| `tests/unit/server-settings-render.test.ts` | Server settings SSR: connection gate markup, the settings section contract, and a smoke render of the separate Server profiles page |
 | `tests/unit/server-manager.test.ts` | Safe update-branch validation |
-| `tests/unit/server-store.test.ts` | Idempotent import upsert by host+port, credential-reference counting |
+| `tests/unit/server-store.test.ts` | Idempotent import upsert by host+port, credential-reference counting, the per-profile expiry cache (full-set writes, deleted profile disappears) |
 | `tests/unit/shell-command.test.ts` | POSIX shell quoting and sudo command construction |
 | `tests/unit/ssh-access.test.ts` | SSH credential validation, approved key access and the keychain resolution order |
 | `tests/unit/ssh-client.test.ts` | Host-key trust, authentication and mismatch handling |
@@ -149,8 +190,8 @@ provide useful local coverage, while CI runs the Electron typecheck and unit sui
 The workflows have separate responsibilities:
 
 - `.github/workflows/ci-linux.yml` is the Bash core gate on `ubuntu-24.04`: it installs `jq`,
-  `uuid-runtime` and `ripgrep`, runs all four Bash syntax checks, then runs all 28 validation
-  scripts.
+  `uuid-runtime` and `ripgrep`, runs all four Bash syntax checks, then runs every
+  `validation/test-*.sh` script (42 at the time of writing).
 - `.github/workflows/release.yml` is the active Electron release path for `v*` tags or manual runs.
   A `preflight` job first checks that the release notes file `docs/releases/<tag>.en.md` exists and
   that the `AP3X0` repository secret (if set) can actually create releases — it probes with a draft

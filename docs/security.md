@@ -68,6 +68,27 @@ Left to the operator:
 - do not host third-party panels or proxies on the same domain without understanding the nginx
   configuration.
 
+## Multi-protocol backend security
+
+Optional backends (Hysteria 2, AmneziaWG) follow the same trust model as the Xray service, with
+per-backend refinements:
+
+| Path or class | Owner and access |
+|---|---|
+| `/usr/local/etc/xrayebator/backends.json` | `root:root 644` — deliberately secret-free (ports, versions, flags only); the `xray` service account reads it from the subscription handler |
+| `/usr/local/etc/xrayebator/backends/hysteria/` | `root:hysteria 750`; `server.yaml` and certificates `0640 root:hysteria` — the service must read them, nothing else touches them |
+| `/usr/local/etc/xrayebator/backends/awg/` | `root:root 700`; `awg0.conf` and `server-params.json` `0600` — server private keys and peer secrets |
+| Hysteria placeholder credential | `_xrayebator_placeholder` with a random password in a `0600` file; exists only so the auth map is never empty, not used by any issued client |
+| certbot renewal deploy-hook | `/etc/letsencrypt/renewal-hooks/deploy/xrayebator-hysteria.sh`, root-owned `0755`; copies renewed certificates into the backend dir and restarts the backend |
+| `/etc/amnezia/amneziawg/awg0.conf` | a symlink to the managed file — the distro `awg-quick@awg0` unit reads through it; no second copy of the config exists |
+
+Hysteria runs as the dedicated `hysteria` user with `AmbientCapabilities=CAP_NET_BIND_SERVICE` and
+`NoNewPrivileges=true`; the QUIC buffer sysctls live in `/etc/sysctl.d/99-xrayebator-hysteria.conf`.
+AmneziaWG requires `net.ipv4.ip_forward=1` (its own sysctl file) and adds MASQUERADE/FORWARD rules
+through the interface config's `PostUp`/`PostDown`, scoped to the backend's subnet. Backend
+services are installed only on explicit operator action and removed with the corresponding
+`*-uninstall` command; `uninstall.sh` is not involved.
+
 ## SSH access to the VPS
 
 Xrayebator can be installed straight from `root`, but a dedicated user with narrowly scoped sudo is
@@ -128,10 +149,13 @@ A distinct sudo password and an encrypted key's passphrase are never persisted; 
 
 The GUI does persist the server metadata needed to return to a server, including the host, SSH port,
 username, authentication method, privilege mode, credential ids, display key name and installation
-diagnostics, plus preferences, the `subscription_url`, fetched `vless://` links and the SHA-256 SSH
-host-key pin. The subscription URL and VLESS links are bearer credentials, so protect the local
-Electron application data and revoke the subscription (Server settings) if they leak; a full
-revocation rotates the client key as well, so already-downloaded configs stop working. Removing the last server card that
+diagnostics, plus preferences, the `subscription_url`, fetched `vless://` links, the Hysteria 2 links,
+AWG client configs, the Clash/sing-box links, per-profile expiry dates and the SHA-256 SSH host-key
+pin — the latter four groups exist so the Keys page paints instantly instead of waiting for an SSH
+round-trip. The subscription URL, VLESS links, Hysteria 2 links and AWG configs are bearer
+credentials, so protect the local Electron application data and revoke the subscription (Server
+settings) if they leak; a full revocation rotates the client key as well, so already-downloaded
+configs stop working. Removing the last server card that
 references a credential deletes that keychain entry; entries shared with another card are kept.
 
 Existing and imported servers can also be managed read-only: importing over SSH recognizes Xrayebator

@@ -16,6 +16,25 @@
   gap: 12px;
 }
 
+/* Переключатель дополнительных форматов (Clash/mihomo, sing-box) — справа в
+   шапке. Основной набор ключей он не трогает: по умолчанию на странице те же
+   ссылки, что и раньше, а форматы появляются вторым видом по кнопке. */
+.formatsToggleWrap {
+  margin-left: auto;
+  flex: 0 0 auto;
+  display: inline-flex;
+}
+
+.formatsToggle {
+  flex: 0 0 auto;
+}
+
+.formatsToggle[aria-pressed='true'] {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-1));
+}
+
 .title {
   font-size: 24px;
   font-weight: 600;
@@ -45,6 +64,10 @@
 }
 
 .empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
   padding: 40px;
   text-align: center;
   color: var(--text-2);
@@ -77,6 +100,98 @@
   display: flex;
   gap: 8px;
   margin-top: 10px;
+}
+
+/* Другие форматы той же подписки (Clash/mihomo YAML, sing-box JSON): категория на
+   странице ключей, а не в настройках профиля. Внутри — те же моно-URL и действия,
+   что у остальных ключей: раньше это были две непрозрачные кнопки без ссылки. */
+.formatProfile {
+  padding: 10px 0;
+}
+
+.formatProfile + .formatProfile {
+  border-top: 1px solid var(--border);
+}
+
+.formatProfileName {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-0);
+  margin-bottom: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.formatItem + .formatItem {
+  margin-top: 10px;
+}
+
+.formatItemHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.formatLabel {
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.formatActions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.keyNote {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--text-2);
+  line-height: 1.5;
+}
+
+.keyConfPre {
+  margin: 0 0 4px;
+  padding: 10px 12px;
+  background: var(--bg-1, rgba(127, 127, 127, 0.08));
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 220px;
+  overflow-y: auto;
+  user-select: text;
+}
+
+.keysFields {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.keysField {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.keysFieldLabel {
+  color: var(--text-2);
+  min-width: 76px;
+  flex: none;
+}
+
+.keysFieldValue {
+  font-family: var(--font-mono);
+  user-select: text;
+  word-break: break-all;
 }
 
 .copyAllBtn {

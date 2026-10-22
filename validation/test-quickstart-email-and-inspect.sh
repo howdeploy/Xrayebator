@@ -62,4 +62,27 @@ if grep -Eq 'apt-get|safe_jq_write|systemctl (restart|enable|stop|start)|open_fi
   fail "inspect_command обязан быть read-only"
 fi
 
-echo "✓ inspect зарегистрирован, печатает JSON и остаётся read-only"
+# Сводка бэкендов: map_values, а НЕ with_entries с правкой .value справа от «|=».
+# Справа от «|=» входом уже является значение записи, поэтому `.value.installed` читает
+# несуществующее поле «value» внутри записи → `// false` → installed:false всегда.
+# Живой дефект 2026-10-20: inspect отдавал installed:false/version:null обоим бэкендам,
+# хотя registry содержал installed:true и backend-status в тот же момент показывал true.
+if grep -Fq 'with_entries(.value |=' <<< "$inspect_block"; then
+  fail "inspect_command: with_entries(.value |= …) ломает чтение полей записи — нужен map_values"
+fi
+grep -Fq 'map_values(' <<< "$inspect_block" \
+  || fail "inspect_command должен собирать сводку бэкендов через map_values"
+
+# И семантика самого jq-выражения: на реальной записи реестра installed не теряется.
+registry_sample='{"hysteria2":{"installed":true,"version":"v2.13.0","port":443,"unit":"u"},
+                  "awg":{"installed":true,"version":"kernel-dkms","port":51997,"junk":{"Jc":5}}}'
+summary=$(jq -c 'map_values({installed: (.installed // false),
+  version: (.version // null), port: (.port // null)})' <<< "$registry_sample")
+jq -e '.hysteria2.installed == true and .hysteria2.version == "v2.13.0"
+       and .hysteria2.port == 443 and .awg.port == 51997' <<< "$summary" >/dev/null \
+  || fail "сводка бэкендов теряет поля записи реестра: $summary"
+# Секретов в сводке нет: junk/ключи не проходят через белый список полей.
+jq -e 'has("hysteria2") and (.hysteria2 | keys | sort) == ["installed","port","version"]' \
+  <<< "$summary" >/dev/null || fail "сводка бэкендов обязана отдавать только installed/version/port"
+
+echo "✓ inspect зарегистрирован, печатает JSON, сводка бэкендов читает реестр и остаётся read-only"

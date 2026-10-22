@@ -83,7 +83,7 @@
 
 .choice small {
   color: var(--text-2);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.35;
 }
 
@@ -129,7 +129,7 @@
   display: block;
   margin-top: 6px;
   color: var(--text-2);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.4;
 }
 
@@ -142,7 +142,7 @@
   border-radius: 9px;
   background: var(--bg-1);
   color: var(--text-2);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.45;
   overflow-wrap: anywhere;
 }

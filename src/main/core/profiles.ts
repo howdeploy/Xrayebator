@@ -3,6 +3,9 @@ import { shellCommand } from './shell-command'
 import { describeFailure, isUnknownCommandFailure, unknownCommandHint } from './cli-failure'
 import type {
   ProfileExpireResult,
+  ProfileLimitResult,
+  ProfilePqInput,
+  ProfilePqResult,
   ProfileRevokeResult,
   ServerProfile
 } from '@shared/types'
@@ -378,6 +381,79 @@ export class ProfileManager {
         name: payload.name,
         expire: payload.expire,
         expired: payload.expired,
+        error: payload.error
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      return { ok: false, error: message }
+    }
+  }
+
+  async setLimit(input: {
+    name: string
+    limit?: string | number | null
+    reset?: boolean
+  }): Promise<ProfileLimitResult> {    try {
+      const args = ['profile-limit', '--name', input.name]
+      if (input.limit !== undefined && input.limit !== null && input.limit !== '') {
+        args.push('--limit', String(input.limit))
+      }
+      if (input.reset) args.push('--reset')
+      const stdout = await this.run(args)
+      const payload = extractJson(stdout) as {
+        ok?: boolean
+        name?: string
+        traffic_limit?: number
+        traffic_used?: number
+        traffic_disabled?: boolean
+        error?: string
+      }
+      return {
+        ok: payload.ok === true,
+        name: payload.name,
+        traffic_limit: payload.traffic_limit,
+        traffic_used: payload.traffic_used,
+        traffic_disabled: payload.traffic_disabled,
+        error: payload.error
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      return { ok: false, error: message }
+    }
+  }
+
+  /**
+   * Пост-квантовый маршрут (VLESS Encryption, mlkem768x25519plus). VLESS `decryption`
+   * — свойство инбаунда, поэтому сервер поднимает для маршрута отдельный инбаунд/порт;
+   * в v2ray/base64-подписке такой маршрут скрыт, клиенту нужен ML-KEM (HAPP, Xray 25.6+).
+   */
+  async addPq(input: ProfilePqInput): Promise<ProfilePqResult> {
+    try {
+      const stdout = await this.run([
+        'profile-pq',
+        '--name',
+        input.name,
+        '--transport',
+        input.transport
+      ])
+      const payload = extractJson(stdout) as {
+        ok?: boolean
+        name?: string
+        transport?: string
+        port?: number
+        pq?: boolean
+        link?: string
+        note?: string
+        error?: string
+      }
+      return {
+        ok: payload.ok === true,
+        name: payload.name,
+        transport: payload.transport,
+        port: payload.port,
+        pq: payload.pq,
+        link: payload.link,
+        note: payload.note,
         error: payload.error
       }
     } catch (err) {

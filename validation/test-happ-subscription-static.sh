@@ -37,8 +37,12 @@ grep -Fq 'elif [[ "$path" =~ ^/sub/([a-f0-9]{32})/(geoip|geosite)\.dat$ ]]' "$SU
   || fail "strict token-protected geo asset route is missing"
 grep -Fq '[[ -n "$asset" ]] && serve_geo_asset "$asset"' "$SUBHTTP_TMP" \
   || fail "authenticated geo asset route does not reach the file handler"
-grep -q '_happ_validate_routing_json_file' "$SUBHTTP_TMP" \
+# PR #22: подстановка плейсхолдеров до валидации, валидация — runtime
+# `_happ_validate_routing_json` (после подстановки), а не _file-вариант.
+grep -q '_happ_validate_routing_json' "$SUBHTTP_TMP" \
   || fail "custom HAPP routing JSON must be schema-validated"
+grep -q '{{GEOIP_URL}}' "$SUBHTTP_TMP" \
+  || fail "custom HAPP routing placeholders are not substituted per request"
 grep -q '_happ_default_routing_json' "$SUBHTTP_TMP" \
   || fail "managed HAPP routing profile is not generated"
 grep -Fq "routing_b64=\$(printf '%s' \"\$routing_json\" | base64 -w0)" "$SUBHTTP_TMP" \

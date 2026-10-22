@@ -6,20 +6,30 @@
   --border: rgba(255, 255, 255, 0.08);
   --text-0: #e6edf3;
   --text-1: #adbac7;
-  --text-2: #768390;
+  /* #768390 давал ≈3.9:1 на --bg-2 — ниже WCAG AA (4.5:1) для мелких хинтов
+     11–13px. #8b949e — родной GitHub-серый, ≈5.7:1. */
+  --text-2: #8b949e;
 
   --accent: #58a6ff;
   --accent-glow: rgba(88, 166, 255, 0.35);
   --success: #3fb950;
   --warning: #d29922;
   --danger: #f85149;
+  /* Деструктивные «софт»-кнопки (удалить профиль, снять бэкенд, отозвать ключи).
+     HeroUI по умолчанию заливает их 15% --danger поверх фона, а текст смешивает с
+     основным цветом. Просили: текст не трогать (он был нормальный), а сделать
+     краснее именно фон — поэтому переопределяем только фон, foreground остаётся
+     дефолтным HeroUI. Красим через transparent, как в исходнике, чтобы сквозь заливку
+     читалась карточка. */
+  --danger-soft: color-mix(in srgb, var(--danger) 24%, transparent);
+  --danger-soft-hover: color-mix(in srgb, var(--danger) 32%, transparent);
 
   --radius-sm: 8px;
   --radius-md: 12px;
   --radius-lg: 20px;
 
---font: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
---font-mono: 'Cascadia Code', Consolas, 'Courier New', monospace;
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'Cascadia Code', Consolas, 'Courier New', monospace;
 
   --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.3);
   --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.45);

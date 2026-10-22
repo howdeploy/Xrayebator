@@ -35,7 +35,15 @@
 .form {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 14px;
+}
+
+/* Хост и SSH-порт — в одну строку, как на странице развёртки: порт короткий,
+   отдельная строка под него только удлиняла форму. */
+.row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 104px;
+  gap: 12px;
 }
 
 .form :global(input:focus),
@@ -52,7 +60,6 @@
 }
 
 .importBtn {
-  margin-top: 8px;
   font-weight: 600;
 }
 
@@ -189,6 +196,13 @@
   background: color-mix(in srgb, var(--warning) 8%, var(--bg-2));
 }
 
+.logHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .logTitle {
   font-size: 12px;
   font-weight: 600;
@@ -196,6 +210,15 @@
   letter-spacing: 0.06em;
   color: var(--text-2);
   opacity: 0.8;
+}
+
+.logNotice {
+  font-size: 12px;
+  color: var(--danger);
+}
+
+.logNotice[data-ok='true'] {
+  color: var(--success);
 }
 
 .logPanel {
@@ -208,6 +231,9 @@
   border: 1px solid var(--border);
   font-family: var(--font-mono);
   font-size: 12px;
+  /* body { user-select: none }; лог импорта — то, что копируют в чат поддержки. */
+  user-select: text;
+  cursor: text;
 }
 
 .logLine {

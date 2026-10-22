@@ -140,4 +140,66 @@ describe('deploy readiness', () => {
     expect(payload).toMatchObject({ host: 'vps.example', port: 2222, emailMode: 'without' })
     expect(payload.email).toBeUndefined()
   })
+
+  it('keeps deploy disabled until the DNS-01 set is complete', () => {
+    const base = { host: 'vps', port: '22', emailMode: 'without' as const, email: '' }
+    // Тумблер включён, но домена/токена нет: сервер вернул бы ok:false уже после
+    // установки Xray, поэтому кнопка обязана остаться выключенной.
+    expect(isDeployReady({ ...base, dns01Enabled: true }, readyAccess)).toBe(false)
+    expect(
+      isDeployReady({ ...base, dns01Enabled: true, dns01Domain: 'sub.example.com' }, readyAccess)
+    ).toBe(false)
+    expect(
+      isDeployReady(
+        {
+          ...base,
+          dns01Enabled: true,
+          dns01Domain: 'sub.example.com',
+          dns01Provider: 'cloudflare',
+          dns01Token: 'short'
+        },
+        readyAccess
+      )
+    ).toBe(false)
+    expect(
+      isDeployReady(
+        {
+          ...base,
+          dns01Enabled: true,
+          dns01Domain: 'sub.example.com',
+          dns01Provider: 'route53',
+          dns01AwsKeyId: 'AKIAIOSFODNN7EXAMPLE',
+          dns01AwsSecret: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'
+        },
+        readyAccess
+      )
+    ).toBe(true)
+  })
+
+  it('sends pq and dns01 only when the operator opted in', () => {
+    const base = { host: 'vps', port: '22', emailMode: 'without' as const, email: '' }
+    const plain = buildDeployPayload(base, readyAccess)
+    expect(plain.pq).toBeUndefined()
+    expect(plain.dns01).toBeUndefined()
+
+    const optedIn = buildDeployPayload(
+      {
+        ...base,
+        pq: true,
+        dns01Enabled: true,
+        dns01Domain: ' sub.example.com ',
+        dns01Provider: 'cloudflare',
+        dns01Token: 'abcdefghijklmnopqrst'
+      },
+      readyAccess
+    )
+    expect(optedIn.pq).toBe(true)
+    expect(optedIn.dns01).toEqual({
+      domain: 'sub.example.com',
+      provider: 'cloudflare',
+      token: 'abcdefghijklmnopqrst',
+      awsKeyId: '',
+      awsSecret: ''
+    })
+  })
 })

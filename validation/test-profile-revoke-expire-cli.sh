@@ -119,6 +119,32 @@ jq -e --arg u "$rotated_uuid" '
 jq -e '.uuid == "'"$rotated_uuid"'" and .sub_token == "'"$full_token"'"' \
   "$PROFILES_DIR/friend.json" >/dev/null || fail "profile JSON not updated with rotated uuid"
 
+# --- 2b. Revoke --full на SINGLE-ROUTE профиле: у него routes отсутствуют —
+# прежнее выражение (.routes // []) |= map(...) было невалидным path в jq
+# («Invalid path expression with result []») и роняло полный отзыв.
+cp "$CONFIG_FILE" "$WORKDIR/config.before-solo.json"
+SOLO_UUID="33333333-3333-4333-8333-333333333333"
+jq -n --arg uuid "$SOLO_UUID" '{
+  name: "solo", uuid: $uuid, transport: "xhttp", port: 9955,
+  sub_token: "cccccccccccccccccccccccccccccccc"
+}' > "$PROFILES_DIR/solo.json" || fail "fixture solo"
+jq -n --arg uuid "$SOLO_UUID" '{
+  inbounds: [{port: 9955, tag: "inbound-9955", settings: {clients: [{id: $uuid, flow: ""}], decryption: "none"}}],
+  routing: {rules: []}
+}' > "$CONFIG_FILE" || fail "fixture solo config"
+out=$(profile_revoke_command --name solo --full) || fail "revoke --full (single-route) failed: $out"
+jq -e '.ok == true and .full == true' <<< "$out" >/dev/null || fail "single-route full bad JSON: $out"
+solo_uuid=$(jq -r '.uuid' <<< "$out")
+[[ "$solo_uuid" =~ ^[0-9a-fA-F-]{36}$ && "$solo_uuid" != "$SOLO_UUID" ]] ||
+  fail "single-route revoke --full did not rotate uuid: $out"
+jq -e --arg u "$solo_uuid" '[.inbounds[].settings.clients[].id] | index($u) != null' \
+  "$CONFIG_FILE" >/dev/null || fail "single-route full revoke: new uuid missing in config"
+jq -e --arg old "$SOLO_UUID" '[.inbounds[].settings.clients[].id] | index($old) == null' \
+  "$CONFIG_FILE" >/dev/null || fail "single-route full revoke: old uuid still in config"
+# восстанавливаем состояние секции 2 для последующих проверок
+rm -f "$PROFILES_DIR/solo.json"
+cp "$WORKDIR/config.before-solo.json" "$CONFIG_FILE"
+
 # --- 3. profiles JSON: календарная дата приходит из часового пояса сервера ---
 # Сервер в UTC-7 называет момент окончания 30 сентября, хотя в UTC и у клиента
 # в Москве это уже 1 октября. GUI должен показывать серверную календарную дату.

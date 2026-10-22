@@ -13,9 +13,12 @@ for file in xrayebator install.sh update.sh; do
   grep -q -- '--http1.1' "$path" || fail "$file: HTTP/1.1 fallback missing"
 done
 
-if grep -Eiq \
+# Собственные drop-in'ы бэкендов (/etc/sysctl.d/99-xrayebator-*.conf) — не
+# host-wide тюнинг: uninstall снимает их вместе с Hysteria/AWG.
+if grep -Ei \
   'BBR|XRAY_TCP_TUNING|tcp_congestion_control|default_qdisc|/etc/sysctl|(^|[;&|[:space:]])sysctl([[:space:]]|$)' \
-  "$REPO_ROOT/install.sh" "$REPO_ROOT/uninstall.sh"; then
+  "$REPO_ROOT/install.sh" "$REPO_ROOT/uninstall.sh" \
+  | grep -Fv '/etc/sysctl.d/99-xrayebator-' >/dev/null; then
   fail "install/uninstall must not configure or remove host-wide TCP/sysctl tuning"
 fi
 grep -q 'migrate_remove_legacy_tcp_tuning_v3' "$REPO_ROOT/update.sh" \

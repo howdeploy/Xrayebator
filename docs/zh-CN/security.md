@@ -43,7 +43,7 @@ Xray 以系统用户 `xray` 运行。Drop-in
 
 - 32 位十六进制令牌，由 `openssl rand -hex 16` 生成；
 - 没有有效令牌访问 `/sub/` 一律返回相同的 `404`；
-- 没有活跃线路的配置档返回 `410`，不提供线路；
+- 没有活跃线路的配置档返回 `410`，不提供线路；部分过期的多线路配置档仍可能以 `200` 返回剩余线路；
 - 已过期或被停用的配置档同样返回 `410 Gone`（`Profile expired or disabled`），完全不提供线路——即使用户端尚未刷新订阅；
 - nginx 添加 `Cache-Control: no-store`，并为订阅 location 限流；
 - 根路径与 `/sub/` 之外的路径返回 `404`；
@@ -56,6 +56,25 @@ Xray 以系统用户 `xray` 运行。Drop-in
 - 把每条保存的 `vless://` 链接也视为 credential；
 - 不要把 local-only URL 交给外部客户端；
 - 没有理解 nginx 配置前，不要在同一域名上托管第三方面板或代理。
+
+## 多协议后端安全
+
+可选后端（Hysteria 2、AmneziaWG）遵循与 Xray 服务相同的信任模型，并按后端细化：
+
+| 路径或类别 | 属主与权限 |
+|---|---|
+| `/usr/local/etc/xrayebator/backends.json` | `root:root 644` —— 刻意不含机密（只有端口、版本、开关）；`xray` 服务账户在订阅处理器中读取它 |
+| `/usr/local/etc/xrayebator/backends/hysteria/` | `root:hysteria 750`；`server.yaml` 与证书 `0640 root:hysteria` —— 服务必须能读，其他任何人不触碰 |
+| `/usr/local/etc/xrayebator/backends/awg/` | `root:root 700`；`awg0.conf` 与 `server-params.json` 为 `0600` —— 服务器私钥与 peer 机密 |
+| Hysteria 占位凭据 | `_xrayebator_placeholder`，随机密码存于 `0600` 文件；仅用于避免空 auth 映射，不签发给任何客户端 |
+| certbot 续期 deploy-hook | `/etc/letsencrypt/renewal-hooks/deploy/xrayebator-hysteria.sh`，root `0755`；把续期后的证书复制进后端目录并重启后端 |
+| `/etc/amnezia/amneziawg/awg0.conf` | 指向受管文件的 symlink —— 发行版 `awg-quick@awg0` 单元经它读取；不存在第二份配置副本 |
+
+Hysteria 以专用用户 `hysteria` 运行，带 `AmbientCapabilities=CAP_NET_BIND_SERVICE` 与
+`NoNewPrivileges=true`；QUIC 缓冲 sysctl 位于 `/etc/sysctl.d/99-xrayebator-hysteria.conf`。
+AmneziaWG 需要 `net.ipv4.ip_forward=1`（独立 sysctl 文件），并通过接口配置的
+`PostUp`/`PostDown` 添加作用于后端子网的 MASQUERADE/FORWARD 规则。后端仅在操作者显式操作时
+安装，通过对应 `*-uninstall` 命令移除；`uninstall.sh` 不参与此流程。
 
 ## VPS 的 SSH 访问
 
@@ -104,7 +123,7 @@ TCPKeepAlive yes
 
 如果系统钥匙串不可用，应用不会在磁盘上保存明文回退副本：密钥只保留在 main process 内存中直到应用退出，界面会提示重启后需要重新选择。SSH 登录密码仅在首次成功登录后保存到系统钥匙串并可继续复用；单独的 sudo 密码和加密私钥口令不持久化，需要时重新输入。
 
-GUI 会保存返回服务器所需的元数据：主机、SSH 端口、用户名、认证方式、权限模式、credential id（密码与私钥）、密钥显示名、安装诊断、偏好、`subscription_url`、获取到的 `vless://` 链接以及 SHA-256 SSH host-key pin。订阅 URL 和 VLESS 链接是 bearer credentials，因此请保护本地 Electron 应用数据，泄露后在服务器设置中吊销订阅（完全吊销会同时更换客户端密钥，已下载的配置随即失效）。删除最后一张引用某 credential 的服务器卡片时会删除钥匙串记录；若其他卡片仍引用则保留。
+GUI 会保存返回服务器所需的元数据：主机、SSH 端口、用户名、认证方式、权限模式、credential id（密码与私钥）、密钥显示名、安装诊断、偏好、`subscription_url`、获取到的 `vless://` 链接、Hysteria 2 链接、AWG 客户端配置、Clash/sing-box 链接、各配置档的有效期以及 SHA-256 SSH host-key pin（后四组的存在是为了让「密钥」页面瞬时渲染，而不必等待 SSH 往返）。订阅 URL、VLESS 链接、Hysteria 2 链接与 AWG 配置是 bearer credentials，因此请保护本地 Electron 应用数据，泄露后在服务器设置中吊销订阅（完全吊销会同时更换客户端密钥，已下载的配置随即失效）。删除最后一张引用某 credential 的服务器卡片时会删除钥匙串记录；若其他卡片仍引用则保留。
 
 SSH 导入只识别 Xrayebator，并默认只执行只读诊断；部分配置的服务器会按实际状态导入，不会自动修复。部署时 email 可选；不填写时 Certbot 使用 `--register-unsafely-without-email`，因此没有续期通知和 ACME 账户邮箱恢复，GUI 会在部署前说明。
 

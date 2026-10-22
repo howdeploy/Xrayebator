@@ -25,6 +25,7 @@ echo -e "${NC}\n"
 echo -e "${YELLOW}Это действие удалит:${NC}"
 echo -e "  ${BLUE}•${NC} Xray-core и все его компоненты"
 echo -e "  ${BLUE}•${NC} Все профили и конфигурации"
+echo -e "  ${BLUE}•${NC} Дополнительные протоколы (Hysteria 2 / AmneziaWG), если установлены"
 echo -e "  ${BLUE}•${NC} Приложение xrayebator"
 echo -e "  ${BLUE}•${NC} Сгенерированные ключи Reality"
 echo ""
@@ -39,7 +40,7 @@ if [[ "$confirmation" != "yes" ]]; then
 fi
 
 echo ""
-echo -e "${BLUE}[1/7]${NC} ${YELLOW}Остановка сервисов (Xray + HAPP subscription)...${NC}"
+echo -e "${BLUE}[1/7]${NC} ${YELLOW}Остановка сервисов (Xray + HAPP subscription + бэкенды)...${NC}"
 systemctl stop xray > /dev/null 2>&1
 systemctl disable xray > /dev/null 2>&1
 systemctl stop xrayebator-sub.service > /dev/null 2>&1
@@ -95,7 +96,58 @@ if systemctl list-unit-files 'xrayebator-expire.*' > /dev/null 2>&1; then
     rm -f /etc/systemd/system/xrayebator-expire.service
     rm -f /etc/systemd/system/xrayebator-expire.timer
 fi
+# Таймер учёта трафика профилей: та же причина — дёргал бы удалённый
+# xrayebator traffic-check каждые 5 минут.
+if systemctl list-unit-files 'xrayebator-traffic.*' > /dev/null 2>&1; then
+    systemctl disable --now xrayebator-traffic.timer > /dev/null 2>&1 || true
+    systemctl stop xrayebator-traffic.service > /dev/null 2>&1 || true
+    rm -f /etc/systemd/system/xrayebator-traffic.service
+    rm -f /etc/systemd/system/xrayebator-traffic.timer
+fi
+# Таймер мониторинга сервера (Telegram-алерты): дёргал бы удалённый
+# xrayebator monitor-check каждые 15 минут.
+if systemctl list-unit-files 'xrayebator-monitor.*' > /dev/null 2>&1; then
+    systemctl disable --now xrayebator-monitor.timer > /dev/null 2>&1 || true
+    systemctl stop xrayebator-monitor.service > /dev/null 2>&1 || true
+    rm -f /etc/systemd/system/xrayebator-monitor.service
+    rm -f /etc/systemd/system/xrayebator-monitor.timer
+fi
+# apt-certbot.timer мог быть отключён нами (он не умеет --ip-address, а shortlived
+# IP-линию вёл snap-certbot) — см. _apt_certbot_timer_disable. Возвращаем его на
+# место: после удаления Xrayebator это снова штатный таймер системы. Флаг читаем
+# ДО удаления каталога.
+APT_CERTBOT_TIMER_WAS_DISABLED=false
+if [[ -f /usr/local/etc/xray/.apt_certbot_timer_disabled ]]; then
+    APT_CERTBOT_TIMER_WAS_DISABLED=true
+fi
+# Бэкенды мультипротокола живут вне /usr/local/etc/xray, поэтому их нужно погасить
+# ДО удаления каталога состояния: иначе uninstall оставляет включёнными
+# hysteria-server.service и awg-quick@awg0 с конфигами, которых уже нет, и первая
+# же перезагрузка даёт два failed-юнита. Пакеты/модуль не трогаем — так же, как
+# awg-uninstall/hysteria2-uninstall.
+if systemctl list-unit-files 'hysteria-server.service' > /dev/null 2>&1; then
+    systemctl disable --now hysteria-server.service > /dev/null 2>&1 || true
+fi
+rm -f /etc/systemd/system/hysteria-server.service
+rm -f /etc/sysctl.d/99-xrayebator-hysteria.conf
+rm -f /etc/letsencrypt/renewal-hooks/deploy/xrayebator-hysteria.sh
+rm -f /usr/local/bin/hysteria 2>/dev/null || true
+rm -f /usr/local/bin/hysteria.bak.* 2>/dev/null || true
+
+if systemctl list-unit-files 'awg-quick@awg0.service' > /dev/null 2>&1; then
+    systemctl disable --now awg-quick@awg0.service > /dev/null 2>&1 || true
+fi
+ip link del awg0 > /dev/null 2>&1 || true
+rm -f /etc/amnezia/amneziawg/awg0.conf 2>/dev/null || true
+rm -f /etc/sysctl.d/99-xrayebator-awg.conf 2>/dev/null || true
+rm -f /etc/modules-load.d/xrayebator-awg.conf 2>/dev/null || true
 rm -rf /usr/local/etc/xray
+if [[ "$APT_CERTBOT_TIMER_WAS_DISABLED" == "true" ]]; then
+    systemctl enable --now certbot.timer > /dev/null 2>&1 || true
+fi
+# Нейтральный корень мультипротокольных бэкендов и алертов (registry, секреты
+# Hysteria/AWG, токен Telegram-бота) — вне /usr/local/etc/xray, чистим отдельно.
+rm -rf /usr/local/etc/xrayebator
 rm -rf /var/log/xray
 echo -e "${GREEN}✓ Конфигурации и логи удалены${NC}\n"
 
@@ -164,6 +216,11 @@ if command -v certbot > /dev/null 2>&1 && [[ -n "$CERTBOT_SNAPSHOT" && -f "$CERT
 fi
 rm -f /tmp/xrayebator-certbot-owned.?????? 2>/dev/null || true
 rm -rf /var/www/xrayebator-ip-acme /var/www/xrayebator-selfsteal-acme 2>/dev/null
+# DNS-01: credentials провайдера (Cloudflare API-token / AWS-ключи) — секреты,
+# созданные Xrayebator, поэтому уходят вместе с ним. Сами сертификаты уже сняты
+# через манифест certbot выше.
+rm -f /etc/letsencrypt/xrayebator-dns01-cloudflare.ini \
+      /etc/letsencrypt/xrayebator-dns01-aws.ini 2>/dev/null || true
 # Убираем и webroot и защищаем: certbot delete уже удалил certs/keys/accounts.
 # UFW ownership определяется только root-owned манифестом. Порт в Xray config
 # ничего не говорит о том, кто создал firewall rule. Формат новых записей:

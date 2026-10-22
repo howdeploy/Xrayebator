@@ -231,6 +231,9 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* body { user-select: none }; endpoint вида root@host:22 оператор копирует
+     руками — в том числе чтобы вставить в терминал. */
+  user-select: text;
 }
 
 .statLabel {

@@ -150,9 +150,13 @@ compgen -G "$XRAY_BACKUPS_DIR/host-tuning-v3.*/99-xrayebator-tcp.conf" >/dev/nul
   || fail "failed live switch did not preserve a backup"
 [[ ! -e "$MARKER" ]] || fail "failed live switch created a marker"
 
-if grep -Eiq \
+# Запрет — на host-wide TCP-тюнинг. Собственные drop-in'ы бэкендов
+# (/etc/sysctl.d/99-xrayebator-*.conf: UDP-буферы Hysteria/AWG, их снимает
+# uninstall) к нему не относятся и отфильтровываются отдельно.
+if grep -Ei \
   'XRAY_TCP_TUNING|tcp_congestion_control|default_qdisc|/etc/sysctl|(^|[;&|[:space:]])sysctl([[:space:]]|$)' \
-  "$REPO_ROOT/install.sh" "$REPO_ROOT/update.sh" "$REPO_ROOT/uninstall.sh"; then
+  "$REPO_ROOT/install.sh" "$REPO_ROOT/update.sh" "$REPO_ROOT/uninstall.sh" \
+  | grep -Fv '/etc/sysctl.d/99-xrayebator-' >/dev/null; then
   fail "install/update/uninstall contain host TCP tuning outside the one-time runtime migration"
 fi
 if grep -Eq \

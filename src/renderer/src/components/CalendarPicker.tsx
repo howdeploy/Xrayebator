@@ -32,7 +32,7 @@ export function CalendarPicker({
   disabled = false,
   min
 }: CalendarPickerProps): React.JSX.Element {
-  const { i18n } = useTranslation()
+  const { t, i18n } = useTranslation()
   const locale = i18n.language || 'ru'
   const minIso = min ?? todayIso()
 
@@ -47,6 +47,21 @@ export function CalendarPicker({
   const weekdays = useMemo(() => weekdayLabels(locale), [locale])
   const today = todayIso()
 
+  // aria-label дня — та же дата, что видит оператор (локальный формат): иначе
+  // скринридер читает только число «17» без месяца.
+  const dayLabel = (iso: string): string => {
+    const [y, m, d] = iso.split('-')
+    let readable = iso
+    try {
+      readable = new Intl.DateTimeFormat(locale, { dateStyle: 'long' }).format(
+        new Date(Number(y), Number(m) - 1, Number(d))
+      )
+    } catch {
+      readable = iso
+    }
+    return t('calendar.pickDay', { date: readable })
+  }
+
   const move = (delta: number): void => {
     const [year, month0] = shiftMonth(cursor.year, cursor.month0, delta)
     setCursor({ year, month0 })
@@ -60,7 +75,7 @@ export function CalendarPicker({
           className={styles.navBtn}
           disabled={disabled || !canGoBack(cursor.year, cursor.month0, minIso)}
           onClick={() => move(-1)}
-          aria-label="previous month"
+          aria-label={t('calendar.previousMonth')}
         >
           <ChevronLeft size={16} />
         </button>
@@ -70,7 +85,7 @@ export function CalendarPicker({
           className={styles.navBtn}
           disabled={disabled}
           onClick={() => move(1)}
-          aria-label="next month"
+          aria-label={t('calendar.nextMonth')}
         >
           <ChevronRight size={16} />
         </button>
@@ -99,6 +114,8 @@ export function CalendarPicker({
               }`}
               disabled={disabled || past}
               onClick={() => onChange(iso)}
+              aria-label={dayLabel(iso)}
+              aria-current={isSelected ? 'date' : undefined}
             >
               {Number(iso.slice(8, 10))}
             </button>

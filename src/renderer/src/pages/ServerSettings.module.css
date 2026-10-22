@@ -40,11 +40,41 @@
   }
 }
 
+/* Кнопка «Готово»: зелёный из экрана деплоя — тот же цвет и та же рамка, что у
+   .step.done (текст --success, рамка rgba(63,185,80,.35)), плюс заливка 14%, чтобы
+   кнопка именно «становилась зелёной». Свечение убрано: box-shadow 14px размывал
+   кнопку и читался как незавершённое состояние. Галочка появляется тем же popIn,
+   что галочка выполненного шага деплоя (.stepCheck). */
 .btnSuccess {
-  border-color: var(--success) !important;
+  /* Обводка как у готового шага деплоя (.step.done): 1px rgba(63,185,80,.35).
+     border-color недостаточно: у кнопки HeroUI рамки может не быть вовсе
+     (border-width: 0), и цвет рисовать нечего. outline с offset:-1px даёт ту же
+     линию внутри габарита кнопки, поэтому она видна всегда и НЕ меняет размер
+     (иначе кнопка выросла бы на 2px в момент успеха). */
+  border-color: rgba(63, 185, 80, 0.35) !important;
+  outline: 1px solid rgba(63, 185, 80, 0.35);
+  outline-offset: -1px;
   color: var(--success) !important;
   background: color-mix(in srgb, var(--success) 14%, var(--bg-2)) !important;
-  box-shadow: 0 0 14px color-mix(in srgb, var(--success) 30%, transparent);
+  transition: color 0.3s, background 0.3s, border-color 0.3s;
+}
+
+.btnSuccess svg {
+  animation: btnSuccessPop 0.35s ease;
+}
+
+@keyframes btnSuccessPop {
+  0% {
+    opacity: 0;
+    transform: scale(0.5) rotate(-12deg);
+  }
+  60% {
+    transform: scale(1.1) rotate(3deg);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) rotate(0deg);
+  }
 }
 
 .iconDownloading {
@@ -59,6 +89,105 @@
   50% {
     transform: translateY(4px);
   }
+}
+
+/* Выбор ветки обновления — HeroUI Dropdown (тот же паттерн, что на дашборде):
+   раньше это был самодельный div-поповер без закрытия по клику вне/Escape и без
+   focus-менеджмента, да ещё и с неопределённой переменной var(--text) в стилях. */
+.updateTrigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  gap: 6px;
+  height: 34px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text-1);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 0 10px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+  transform: none !important;
+}
+
+.updateTrigger:hover {
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+  background: var(--bg-3);
+}
+
+.updateTrigger[data-pressed='true'],
+.updateTrigger[data-focus-visible='true'],
+.updateTrigger:active {
+  transform: none !important;
+  scale: none !important;
+}
+
+.updateTriggerLabel {
+  white-space: nowrap;
+}
+
+.updateTriggerChevron {
+  display: block;
+  color: var(--text-2);
+  flex-shrink: 0;
+}
+
+.updatePopover[data-slot='dropdown-popover'] {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-lg);
+  min-width: 260px;
+  padding: 6px;
+}
+
+/* Пункты меню выглядят как прежний поповер: текст по левому краю, без «пилюль»,
+   подсветка только под курсором/фокусом. HeroUI по умолчанию центрирует текст
+   кнопки-пункта и даёт каждому пункту собственный фон и scale при нажатии. */
+.updatePopover[data-slot='dropdown-popover'] [data-slot='menu-item'] {
+  border-radius: 8px;
+  padding: 8px 10px;
+  min-height: 0;
+  gap: 0;
+  background: transparent;
+  transform: none;
+}
+
+.updatePopover[data-slot='dropdown-popover'] [data-slot='menu-item']:hover,
+.updatePopover[data-slot='dropdown-popover'] [data-slot='menu-item'][data-hovered='true'],
+.updatePopover[data-slot='dropdown-popover'] [data-slot='menu-item'][data-focus='true'] {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.updatePopover[data-slot='dropdown-popover'] [data-slot='menu-item']:active,
+.updatePopover[data-slot='dropdown-popover'] [data-slot='menu-item'][data-pressed='true'] {
+  transform: none;
+}
+
+.updateItem {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  max-width: 320px;
+  text-align: left;
+  font-weight: 500;
+}
+
+.updateItemHint {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-2);
+  text-align: left;
+  white-space: normal;
+}
+
+.updateItemBeta {
+  color: var(--warning);
 }
 
 .header {
@@ -103,6 +232,62 @@
   gap: 20px;
 }
 
+/* Разделы настроек. Раньше это была одна стена из пяти секций в общем скролле:
+   до списка профилей (90% визитов) приходилось прокручивать подключение и форму
+   создания. Панели скрываются атрибутом hidden, а не размонтированием: введённое
+   имя/счётчик не теряются при переключении вкладки. */
+.sectionTabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 4px;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.sectionTab {
+  flex: 1 1 auto;
+  min-width: 120px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text-1);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.sectionTab:hover {
+  background: var(--bg-2);
+  color: var(--text-0);
+}
+
+.sectionTabActive,
+.sectionTabActive:hover {
+  background: var(--bg-2);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  color: var(--text-0);
+}
+
+
+.sectionPane {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.sectionPane[hidden] {
+  display: none;
+}
+
 .connectCard,
 .createCard,
 .listCard {
@@ -110,6 +295,282 @@
   border: 1px solid var(--border);
   border-radius: 16px;
   padding: 18px 20px;
+}
+
+/* --- Мультипротокольные бэкенды (этап 2) --- */
+/* Один общий бокс, внутри — блоки протоколов один под другим. */
+.backendBlock {
+  padding: 2px 0 10px;
+}
+
+.backendBlock + .backendBlock {
+  margin-top: 2px;
+}
+
+.backendHead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.backendIcon {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  overflow: hidden;
+  /* Тинт протокола приходит переменными от .backendIconHyst/.backendIconAwg —
+     их же читает бейдж окна (.actionsHeadIcon), поэтому порядок правил в файле
+     больше не решает, какой фон победит. */
+  background: var(--badge-tint, transparent);
+  color: var(--badge-ink, inherit);
+}
+
+.backendIconHyst {
+  --badge-tint: rgba(250, 204, 21, 0.14);
+  --badge-ink: #facc15;
+}
+
+.backendIconAwg {
+  --badge-tint: rgba(56, 189, 248, 0.14);
+  --badge-ink: #38bdf8;
+}
+
+/* Логотипы протоколов: SVG Hysteria — вписан, JPG Amnezia — заливает бейдж */
+.backendIconSvg {
+  width: 24px;
+  height: 20px;
+  object-fit: contain;
+}
+
+.backendIconImg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.backendTitle {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.backendName {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.backendSub {
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.backendState {
+  font-size: 12px;
+  color: var(--text-2);
+  margin-bottom: 6px;
+}
+
+.backendStateOk {
+  color: var(--success, #2fb344);
+}
+
+/* Установлен, но не работает (юнит не активен): это ошибка, а не «серое
+   неизвестно» — туннель лежит, пока бэкенд не поднят. */
+.backendStateDown {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.backendStateHint {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-2);
+}
+
+/* Единая внутренняя выемка на ОБА бэкенда — как затемнённые inner-box ключей. */
+.backendsInner {
+  background: var(--bg-1, rgba(127, 127, 127, 0.1));
+  border-radius: 12px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.backendBlock {
+  display: flex;
+  flex-direction: column;
+}
+
+.backendNote {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-2);
+  line-height: 1.5;
+}
+
+.backendActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* --- Создание профилей бэкендов (карточки под транспортом) --- */
+.backendCreate {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.backendCreateGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.backendCreateCard {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+  font-family: var(--font);
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--bg-1);
+  color: var(--text-1);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.backendCreateCard:hover:not(:disabled) {
+  color: var(--text-0);
+  border-color: var(--accent);
+}
+
+.backendCreateCard:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.backendCreateText {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.backendCreateName {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-0);
+}
+
+.backendCreateDesc {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-2);
+}
+
+.backendCreateCardActive {
+  background: color-mix(in srgb, var(--accent) 11%, var(--bg-1));
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.backendCreateCardActive .backendCreateName {
+  color: color-mix(in srgb, var(--accent) 70%, var(--text-0));
+}
+
+/* --- Бэкенд-боксы профилей в списке --- */
+/* Самостоятельные боксы уровня карточки профиля (сиблинги во Fragment),
+   а не вложенные sub-rows: «основной бокс + боксы протоколов рядом». */
+.backendProfileCard {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.backendProfileHead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.backendProfileTitle {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.backendProfileSub {
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+@media (max-width: 720px) {
+  .backendCreateGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.backendSkeleton {
+  height: 76px;
+  border-radius: 12px;
+  margin-bottom: 10px;
+  background: linear-gradient(
+    90deg,
+    var(--bg-2) 25%,
+    var(--bg-1, rgba(127, 127, 127, 0.14)) 50%,
+    var(--bg-2) 75%
+  );
+  background-size: 200% 100%;
+  animation: backendSkeleton 1.4s ease infinite;
+}
+
+@keyframes backendSkeleton {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+.keysQrModal {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(8px);
+  z-index: 300;
+}
+
+.keysQrModal img {
+  padding: 16px;
+  background: #fff;
+  border-radius: var(--radius-md);
 }
 
 .hint {
@@ -289,6 +750,21 @@
   align-self: end;
 }
 
+/* Кнопка создания — в конце формы (после выбора протокола и бэкенда) с пояснением,
+   почему она неактивна. */
+.createFooter {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.createDisabledHint {
+  font-size: 12px;
+  color: var(--text-2);
+}
+
 .createPreview {
   display: flex;
   flex-direction: column;
@@ -330,7 +806,7 @@
 }
 
 .createPreviewHint {
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.4;
   color: var(--text-2);
 }
@@ -350,9 +826,14 @@
 
 .profileCard {
   display: flex;
+  /* Строка действий не сжимается и не переносится — раньше она выдавливала блок
+     профиля в столбик шириной в букву: URL рвался по символам, бейджи вставали
+     вертикально. Теперь карточка переносит строку действий целиком, а блок профиля
+     держит минимальную ширину. */
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 12px 16px;
   background: var(--bg-1);
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -361,10 +842,323 @@
 
 .profileMain {
   min-width: 0;
+  flex: 1 1 320px;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  flex: 1;
+}
+
+/* ── Страница «Существующие профили»: шапка, поиск, иконка и статус строки ── */
+
+.profilesHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.profilesHeadText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* Поиск и фильтр прижаты вправо и растягиваются: на широком окне поиск
+   занимает свободное место, на узком — уходит на следующую строку. */
+.profilesTools {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex: 1 1 420px;
+  min-width: 0;
+}
+
+.profilesSearch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 260px;
+  min-width: 0;
+  max-width: 380px;
+  padding: 0 12px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.profilesSearchIcon {
+  display: inline-flex;
+  color: var(--text-2);
+}
+
+.profilesFilter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 12px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text-1);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.profilesFilterLabel {
+  white-space: nowrap;
+}
+
+/* Сколько карточек реально показано: профили плюс карточки их бэкендов. */
+/* ── Карточка «Подписка и TLS»: свёрнутая шапка + сетка значений ── */
+
+.subCard {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 16px 18px;
+}
+
+.subHead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.subHead:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+  border-radius: 10px;
+}
+
+.subIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--accent);
+}
+
+.subHeadText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.subTitle {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-0);
+}
+
+.subSubtitle {
+  font-size: 12px;
+  color: var(--text-2);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Режим подписки — бейдж рядом с заголовком, а не подпись в общем ряду:
+   ip_tls/domain_tls читаются как «всё в порядке», http_tls — предупреждение. */
+.subTitleRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.subMode {
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.subModeOk {
+  border-color: color-mix(in srgb, var(--success, #3fb950) 45%, var(--border));
+  background: color-mix(in srgb, var(--success, #3fb950) 12%, transparent);
+  color: var(--success, #3fb950);
+}
+
+.subModeWarn {
+  border-color: color-mix(in srgb, var(--warning, #d29922) 45%, var(--border));
+  background: color-mix(in srgb, var(--warning, #d29922) 12%, transparent);
+  color: var(--warning, #d29922);
+}
+
+.subChevron {
+  display: inline-flex;
+  margin-left: auto;
+  color: var(--text-2);
+  transition: transform 0.15s ease;
+}
+
+.subChevronOpen {
+  transform: rotate(180deg);
+}
+
+.subGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px 18px;
+  margin: 0;
+  padding: 12px 0 0;
+  border-top: 1px solid var(--border);
+}
+
+.subRow {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.subLabel {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.subValue {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-0);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Значение — в боксе на всю ширину колонки: короткие «—» и «6 дн.» больше не
+   выглядят прилипшими к левому краю узкой плашки, все три колонки одинаковы. */
+.subValueBox {
+  align-self: stretch;
+  width: 100%;
+  max-width: 100%;
+  padding: 3px 9px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-align: center;
+}
+
+.subValueWarn {
+  color: var(--warning, #d29922);
+}
+
+.subNotice {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--warning, #d29922) 35%, var(--border));
+  background: color-mix(in srgb, var(--warning, #d29922) 10%, transparent);
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-1);
+}
+
+.subActions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.subForm {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.profilesFooter {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+
+.profilesSearchInput {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 9px 0;
+  background: transparent;
+  border: 0;
+  color: var(--text-0);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+.profilesSearchInput::placeholder {
+  color: var(--text-2);
+}
+
+.profileIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--accent);
+}
+
+.profileIconOff {
+  opacity: 0.55;
+}
+
+.profileStatus {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--success, #3fb950);
+}
+
+.profileStatusDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.profileStatusOff {
+  color: var(--text-2);
 }
 
 .profileNameRow {
@@ -383,10 +1177,34 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
+  /* Строка метаданных держится в одну линию: чипы не сжимаются, а домен
+     уступает первым и обрезается многоточием — иначе на средней ширине окна
+     вся строка уезжала на второй ряд. */
+  flex-wrap: nowrap;
+  min-width: 0;
+  overflow: hidden;
 }
 
+.profileMeta > * {
+  flex: 0 0 auto;
+}
+
+/* Иконка перед значением в чипе: без подписи «до …» и «182 KB» не читались
+   как срок и трафик — приходилось угадывать по формату. */
+.chipWithIcon {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+/* Домен уступает место остальным чипам и обрезается многоточием: он
+   единственный, чью длину нельзя предсказать. */
 .profileSni {
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--text-2);
@@ -397,7 +1215,7 @@
   align-items: flex-start;
   gap: 6px;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-2);
   line-height: 1.4;
   user-select: text;
@@ -413,6 +1231,153 @@
   gap: 8px;
   flex-shrink: 0;
   align-items: center;
+}
+
+/* Строка действий в карточке профиля: переносится и прижимается вправо, чтобы не
+   выдавливать блок профиля (раньше одиннадцать кнопок сжимали его в столбик). */
+.profileRowActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-shrink: 0;
+  align-items: center;
+  margin-left: auto;
+}
+
+/* Окно действий профиля. Раньше это была «одна html-страница»: плоский список
+   из заголовка капсом, абзаца и ряда кнопок, повторённый четыре раза. Теперь
+   каждая группа — выемка в стиле остальных поверхностей приложения (bg-1 +
+   border + radius, как .backendsInner/.keyConfPre), а шапка — бейдж, имя и мета,
+   как в карточке профиля. Кнопки не менялись — только их расстановка. */
+.actionsDialog {
+  max-width: 620px;
+}
+
+.actionsHead {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.actionsHeadIcon {
+  width: 44px;
+  height: 44px;
+  border-radius: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  overflow: hidden;
+  background: var(--badge-tint, color-mix(in srgb, var(--accent) 14%, transparent));
+  color: var(--badge-ink, var(--accent));
+}
+
+/* Логотип протокола — во всю высоту бейджа: растр Amnezia квадратный, поэтому
+   `contain` показывает его максимально крупно (ужимать до 68% было ошибкой —
+   значки в окнах стали мельче, чем в карточках), а широкий SVG Hysteria просто
+   вписывается. Углы подрезает сам бейдж (overflow: hidden). */
+.actionsHeadImg {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.actionsHeadText {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.actionsKicker {
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.actionsTitle {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--text-0);
+}
+
+/* SNI живёт в правом верхнем углу коробки «Маршрут», на одной строке с её
+   заголовком: голое значение без подписи — как раньше под именем профиля, но там
+   оно спорило с названием и в узком окне выглядело обрубком. margin-left:auto
+   прижимает его вправо; длинный хост обрезается, полное значение — в title, чтобы
+   высота строки не зависела от длины SNI. */
+.settingsGroupSni {
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-2);
+  user-select: text;
+}
+
+.actionGroups {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settingsGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+
+.settingsGroupHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settingsGroupIcon {
+  display: flex;
+  flex: none;
+  color: var(--text-2);
+}
+
+.settingsGroupTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-0);
+}
+
+/* Удаление — единственное необратимое действие в окне: группа помечена
+   отдельно, чтобы её не читали как ещё один ряд кнопок. */
+.settingsGroupDanger {
+  background: color-mix(in srgb, var(--danger) 7%, transparent);
+  border-color: color-mix(in srgb, var(--danger) 32%, var(--border));
+}
+
+.settingsGroupDanger .settingsGroupIcon {
+  color: var(--danger);
+}
+
+.settingsHint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+.settingsButtons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 2px;
 }
 
 .protectedProfile {
@@ -538,7 +1503,7 @@
 .revokeNewUrl {
   margin-top: 10px;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   color: var(--success);
   word-break: break-all;
   user-select: text;
@@ -659,7 +1624,7 @@
 }
 
 .fpCardDesc {
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.4;
   color: var(--text-2);
 }
@@ -674,7 +1639,7 @@
 
 .fpNote {
   margin-top: 14px;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.4;
   color: var(--text-2);
 }
@@ -859,7 +1824,7 @@
 }
 
 .portCardDesc {
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.4;
   color: var(--text-2);
 }

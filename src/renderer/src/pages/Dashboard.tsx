@@ -160,6 +160,10 @@ export function Dashboard({
                     className={`${styles.statusDot} ${
                       online[server.id] ? styles.statusDotOnline : styles.statusDotOffline
                     }`}
+                    role="img"
+                    aria-label={
+                      online[server.id] ? t('dashboard.online') : t('dashboard.offline')
+                    }
                   />
                   <div className={styles.cardTitle}>
                     <CountryFlag flag={server.flag} className={styles.flag} />
@@ -178,6 +182,11 @@ export function Dashboard({
                         ? styles.setupBadgePartial
                         : styles.setupBadgeDefault
                   }`}
+                  title={
+                    server.degraded
+                      ? t('dashboard.degradedHint')
+                      : undefined
+                  }
                 >
                   {t(`dashboard.setup.${server.setupStatus ?? 'unknown'}`)}
                 </span>

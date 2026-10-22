@@ -13,6 +13,11 @@ interface SshAccessFormProps {
   onForgetHostKey?: () => void
   /** Ограничивает выбор способа входа (например, только ключ для импорта). */
   allowedAuthMethods?: SshAuthMethod[]
+  /**
+   * Подсказку о host key можно вынести наружу: на странице развёртывания она
+   * стоит в шапке, справа от заголовка, а не отдельной строкой в форме.
+   */
+  showHostKeyNote?: boolean
 }
 
 export function isSshAccessReady(access: SshAccessInput): boolean {
@@ -43,7 +48,8 @@ export function SshAccessForm({
   disabled = false,
   hostKeyFingerprint,
   onForgetHostKey,
-  allowedAuthMethods = ['password', 'privateKey']
+  allowedAuthMethods = ['password', 'privateKey'],
+  showHostKeyNote = true
 }: SshAccessFormProps): React.JSX.Element {
   const { t } = useTranslation()
   const [keyError, setKeyError] = useState<string | null>(null)
@@ -215,24 +221,26 @@ export function SshAccessForm({
         </TextField>
       )}
 
-      <div className={styles.hostKey}>
-        {hostKeyFingerprint ? <ShieldCheck size={15} /> : <ShieldQuestion size={15} />}
-        <span className={styles.hostKeyText}>
-          {hostKeyFingerprint
-            ? t('sshAccess.hostKeyPinned', { fingerprint: hostKeyFingerprint })
-            : t('sshAccess.hostKeyFirstUse')}
-        </span>
-        {hostKeyFingerprint && onForgetHostKey && (
-          <button
-            type="button"
-            className={styles.hostKeyReset}
-            disabled={disabled}
-            onClick={onForgetHostKey}
-          >
-            {t('sshAccess.resetHostKey')}
-          </button>
-        )}
-      </div>
+      {showHostKeyNote && (
+        <div className={styles.hostKey}>
+          {hostKeyFingerprint ? <ShieldCheck size={15} /> : <ShieldQuestion size={15} />}
+          <span className={styles.hostKeyText}>
+            {hostKeyFingerprint
+              ? t('sshAccess.hostKeyPinned', { fingerprint: hostKeyFingerprint })
+              : t('sshAccess.hostKeyFirstUse')}
+          </span>
+          {hostKeyFingerprint && onForgetHostKey && (
+            <button
+              type="button"
+              className={styles.hostKeyReset}
+              disabled={disabled}
+              onClick={onForgetHostKey}
+            >
+              {t('sshAccess.resetHostKey')}
+            </button>
+          )}
+        </div>
+      )}
     </div>
   )
 }

@@ -1,6 +1,13 @@
 import Store from 'electron-store'
 import { randomUUID } from 'node:crypto'
-import type { Server, SshAuthMethod, SshPrivilegeMode, VlessLink } from '@shared/types'
+import type {
+  ProfileExpiryCache,
+  Server,
+  SshAuthMethod,
+  SshPrivilegeMode,
+  SubscriptionFormats,
+  VlessLink
+} from '@shared/types'
 
 interface StoredServer extends Omit<Server, 'id' | 'createdAt'> {
   id: string
@@ -22,6 +29,8 @@ export interface ServerConnectionMetadata {
   privateKeyPersisted?: boolean | null
   passwordCredentialId?: string | null
   passwordPersisted?: boolean | null
+  /** Персистит http_tls-fallback (подписка работает только с server'а). */
+  degraded?: boolean | null
 }
 
 export interface ServerStore {
@@ -34,7 +43,30 @@ export interface ServerStore {
     connection: ServerConnectionMetadata
   ) => StoredServer
   updateKeys: (id: string, keys: VlessLink[]) => StoredServer | undefined
+  /** Персистит бэкенд-ключи: hysteria2-ссылки и AWG-конфиги per-profile. */
+  updateBackendKeys: (
+    id: string,
+    payload: { hysteria2Keys?: string[]; awgConfs?: Record<string, string> }
+  ) => StoredServer | undefined
   updateConnection: (id: string, input: ServerConnectionMetadata) => StoredServer | undefined
+  /**
+   * Персистит ссылки форматов клиентов (Clash/sing-box) per-profile. Пишется
+   * ПОЛНЫМ набором: ссылки выводятся из списка профилей, поэтому удалённый
+   * профиль обязан исчезнуть и из кэша.
+   */
+  updateSubscriptionFormats: (
+    id: string,
+    formats: Record<string, SubscriptionFormats>
+  ) => StoredServer | undefined
+  /**
+   * Персистит сроки профилей (имя → expire/expire_date). Как и форматы,
+   * пишется ПОЛНЫМ набором: сроки выводятся из списка профилей, поэтому
+   * удалённый профиль обязан исчезнуть и из кэша.
+   */
+  updateProfileExpiry: (
+    id: string,
+    expiry: Record<string, ProfileExpiryCache>
+  ) => StoredServer | undefined
   countCredentialReferences: (credentialId: string, exceptId?: string) => number
   clearCredentialReference: (id: string) => StoredServer | undefined
   countPasswordCredentialReferences: (credentialId: string, exceptId?: string) => number
@@ -60,11 +92,18 @@ function normalizeServer(server: StoredServer, hostKeys: Record<string, string>)
     privateKeyPersisted: server.privateKeyPersisted ?? null,
     passwordCredentialId: server.passwordCredentialId ?? null,
     passwordPersisted: server.passwordPersisted ?? null,
-    setupStatus: server.setupStatus ?? (server.subscriptionUrl ? 'ready' : 'unknown'),
+    setupStatus:
+      server.setupStatus ??
+      (server.subscriptionUrl ? 'ready' : 'unknown'),
+    degraded: server.degraded ?? false,
     diagnostics: server.diagnostics ?? null,
     hostKeyFingerprint:
       hostKeys[hostKeyId(server.host, server.port)] ?? server.hostKeyFingerprint ?? null,
-    keys: server.keys ?? []
+    keys: server.keys ?? [],
+    hysteria2Keys: server.hysteria2Keys ?? [],
+    awgConfs: server.awgConfs ?? {},
+    subscriptionFormats: server.subscriptionFormats ?? {},
+    profileExpiry: server.profileExpiry ?? {}
   }
 }
 
@@ -136,6 +175,9 @@ export function createServerStore(): ServerStore {
         subscriptionUrl: input.subscriptionUrl || existing?.subscriptionUrl || '',
         keys: input.keys?.length ? input.keys : existing?.keys ?? [],
         routesCount: input.routesCount ?? existing?.routesCount ?? null,
+        setupStatus: input.setupStatus ?? existing?.setupStatus ?? undefined,
+        diagnostics: input.diagnostics ?? existing?.diagnostics ?? null,
+        degraded: input.degraded ?? existing?.degraded ?? false,
         id: existing?.id ?? randomUUID(),
         createdAt: existing?.createdAt ?? new Date().toISOString(),
         hostKeyFingerprint: existingNormalized?.hostKeyFingerprint ?? input.hostKeyFingerprint ?? null
@@ -152,6 +194,24 @@ export function createServerStore(): ServerStore {
       const idx = servers.findIndex((s) => s.id === id)
       if (idx === -1) return undefined
       const updated: StoredServer = { ...servers[idx], keys }
+      const next = [...servers]
+      next[idx] = updated
+      store.set('servers', next)
+      return updated
+    },
+
+    updateBackendKeys(
+      id: string,
+      payload: { hysteria2Keys?: string[]; awgConfs?: Record<string, string> }
+    ): StoredServer | undefined {
+      const servers = store.get('servers')
+      const idx = servers.findIndex((s) => s.id === id)
+      if (idx === -1) return undefined
+      const updated: StoredServer = {
+        ...servers[idx],
+        hysteria2Keys: payload.hysteria2Keys ?? servers[idx].hysteria2Keys ?? [],
+        awgConfs: payload.awgConfs ?? servers[idx].awgConfs ?? {}
+      }
       const next = [...servers]
       next[idx] = updated
       store.set('servers', next)
@@ -181,6 +241,34 @@ export function createServerStore(): ServerStore {
             ? input.passwordPersisted
             : servers[idx].passwordPersisted ?? null
       }
+      const next = [...servers]
+      next[idx] = updated
+      store.set('servers', next)
+      return normalizeServer(updated, store.get('hostKeys'))
+    },
+
+    updateSubscriptionFormats(
+      id: string,
+      formats: Record<string, SubscriptionFormats>
+    ): StoredServer | undefined {
+      const servers = store.get('servers')
+      const idx = servers.findIndex((s) => s.id === id)
+      if (idx === -1) return undefined
+      const updated: StoredServer = { ...servers[idx], subscriptionFormats: formats }
+      const next = [...servers]
+      next[idx] = updated
+      store.set('servers', next)
+      return normalizeServer(updated, store.get('hostKeys'))
+    },
+
+    updateProfileExpiry(
+      id: string,
+      expiry: Record<string, ProfileExpiryCache>
+    ): StoredServer | undefined {
+      const servers = store.get('servers')
+      const idx = servers.findIndex((s) => s.id === id)
+      if (idx === -1) return undefined
+      const updated: StoredServer = { ...servers[idx], profileExpiry: expiry }
       const next = [...servers]
       next[idx] = updated
       store.set('servers', next)

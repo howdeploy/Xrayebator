@@ -1,16 +1,17 @@
 import { useEffect, useRef, useState } from 'react'
 import { Button, TextField, Label, Input, Spinner } from '@heroui/react'
-import { CheckCircle2, Circle, Mail, MailX } from 'lucide-react'
+import { CheckCircle2, Circle, Copy, Mail, MailX, ShieldCheck, ShieldQuestion, Zap } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type {
   DeployEvent,
   DeployStep,
-  EmailMode,
   Server,
   SshAccessInput
 } from '@shared/types'
+import { isDns01Ready } from '@shared/dns01'
 import { SshAccessForm } from '../components/SshAccessForm'
-import { buildDeployPayload, isDeployReady } from './deploy-readiness'
+import { copyText } from '../lib/clipboard'
+import { buildDeployPayload, dns01FromForm, isDeployReady, type DeployFormState } from './deploy-readiness'
 import styles from './AddServer.module.css'
 
 interface AddServerProps {
@@ -28,12 +29,7 @@ const STEP_ORDER: DeployStep[] = [
   'save'
 ]
 
-interface FormState {
-  host: string
-  port: string
-  emailMode: EmailMode
-  email: string
-}
+interface FormState extends DeployFormState {}
 
 export function AddServer({ onDone, onBack }: AddServerProps): React.JSX.Element {
   const { t } = useTranslation()
@@ -41,7 +37,16 @@ export function AddServer({ onDone, onBack }: AddServerProps): React.JSX.Element
     host: '',
     port: '22',
     emailMode: 'provided',
-    email: ''
+    email: '',
+    // PQ и DNS-01 — осознанный opt-in: PQ-порт бесполезен для клиента без ML-KEM,
+    // а DNS-01 требует домена и токена, которых у большинства пользователей нет.
+    pq: false,
+    dns01Enabled: false,
+    dns01Provider: 'cloudflare',
+    dns01Domain: '',
+    dns01Token: '',
+    dns01AwsKeyId: '',
+    dns01AwsSecret: ''
   })
   const [access, setAccess] = useState<SshAccessInput>({
     username: 'root',
@@ -55,8 +60,20 @@ export function AddServer({ onDone, onBack }: AddServerProps): React.JSX.Element
   const [stepLabels, setStepLabels] = useState<Partial<Record<DeployStep, string>>>({})
   const [log, setLog] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [logNotice, setLogNotice] = useState<string | null>(null)
   const currentStepRef = useRef<DeployStep | null>(null)
   const logPanelRef = useRef<HTMLDivElement>(null)
+
+  /**
+   * Лог — главный инструмент диагностики: его копируют в чат поддержки целиком,
+   * вместе с финальной строкой ошибки, которой в самом массиве log нет.
+   */
+  const copyLog = async (): Promise<void> => {
+    const text = [...log, ...(error ? [`> ${error}`] : [])].join('\n')
+    const ok = await copyText(text)
+    setLogNotice(ok ? t('deploy.logCopied') : t('deploy.logCopyFailed'))
+    setTimeout(() => setLogNotice(null), 2200)
+  }
 
   useEffect(() => {
     const panel = logPanelRef.current
@@ -137,9 +154,18 @@ export function AddServer({ onDone, onBack }: AddServerProps): React.JSX.Element
 
       <div className={styles.body}>
         <div className={styles.form}>
-          {input(t('deploy.host'), 'host', '185.23.xx.xx')}
-          {input(t('deploy.port'), 'port', '22')}
-          <SshAccessForm value={access} onChange={setAccess} disabled={deploying} />
+          {/* IP и порт — одна строка: порт короткий, отдельная строка под него
+              отнимала у формы 78px по вертикали. */}
+          <div className={styles.row}>
+            {input(t('deploy.host'), 'host', '185.23.xx.xx')}
+            {input(t('deploy.port'), 'port', '22')}
+          </div>
+          <SshAccessForm
+            value={access}
+            onChange={setAccess}
+            disabled={deploying}
+            showHostKeyNote={false}
+          />
 
           <div className={styles.fieldGroup}>
             <span className={styles.groupLabel}>{t('deploy.emailMode')}</span>
@@ -182,6 +208,118 @@ export function AddServer({ onDone, onBack }: AddServerProps): React.JSX.Element
           ) : (
             <div className={styles.warning}>{t('deploy.withoutEmailWarning')}</div>
           )}
+
+          {/* PQ и DNS-01 — обе опции необязательные, поэтому один общий блок и
+              два бокса в ряд. Две отдельные группы с заголовками стоили 154px
+              по вертикали при том же содержимом. */}
+          <div className={styles.fieldGroup}>
+            <span className={styles.groupLabel}>{t('deploy.extras')}</span>
+            <div className={styles.choiceGrid}>
+              <button
+                type="button"
+                className={`${styles.choice} ${form.pq ? styles.choiceActive : ''}`}
+                disabled={deploying}
+                aria-pressed={form.pq === true}
+                onClick={() => setForm((f) => ({ ...f, pq: !f.pq }))}
+              >
+                <Zap size={17} />
+                <span>
+                  <strong>{form.pq ? t('deploy.pqOn') : t('deploy.pqOff')}</strong>
+                  <small>{t('deploy.pqHint')}</small>
+                </span>
+              </button>
+              <button
+                type="button"
+                className={`${styles.choice} ${form.dns01Enabled ? styles.choiceActive : ''}`}
+                disabled={deploying}
+                aria-pressed={form.dns01Enabled === true}
+                onClick={() => setForm((f) => ({ ...f, dns01Enabled: !f.dns01Enabled }))}
+              >
+                <ShieldCheck size={17} />
+                <span>
+                  <strong>
+                    {form.dns01Enabled ? t('deploy.dns01On') : t('deploy.dns01Off')}
+                  </strong>
+                  <small>{t('deploy.dns01Hint')}</small>
+                </span>
+              </button>
+            </div>
+
+            {form.pq && <div className={styles.warning}>{t('deploy.pqWarning')}</div>}
+
+            {form.dns01Enabled && (
+              <>
+                {/* Провайдер выбирается явно: креденшелы Cloudflare и Route53
+                    не взаимозаменяемы, и лишние поля только путают. */}
+                <div className={styles.choiceGrid}>
+                  {(['cloudflare', 'route53'] as const).map((p) => (
+                    <button
+                      key={p}
+                      type="button"
+                      className={`${styles.choice} ${
+                        (form.dns01Provider ?? 'cloudflare') === p ? styles.choiceActive : ''
+                      }`}
+                      disabled={deploying}
+                      aria-pressed={(form.dns01Provider ?? 'cloudflare') === p}
+                      onClick={() => setForm((f) => ({ ...f, dns01Provider: p }))}
+                    >
+                      <ShieldCheck size={17} />
+                      <span>
+                        <strong>{p === 'cloudflare' ? 'Cloudflare' : 'Route53'}</strong>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+
+                <TextField variant="secondary">
+                  <Label>{t('deploy.dns01Domain')}</Label>
+                  <Input
+                    value={form.dns01Domain ?? ''}
+                    placeholder="sub.example.com"
+                    disabled={deploying}
+                    onChange={(e) => setForm((f) => ({ ...f, dns01Domain: e.target.value }))}
+                  />
+                </TextField>
+                <div className={styles.warning}>{t('deploy.dns01DomainHint')}</div>
+
+                {(form.dns01Provider ?? 'cloudflare') === 'cloudflare' ? (
+                  <TextField variant="secondary">
+                    <Label>{t('deploy.dns01Token')}</Label>
+                    <Input
+                      type="password"
+                      value={form.dns01Token ?? ''}
+                      disabled={deploying}
+                      onChange={(e) => setForm((f) => ({ ...f, dns01Token: e.target.value }))}
+                    />
+                  </TextField>
+                ) : (
+                  <>
+                    <TextField variant="secondary">
+                      <Label>{t('deploy.dns01AwsKey')}</Label>
+                      <Input
+                        value={form.dns01AwsKeyId ?? ''}
+                        disabled={deploying}
+                        onChange={(e) => setForm((f) => ({ ...f, dns01AwsKeyId: e.target.value }))}
+                      />
+                    </TextField>
+                    <TextField variant="secondary">
+                      <Label>{t('deploy.dns01AwsSecret')}</Label>
+                      <Input
+                        type="password"
+                        value={form.dns01AwsSecret ?? ''}
+                        disabled={deploying}
+                        onChange={(e) => setForm((f) => ({ ...f, dns01AwsSecret: e.target.value }))}
+                      />
+                    </TextField>
+                  </>
+                )}
+                <div className={styles.warning}>{t('deploy.dns01SecretNote')}</div>
+                {!isDns01Ready(dns01FromForm(form)) && (
+                  <div className={styles.warning}>{t('settings.dns01Incomplete')}</div>
+                )}
+              </>
+            )}
+          </div>
 
           <Button
             className={styles.deployBtn}
@@ -244,7 +382,20 @@ export function AddServer({ onDone, onBack }: AddServerProps): React.JSX.Element
             })}
           </ol>
 
-          <div className={styles.logTitle}>{t('deploy.log')}</div>
+          <div className={styles.logHead}>
+            <div className={styles.logTitle}>{t('deploy.log')}</div>
+            {(log.length > 0 || error) && (
+              <Button size="sm" variant="secondary" onPress={() => void copyLog()}>
+                <Copy size={14} />
+                {t('deploy.copyLog')}
+              </Button>
+            )}
+          </div>
+          {(log.length > 0 || error) && logNotice && (
+            <div className={styles.logNotice} data-ok={logNotice === t('deploy.logCopied')}>
+              {logNotice}
+            </div>
+          )}
           <div className={styles.logPanel} ref={logPanelRef}>
             {log.length === 0 && !error && (
               <div className={styles.logLine}>{t('deploy.waiting')}</div>
@@ -255,6 +406,15 @@ export function AddServer({ onDone, onBack }: AddServerProps): React.JSX.Element
               </div>
             ))}
             {error && <div className={styles.logError}>&gt; {error}</div>}
+          </div>
+
+          {/* Подсказка о host key — футер карточки: в форме она удлиняла и без
+              того длинную колонку, в шапке висела отдельной строкой в пустоте.
+              margin-top: auto прижимает её к низу растянутой карточки, поэтому
+              она занимает мёртвую зону под консолью. */}
+          <div className={styles.statusNote}>
+            <ShieldQuestion size={14} />
+            <span>{t('sshAccess.hostKeyFirstUse')}</span>
           </div>
         </div>
       </div>

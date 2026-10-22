@@ -25,6 +25,13 @@ Dashboard 显示已保存的服务器卡片。每张卡片包含：标题及其�
 
 Add server 接收 VPS host 和 SSH 端口、SSH 访问参数，并要求明确选择 `quickstart` 的 email 模式：**填写邮箱**（默认，显示输入框）或 **不使用邮箱继续**。选择不使用邮箱时，界面会提醒用户：Let's Encrypt 不会发送续期通知，也无法通过邮箱恢复 ACME 账户。该模式运行 `xrayebator quickstart --without-email`，向 Certbot 传递 `--register-unsafely-without-email`，不会使用虚构邮箱地址。
 
+字段仍按原来的逐行排列，只有一处例外：host 与 SSH 端口同一行（端口占一个窄列）。host key 在首次登录时被固定的提示已从表单移到“安装进度”卡片的页脚，固定在卡片底部、控制台下方。
+
+下面是一个统一的 **“附加选项”** 区块，含两张卡片，默认都关闭：
+
+- **PQ 线路** —— 添加 `--pq`：配置档会在独立端口上获得一条后量子 VLESS Encryption 线路。界面会如实提醒：该线路不会进入普通的 v2ray 订阅，并且需要支持 ML-KEM 的客户端（HAPP、Xray 25.6+）。如果服务器上还没有 ML-KEM 密钥，部署不会失败——配置档只是没有 PQ。
+- **DNS-01** —— 添加 `--dns01-domain/--dns01-provider/--dns01-token`（Cloudflare）或 `--dns01-aws-*`（Route53）。这是回退路径：如果服务商过滤 80 端口、http-01 不通过，证书改由 TXT 记录签发，订阅保持在 HTTPS（`domain_tls`）而不会降级为 `http_tls`。参数集合不完整时部署按钮保持禁用：服务器会在装完 Xray 之后才拒绝这样的请求。输入的凭据不会在本地任何地方保存。
+
 部署进度按以下步骤显示：
 
 1. 通过 SSH 连接并验证提升后的权限；
@@ -32,7 +39,7 @@ Add server 接收 VPS host 和 SSH 端口、SSH 访问参数，并要求明确�
 3. 创建临时目录 `/tmp/xrayebator-<token>`，上传 `install.sh` 和 `xrayebator`；
 4. 使用所选权限运行 `bash install.sh`；
 5. 将上传的管理器二进制安装到 `/usr/local/bin/xrayebator`；
-6. 运行 `xrayebator quickstart --email <email>` 或 `xrayebator quickstart --without-email`；
+6. 运行 `xrayebator quickstart --email <email>` 或 `xrayebator quickstart --without-email` —— 若运维人员启用了上述区块，再加上 `--pq` 与 `--dns01-*`；
 7. 解析包含 `subscription_url` 的 JSON 结果，获取订阅，并在本地保存服务器元数据与密钥。
 
 GUI 会显示部署日志和步骤状态，但进行中的部署没有 IPC 取消通道。
@@ -44,20 +51,48 @@ GUI 会显示部署日志和步骤状态，但进行中的部署没有 IPC 取�
 向导显示步骤索引和实际执行工作的实时控制台：SSH 连接、`xrayebator inspect --json` 调用、返回的组件状态、订阅探测和最终结果。订阅 URL 是 bearer credential，因此其令牌在进入控制台前会被遮蔽（`…`）；密码和密钥字节完全不会出现在其中。
 ### Server keys
 
-Server keys 会从保存的 `subscription_url` 刷新订阅，并显示返回的 VLESS 线路。每条 VLESS 链接都可以复制或生成二维码；订阅 URL 也可以复制，页面还提供复制全部内容的操作。此页面不会在服务器上创建独立订阅，也不会轮换订阅令牌（轮换在 Server settings 的配置档卡片上进行）。
+Server keys 会从保存的 `subscription_url` 刷新订阅，并显示返回的 VLESS 线路。每条 VLESS 链接都可以复制或生成二维码；订阅 URL 也可以复制，页面还提供复制全部内容的操作。此页面不会在服务器上创建独立订阅，也不会轮换订阅令牌（轮换在 Server settings 的配置档卡片上进行）。当服务器存在多协议后端时，页面还会从持久化本地存储中显示它们的密钥：每个持有授权的配置档一张 Hysteria 2 卡片（`hysteria2://` 链接，复制+二维码；卡片芯片标注所属配置档名称：`HYSTERIA2 · <配置档> · UDP :<端口>`），以及一张 AmneziaWG 卡片——客户端 `.conf`，其中 `Endpoint`/`Address` 以键值字段呈现，去掉服务注释头的完整 `.conf` 以文本和二维码提供，可导入 AmneziaVPN/AmneziaWG。后端卡片立即从持久化存储渲染，并与 VLESS 线路并行刷新；spinner 位于卡片内部，仅在数据获取期间可见。AWG 卡片有两个二维码：普通二维码用于独立版 AmneziaWG 客户端，「QR · AmneziaVPN」则是应用原生压缩 `vpn://` 形态（`amnezia-awg2` 容器、服务器级 junk 字段、`protocol_version` 3.1），是完整版 AmneziaVPN 的推荐导入路径。**「客户端链接」**卡片展示同一订阅的客户端格式——来自服务器 `subscription_url_clash`/`subscription_url_singbox` 的 Clash/mihomo（YAML）与 sing-box（JSON）：每个配置档一个区块，包含完整等宽链接以及复制和二维码，无需自己猜 `?target=` 后缀。默认不显示该卡片：主集合仍是与以前相同的 HAPP/v2ray 订阅和 VLESS 链接；Clash/sing-box 视图由标题栏的「Clash / sing-box 格式」开关开启（选择保存在 `localStorage` 中，切换服务器后依然保留）。该卡片缓存在同一个本地存储中（服务器卡片里的 `subscriptionFormats`），由主进程在每次成功读取配置档列表时写入——与 VLESS/Hysteria/AWG 密钥一样，下次进入瞬时渲染，服务器不可达时也不会消失。配置档的有效期也按同样方式缓存（服务器卡片里的 `profileExpiry`，同样由列表结果整体写入）：后端卡片上的「有效期至 …」出现在首次渲染中，而不是稍后出现并把卡片撑高；同时最新列表总会覆盖缓存，因此已续期或已撤销的有效期不会停留在屏幕上。这里不会向服务器写回任何内容：服务器只负责提供链接。 因此打开页面时必须已经拿到最新的服务器卡片：此前渲染进程使用的是启动时读取一次列表里的对象，缓存虽然在本地 存储中，却从未到达页面，有效期仍然延迟出现（第二轮排查才发现）。现在每次进入服务器页面都会先从本地存储重新 读取卡片（本地 IPC，几毫秒），然后再渲染。
+
+### 「现有配置档」页面
+
+配置档列表是独立屏幕，而不是创建表单的一部分。它从设置页的选项卡行打开（「现有配置档」），
+「返回」按钮回到 Dashboard。选项卡行是共用的：在该页点击其余选项卡会回到设置页的相应分区。
+
+在两个屏幕之间切换**不会**重复 SSH 工作：它们是同一个组件配合 `mode` 属性，因此连接、配置档列表、
+后端状态与订阅状态在打开服务器时只加载一次，随后共用。只有从 Dashboard 重新进入才会再次连接。
+
+页面内容：
+
+- 页头：左侧为标题与副标题，右侧为搜索框（按配置档名称、SNI 或订阅链接）和筛选——全部配置档、
+  仅活跃、仅已停用；
+- 每个配置档一张卡片：传输方式图标（xhttp / gRPC / TCP）、名称、状态点（「活跃」或「已停用」——后者表示
+  已过期或流量限额耗尽）、`HAPP` 与 `PQ ×N` 徽标，以及一行标签——传输方式与线路数、端口、纯域名的 SNI、
+  有效期 `有效期至 <日期>`（日历图标）与 `流量: <已用>`（数据库图标）。该行不换行：空间不足时只有域名
+  会被压缩，并以省略号截断。
+- 操作「复制」（同一链接）与「设置」（下文描述的配置档窗口）；
+- 持有 Hysteria 2 或 AmneziaWG 授权的配置档另有独立的后端卡片，带二维码和同一个设置窗口；
+- 列表下方显示「显示：N」：N 统计实际渲染的卡片——配置档本身，加上每个已授权后端（Hysteria 2 / AmneziaWG）各一张，因此与屏幕一致。
+
+页面刻意不显示进度条与分页：对少量配置档它们并不能度量任何东西，而参考布局中重复的页脚
+（域名/有效期/大小再来一遍）已由卡片标签覆盖。
 
 ### Server settings
 
-Server settings 先通过 SSH 认证。如果卡片中已有系统钥匙串保存的 SSH 密码或持久化私钥，页面会自动连接并只显示配置档面板；仅当没有已保存的凭据或连接失败时才显示访问表单。访问摘要与“更改访问方式”操作位于 Dashboard 的服务器卡片上，而不在配置档页面内。连接后可以：
+Server settings 先通过 SSH 认证。如果卡片中已有系统钥匙串保存的 SSH 密码或持久化私钥，页面会自动连接并只显示设置面板；仅当没有已保存的凭据或连接失败时才显示访问表单。访问摘要与“更改访问方式”操作位于 Dashboard 的服务器卡片上，而不在配置档页面内。连接后可以：
 
-- 列出已有配置档；
-- 创建一个或多个配置档并删除配置档；
-- 选择 `xhttp`、`tcp`、`tcp-utls`、`tcp-xudp`、`tcp-mux` 或 `grpc` 传输；
+- 创建一个或多个配置档并删除配置档（配置档名称唯一：GUI 在创建前预检名称冲突——删除以配置档为单位，名称唯一才能保证删除精确）；已存在配置档的列表位于单独的 **「现有配置档」** 页面，不在此处；
+- 选择 `xhttp`、`tcp`、`tcp-utls`、`tcp-xudp`、`tcp-mux` 或 `grpc` 传输——或选择两个多协议后端之一（传输网格下方的 Hysteria 2 / AmneziaWG 3.1 卡片）。点击后端卡片只是选择协议（选择 VLESS 传输会取消后端选择，反之亦然）；配置档由「创建配置档」按钮创建，且只有所选后端会签发密钥——底层的 VLESS 配置档使用推荐的 `xhttp` 传输；
 - 修改配置档 fingerprint，从 `sni-list` 选择 SNI，或手动输入 SNI；
 - 修改配置档线路的端口，或选择随机端口；
-- 更新服务器安装；
+- 更新服务器安装（分支菜单：「按服务器上固定的分支」——`.current_branch`，否则 main；**main 是最新的稳定版本**；**dev 是包含全部新功能的最新版本，但可能不稳定**；从 dev 切回只需更新到 main）；
 - 确认后卸载服务器安装；
-- 在明确确认后重置固定的 SSH host key。
+- 在明确确认后重置固定的 SSH host key；
+- 管理多协议后端（与菜单项 11–13 对齐）：合并面板「补充协议」（正在开发中——界面和行为可能变化）显示 Hysteria 2 与 AmneziaWG 状态（版本、端口、TLS 模式 / 接口、junk 摘要），提供安装/卸载、**后端已安装但未运行时的「启动」按钮**、订阅中 `hysteria2://` 行的总开关和 AWG 3.1 切换——后两者均带明确确认；
+- 配置档列表中每个配置档的后端卡片：标题为配置档名称，副标题为协议，状态行分为绿色「已激活 …」、红色**「未运行」**（单元未激活：通常是重启后内核模块没有加载）和灰色「未安装」；操作只有二维码（AmneziaWG 另有「QR · AmneziaVPN」）与**「设置」**，处于「未运行」时还会出现「启动」按钮（`backend-start`）。有效期、重签与删除已移入设置窗口：它们作用于整个配置档，而不是某个协议的密钥。删除配置档会立即吊销其后端密钥——AWG peer 从 `awg0.conf` 移除，Hysteria 密码从 `server.yaml` 移除（不残留孤立凭据），名称立即可复用。完整复制功能只在 Server keys 页面；
+- 配置档的**「设置」**窗口（现在配置档行里唯一的操作按钮，紧挨「复制」）：分组为「线路」（SNI、Fingerprint、端口、PQ）、「限制」（有效期、流量）、「访问」（重签订阅）和「删除」——取代了原先挤在一行里的十一个按钮。从窗口中打开嵌套对话框时（SNI、端口、PQ、有效期、流量、重签、删除）窗口会自动关闭，两个模态框不会叠加。这些对话框里的操作按钮在请求期间以强调色脉冲发光，成功后变成绿色的「完成」：绿色文字、在按钮内部描边的 `rgba(63,185,80,.35)` 边框以及 14% 的绿色填充——与部署页已完成步骤同一个绿色，不再带模糊； 窗口标题刻意只保留两行（徽标、小标题、配置档名称）；当前 SNI 显示在「线路」分组的右上角，与分组标题同一行，仅用等宽文本、不加标签——此前它贴在名称下方，在窄窗口中像是残留，并与标题争夺注意力。
+- 为配置档添加 PQ 线路：配置档旁的「PQ」按钮打开传输选择对话框并调用 `profile-pq`；返回结果里带有现成的 VLESS 链接，可一键复制。配置档行中的「PQ」/「PQ ×N」芯片显示它已拥有多少条后量子线路（`pq_routes`）；
+- **「订阅与 TLS」**卡片，默认折叠：证书图标、标题旁的当前模式徽标（`ip_tls`/`domain_tls` 为绿色，`http_tls` 为琥珀色），以及来自 `dns01-status` 的三个带标签的值，每个都位于铺满所在列、文本居中的等宽框中——域名、提供商、证书剩余天数（不足两周时显示为琥珀色）。点击页头即可展开表单，主按钮同样会展开（「配置 DNS-01」→ `dns01-setup`；订阅降级为 `http_tls` 时「用 DNS-01 修复」→ `repair-dns01`，原因直接显示在卡片内）。提供商需显式选择（Cloudflare——具有 DNS:Edit 权限的令牌，Route53——AWS 密钥）；凭据发送到服务器，不在本地保存；
+- Telegram 告警有意**不**纳入桌面应用：`alerts-setup`、`alerts-status`、`alerts-test`、`alerts-enable`/`alerts-disable` 只在终端提供。机器人令牌是 `alerts.json` 中 root 拥有的机密，告警属于一次性配置而非日常操作，因此 GUI 既不会调用这些命令，也不会索要令牌——少一处可能重复保存凭据的地方。
 
 SNI 和端口属于 inbound 级别的设置：修改它们可能影响共享该 inbound 的所有配置档。Fingerprint 则不同：它是按配置档/线路保存的客户端参数，不会修改其他线路。服务端命令会报告结果以及是否需要重新连接。
 
@@ -85,6 +120,8 @@ xrayebator profile-create --name NAME [--transport T] [--port P] [--count N] [--
 xrayebator profile-delete --name NAME
 xrayebator profile-revoke --name NAME [--full]
 xrayebator profile-expire --name NAME --expire DATE|epoch|none
+xrayebator profile-limit --name NAME --limit LIMIT|none [--reset]
+xrayebator profile-pq --name NAME [--transport T]
 xrayebator fp-change --name NAME [--route R] --fp FINGERPRINT
 xrayebator sni-change --name NAME [--route R] --sni SNI
 xrayebator sni-list
@@ -92,11 +129,34 @@ xrayebator port-change --name NAME [--route R] --port PORT|random
 xrayebator bypass list|add --domain D|remove --domain D|reset|bundle [--group a,b,c]
 ```
 
+后端管理会额外调用：
+
+```text
+xrayebator backend-status
+xrayebator backend-start --type hysteria2|awg
+xrayebator hysteria2-install [--port P] [--grant-all] / hysteria2-uninstall / hysteria2-grant --name N / hysteria2-subbody --on|--off / hysteria2-link --name N
+xrayebator awg-install [--grant-all] / awg-uninstall / awg-grant --name N / awg-conf --name N / awg-31 --on|--off
+```
+
+后端卡片区分「已安装」与「正在运行」：绿色 **运行中** 表示单元已启动，红色
+**未运行** 表示已安装但单元未激活（通常是重启后内核模块没有加载），灰色
+**未安装** 表示不存在。处于「未运行」时会显示 **启动** 按钮
+（`backend-start`），它会加载模块、启动单元并重新读取状态。
+
 部署流程会调用以下命令之一：
 
 ```text
-xrayebator quickstart --email EMAIL
-xrayebator quickstart --without-email
+xrayebator quickstart --email EMAIL [--pq] [--dns01-domain D --dns01-provider P --dns01-token T | --dns01-aws-access-key-id K --dns01-aws-secret-access-key S]
+xrayebator quickstart --without-email [--pq] [--dns01-*]
+```
+
+订阅与 TLS 由以下命令维护：
+
+```text
+xrayebator dns01-status
+xrayebator dns01-setup --domain D --provider cloudflare|route53 [--token T | --aws-access-key-id K --aws-secret-access-key S] [--email E|--without-email] [--port P] [--staging]
+xrayebator dns01-test --domain D --provider cloudflare|route53 [--token T | --aws-*] [--email E|--without-email]
+xrayebator repair-dns01 --domain D --provider cloudflare|route53 [--token T | --aws-*] [--email E] [--port P] [--staging]
 ```
 
 导入流程只调用只读诊断命令：
@@ -114,6 +174,7 @@ probe-test
 happ-setup
 cascade
 self-steal
+Telegram 告警（alerts-setup / alerts-status / alerts-test / alerts-enable|alerts-disable）
 交互式 terminal menu
 服务日志/状态
 ```
@@ -124,6 +185,7 @@ Server settings 还提供：
 
 - **订阅吊销** —— 每个配置档旁的按钮会打开一个菜单，包含两种模式。「仅更换链接」会重新签发 `sub_token`（旧 URL 立即失效，线路和密钥不变）。「完全吊销」还会更换该配置档所有 inbound 中的 uuid，已经下载过配置的设备会立刻断开——这是真正关闭泄露链接访问权限的唯一方式。
 - **配置档有效期** —— 日期通过订阅响应头下发给客户端，并由服务器强制执行：`xrayebator-expire.timer` 定时器每 10 分钟运行一次 `xrayebator expire-check`，到期后把客户端从 inbound 中移除。只选日期时，在服务器本地时区的当天 `23:59:59`（含）到期。GUI 使用 `expire_date` 中服务器的日历日期，因此桌面与 VPS 时区不同时也不会显示错一天。延长后恢复同一个客户端。配置档标签会显示有效期：到期前 3 天内变为提醒色，到期后变为警示色。创建配置档时也可以直接设置有效期；日期通过内置主题日历选择（过去日期禁用），并提供 +7/+30/+90/+365 天预设。如果所连接的服务器版本过旧、未报告有效期支持，GUI 会明确提示服务器过旧，而不是假装配置档永久有效。
+- **配置档流量限额** —— 用量由服务器统计（`xrayebator-traffic.timer` 每 5 分钟读取一次 Stats API 计数器），GUI 用「已用 / 限额」标签显示：低于限额 80% 为中性色，达到 80% 起为提醒色，耗尽时为警示色（「限额已耗尽」）。「限额」对话框沿用有效期的模型：`10GB`–`1TB` 预设、带校验的自定义值（`500MB`、`1.5GB`、`2TB`、`none`）、计数器重置开关，以及单独取消限额的操作。取值来自 `profiles`（`traffic_used`、`traffic_limit`、`traffic_disabled`），并通过 CLI `profile-limit` 应用；限额耗尽会在服务器上把客户端从 inbound 中移除——配置档仍留在列表中，但订阅返回 `410`。如果所连接的服务器版本过旧、未报告 `traffic_supported`，则完全不显示限额管理。
 - **CLI 错误回显** —— 失败原因取自 stderr，必要时回退到 stdout；过旧服务器上的未知命令会附带更新 Xrayebator 的提示，而不是只有空退出码。
 
 ## 部署协议
@@ -138,7 +200,7 @@ SSH connect + host-key verification
         ├─ SFTP upload: install.sh, xrayebator
         ├─ elevated `bash install.sh`
         ├─ elevated install → /usr/local/bin/xrayebator
-        ├─ elevated `xrayebator quickstart --email EMAIL` 或 `--without-email`
+        ├─ elevated `xrayebator quickstart --email EMAIL` 或 `--without-email`（若运维人员启用，另加 `--pq` 与 `--dns01-*`）
         └─ parse `subscription_url` → fetch subscription → 保存服务器卡片、连接偏好、订阅 URL 和已获取的 VLESS 链接
 
 导入现有安装时，流程改为只读执行 `xrayebator inspect --json`；仅当检测到公网 HTTPS endpoint 时才检查订阅，并保存检测到的状态，不会自动修复或更新 VPS。

@@ -193,3 +193,44 @@ describe('shared onboarding contracts', () => {
       .toEqualTypeOf<PrivateKeyReference | null>()
   })
 })
+describe('profile expiry cache on the server card', () => {
+  it('defaults to an empty map so the Keys page never reads undefined', () => {
+    const store = createServerStore()
+    const created = store.add(baseServer)
+
+    expect(created.profileExpiry).toEqual({})
+  })
+
+  it('persists expiry per profile and is written as a full set', () => {
+    const store = createServerStore()
+    const created = store.add(baseServer)
+
+    const updated = store.updateProfileExpiry(created.id, {
+      happ: { expire: 1794000000, expire_date: '2026-11-16', expire_disabled: false },
+      trial: { expire: 0, expire_disabled: false }
+    })
+
+    expect(updated?.profileExpiry).toEqual({
+      happ: { expire: 1794000000, expire_date: '2026-11-16', expire_disabled: false },
+      trial: { expire: 0, expire_disabled: false }
+    })
+    // Карточка перечитывается с диска — кэш не живёт только в памяти.
+    expect(store.get(created.id)?.profileExpiry?.happ?.expire_date).toBe('2026-11-16')
+
+    // Второй вызов заменяет набор целиком: удалённый профиль обязан исчезнуть,
+    // иначе «Ключи» показали бы срок профиля, которого уже нет.
+    const replaced = store.updateProfileExpiry(created.id, {
+      happ: { expire: 1796000000, expire_date: '2026-12-01', expire_disabled: false }
+    })
+    expect(replaced?.profileExpiry).toEqual({
+      happ: { expire: 1796000000, expire_date: '2026-12-01', expire_disabled: false }
+    })
+    expect(replaced?.profileExpiry?.trial).toBeUndefined()
+  })
+
+  it('ignores an unknown server id instead of writing a phantom card', () => {
+    const store = createServerStore()
+    expect(store.updateProfileExpiry('missing', {})).toBeUndefined()
+    expect(store.list()).toHaveLength(0)
+  })
+})

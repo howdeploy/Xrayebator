@@ -6,7 +6,8 @@
 
 <p>
 <strong>inbounds</strong> · <strong>profiles</strong> · <strong>subscription</strong> ·
-<strong>bypass</strong> · <strong>cascade</strong>
+<strong>bypass</strong> · <strong>cascade</strong> · <strong>hysteria2</strong> ·
+<strong>amneziawg</strong>
 </p>
 
 <p>
@@ -28,8 +29,10 @@
 Xrayebator installs Xray-core, brings up Reality inbounds on random ports, and provisions a standard
 schema-v3 HAPP profile of seven routes for a new setup. Existing seven-route profiles can be reused only
 when they have enough live routes, so inspect the profile JSON when debugging labels or schema. The client
-receives the routes as a single HTTPS subscription link. Current server line — 3.0; the optional Electron
-desktop app is versioned separately.
+receives the routes as a single HTTPS subscription link. As of the multi-protocol stage, optional
+Hysteria 2 (fast UDP) and AmneziaWG 2.0/3.1 (system VPN) backends can be installed on the same VPS from
+menu items 11–13, with per-profile grants wired into the shared revoke/expire lifecycle. Current server
+line — 3.0; the optional Electron desktop app is versioned separately.
 </p>
 
 </div>
@@ -99,11 +102,17 @@ about.
 | Reality inbounds | Brings up inbounds on free ports in `30000-60000`, checking both `config.json` and actually listening sockets | `xrayebator` |
 | Multi-route profile | One profile = a set of routes with a shared `sub_token`; several profiles may share one port | `profiles/<name>.json` |
 | HAPP subscription | Serves the `vless://` list, a managed Global Proxy routing profile and token-protected geo databases; nginx publishes it over HTTPS | `subhttp.sh`, `xrayebator-sub.service` |
-| Post-quantum XHTTP | The `xhttp-pq` route runs VLESS encryption `mlkem768x25519plus` | `.vless_encryption`, `.vless_decryption` |
+| Subscription formats | One token — four bodies: HAPP, base64 for v2rayNG/v2rayN, Clash/mihomo YAML and sing-box JSON; the format is chosen by `?target=` or by User-Agent | `_subscription_render_*_pure`, `subhttp.sh` |
+| DNS-01 subscription | The Let's Encrypt certificate is proven by a TXT record (Cloudflare/Route53), so the HTTPS subscription by domain works even where the hoster filters port 80. It doubles as a deploy-time fallback (`quickstart --dns01-*`) and as a repair for an already-degraded `http_tls` subscription (`repair-dns01`, the *Fix with DNS-01* button in the GUI); `dns01-test` verifies a domain and a token in the Let's Encrypt staging environment without spending production quota, and `--staging` does the same for a real issuance | `dns01-setup`, `dns01-test`, `dns01-status`, `repair-dns01` |
+| Post-quantum encryption | VLESS Encryption `mlkem768x25519plus` is available on every transport (`profile-pq --transport`), not just on `xhttp-pq`; a PQ route owns a dedicated port and can be added at deploy time with `quickstart --pq` or the GUI wizard toggle | `profile-pq`, `.vless_encryption`, `.vless_decryption` |
 | v2ray compatibility | `v2rayNG` and `v2rayN` receive a classic base64 body without HAPP metadata | `subhttp.sh` |
 | Subscription revoke | Generates a new 32-character hex token; the old URL stops working. Full revocation (`--full`) also rotates the uuid, so already-downloaded configs stop connecting | `openssl rand -hex 16`, `profile-revoke` |
 | Profile expiry | A profile can carry an expiry date; `xrayebator-expire.timer` switches the client off the inbounds when it passes and restores the same uuid on renewal | `profile-expire`, `expire-check` |
-| Bypass routing | Seven domain groups can be sent straight through `freedom`, skipping the VPN | menu `7` |
+| Traffic accounting and limits | Per-profile usage from the Stats API: `xrayebator-traffic.timer` accumulates gigabytes, the limit switches the client off when exhausted and restores it on raise/reset; the subscription serves real `subscription-userinfo` | `profile-limit`, `traffic-check` |
+| Monitoring and Telegram alerts | Every 15 minutes it checks services, backends (Hysteria 2, AWG), expiries and limits, subscription liveness and its TLS mode, and reboots; once a day — SNI reachability from the profiles; it writes only changes to Telegram | menu `14`, `xrayebator-monitor.timer` |
+| Channel check | `xrayebator channel-test` starts a local Xray client for every profile route and pushes a real request through the tunnel: JSON with `working`/`checked`, latency and the reason. No Let's Encrypt needed (Reality and PQ are self-contained), PQ routes are covered too; live run — 8/8 routes, 152–252 ms | `channel-test` |
+| Reachable default SNI | When picking the SNI for new profiles the manager checks reachability from the VPS itself and takes the first working one: an unreachable destination hangs the Reality handshake (on a live server that made 5 of 7 channels dead) | `_default_sni_for_transport`, `probe-test` |
+| Bypass routing | Eight domain groups can be sent straight through `freedom`, skipping the VPN | menu `7` |
 | Cascade | Switches the `tcp,udp` catch-all to a foreign VLESS Reality upstream of type `tcp` or `xhttp` | `upstreams/cascade.json` |
 | Self-steal stub | Puts nginx with a valid certificate on `127.0.0.1:9444` and points a Reality fallback at it | menu `9` |
 | Safe JSON writes | Writes a temporary file inside the destination directory, validates it, renames atomically | `safe_jq_write` |
@@ -111,7 +120,7 @@ about.
 | Migrations | One-shot migrations driven by marker files: backup → edit → restart → marker | `run_migration` |
 | geo databases | Places extended `geoip.dat` and `geosite.dat` from Loyalsoldier releases into `/usr/local/share/xray` | `install.sh` |
 
-Not supported and not claimed: H2, WebSocket, SplitHTTP, Clash/mihomo subscriptions.
+Not supported and not claimed: H2, WebSocket, SplitHTTP.
 
 ## How it works
 
@@ -149,7 +158,7 @@ nginx  :443  (or :8443 when 443 is taken)
 xrayebator-sub.service   127.0.0.1:8080
     │  reads profiles/*.json and checks routes against the live config.json
     ▼
-vless:// list — HAPP receives 6 of the profile's 7 routes
+vless:// list — HAPP receives all 7 routes (base64 body: 6, PQ routes dropped)
     │
     ▼
 Reality inbound on a port in 30000-60000   (User=xray, CAP_NET_BIND_SERVICE)
@@ -168,16 +177,15 @@ The HAPP flow creates or reuses a profile of seven routes:
 | `xhttp-legacy` | xhttp | HAPP-compatible XHTTP fallback, `decryption=none`, no PQ |
 | `xhttp-pq` | xhttp | XHTTP with post-quantum encryption `mlkem768x25519plus` |
 | `tcp-mux` | tcp | TCP Reality without Vision flow, a separate compatible fallback |
-
-The managed HAPP profile uses schema version 3 and seven routes. The normal HAPP list publishes six of
-those routes; the PQ route remains available through the raw/profile path.
 | `grpc` | grpc | gRPC Reality; sensitive to HTTP/2 and SNI |
 | `tcp-vision` | tcp | TCP Reality with `xtls-rprx-vision` |
 | `tcp-utls-firefox` | tcp | TCP Vision with a Firefox fingerprint |
 | `tcp-xudp` | tcp | TCP Vision + XUDP, a narrow fallback for harsh mobile networks |
 
-Six of the seven routes reach the HAPP subscription: when `xhttp-legacy` is present, PQ-XHTTP is not
-offered as the XHTTP candidate. All seven remain in the profile JSON itself.
+The managed HAPP profile uses schema version 3 and seven routes, and the HAPP body publishes all seven
+of them — PQ included, because HAPP supports ML-KEM. The base64 body served to v2rayNG/v2rayN drops PQ
+routes instead (six of seven), since a client without ML-KEM cannot use them; Clash/mihomo and sing-box
+skip PQ and xhttp routes with a recorded reason. All seven routes always remain in the profile JSON.
 
 The default client fingerprint for new and updated profiles is `firefox`. Explicitly chosen
 fingerprints other than the deprecated `chrome` are preserved across updates.
@@ -291,16 +299,17 @@ What the GUI can do:
 | Page | Operations |
 |---|---|
 | Dashboard | Server cards with reachability and installation status; an empty screen offers “Deploy a new server” or “Connect an existing server”; language switch |
-| Add server | Deploy a new VPS with an explicit email choice: `quickstart --email` or `quickstart --without-email`; save the server and public subscription |
+| Add server | Deploy a new VPS with an explicit email choice: `quickstart --email` or `quickstart --without-email`; two optional wizard blocks — the **PQ route** toggle (`--pq`) and the **DNS-01 fallback** (domain + provider + credentials, `--dns01-*`), both OFF by default; save the server and public subscription |
 | Connect existing | Import a recognized Xrayebator installation over SSH (password or key) using read-only `xrayebator inspect --json`; partial installs are saved with diagnostics, without automatic repair |
-| Server keys | Refresh the public subscription, copy the URL, show `vless://` links and QR codes |
-| Server settings | SSH access by password or private key, direct root or sudo; list/create/delete profiles, change fingerprint, SNI and port, revoke the subscription, set a profile expiry date, plus update or uninstall Xrayebator on the server. Expiry dates are displayed in the server's timezone even when the desktop uses another one |
+| Server keys | Refresh the public subscription, copy the URL, show `vless://` links and QR codes; with backends installed it also shows one Hysteria 2 card per granted profile (link + QR) and one AmneziaWG card per granted profile (client `.conf`, key fields and two QRs — the plain one and the app-native `vpn://` for AmneziaVPN), plus a **Client links** card with the Clash/mihomo YAML and sing-box JSON links |
+| Server profiles | The existing-profile list as its own screen, opened from the settings tab strip: search by name, SNI or subscription URL plus an all/active/disabled filter, and one card per profile with a transport icon, an `Active`/`Disabled` status, `HAPP`/`PQ ×N` badges, chips for transport, routes, port, SNI, expiry and traffic, the subscription URL, and copy/settings actions; the Hysteria 2 and AmneziaWG cards for granted profiles stay in the same list |
+| Server settings | SSH access by password or private key, direct root or sudo; create/delete profiles (the list itself is on Server profiles), change fingerprint, SNI and port, revoke the subscription, set a profile expiry date, set a traffic limit, add a PQ route, manage the subscription and TLS (DNS-01, including *Fix with DNS-01* for a degraded `http_tls` subscription), plus update or uninstall Xrayebator on the server. Expiry dates are displayed in the server's timezone even when the desktop uses another one. Telegram alerts are terminal-only (`alerts-setup`, `alerts-enable`/`alerts-disable`, `alerts-test`): the bot token never enters the renderer |
 
-Root + password is the one-click default; key authentication and sudo are optional. A selected private key and a successfully used SSH login password are stored in the operating-system keychain via `keytar` and reused across later SSH operations and app restarts; the server card keeps only their non-secret credential ids and display name. A distinct sudo password and an encrypted-key passphrase are never persisted and are requested again when needed. If the OS keychain is unavailable, there is no plaintext fallback: the secret remains in main-process memory for the current app session and the UI warns that it must be entered again after restart. The app also persists the `subscription_url`, fetched `vless://` links and pinned SSH host-key fingerprint. The subscription URL and VLESS links are bearer/client credentials: protect local app data and revoke the subscription from Server settings (full revocation rotates the key as well) after a leak.
+Root + password is the one-click default; key authentication and sudo are optional. A selected private key and a successfully used SSH login password are stored in the operating-system keychain via `keytar` and reused across later SSH operations and app restarts; the server card keeps only their non-secret credential ids and display name. A distinct sudo password and an encrypted-key passphrase are never persisted and are requested again when needed. If the OS keychain is unavailable, there is no plaintext fallback: the secret remains in main-process memory for the current app session and the UI warns that it must be entered again after restart. The app also persists, in the local store, the `subscription_url`, the fetched `vless://` links, the Hysteria 2 links, the AWG client configs, the Clash/sing-box links, per-profile expiry dates and the pinned SSH host-key fingerprint — that is what lets the Keys page and the backend cards paint instantly; none of it is written back to the server. The subscription URL and VLESS links are bearer/client credentials: protect local app data and revoke the subscription from the profile settings on the Server profiles page (full revocation rotates the key as well) after a leak.
 
 The GUI exposes only a subset of the terminal menu. Bypass, `probe-test`, `happ-setup`, cascade,
-self-steal and service logs/status remain terminal-only; profile expiry dates and subscription
-revocation are available in Server settings. See
+self-steal, Telegram alerts and service logs/status remain terminal-only; profile expiry dates and subscription
+revocation are available in the profile settings on the Server profiles page. See
 [Electron Desktop GUI](docs/desktop-gui.md) for the complete boundary, security model and packaging details.
 
 Build and run in the development mode:
@@ -311,7 +320,7 @@ npm run dev          # Electron + Vite dev server
 npm run build        # compile the renderer and the main process
 ```
 
-Electron checks: `npm test` runs the 14 unit files in `tests/`; `npm run typecheck` checks the
+Electron checks: `npm test` runs the 19 unit files in `tests/`; `npm run typecheck` checks the
 TypeScript surface, including the strict onboarding contracts in `tests/type-contracts/`.
 `npm run build` produces the app bundle. On native Windows, the POSIX-only
 `tests/unit/shell-command.test.ts` may fail because `/bin/sh` is absent; Linux CI is the source of truth.
@@ -354,10 +363,18 @@ Russian and Chinese versions live in [`docs/ru/`](docs/ru/) and [`docs/zh-CN/`](
   `xrayebator`, `xrayebator-update`, `xrayebator-uninstall` and `subhttp.sh` binaries, the
   `xray.service`, `xray@.service`, `xray.service.d` and `xrayebator-sub.service` units, the nginx
   vhosts matching the product's names, its own certbot certificates and UFW rules, and the `xray`
-  system user. Cleanup is path/name based for nginx vhosts, not a general ownership manifest. It leaves
+  system user. Before deleting the state it also tears the optional backends down: it disables
+  `hysteria-server.service` and `awg-quick@awg0`, removes the Hysteria binary, its sysctl file, its
+  certbot deploy-hook, the `awg0` interface, the AWG sysctl and `modules-load.d` entries, and then
+  the whole neutral `/usr/local/etc/xrayebator` root (backend registry and secrets, `alerts.json`
+  with the bot token). The AmneziaWG package and kernel module themselves stay in the system.
+  Cleanup is path/name based for nginx vhosts, not a general ownership manifest. It leaves
   global Certbot state, the nginx package, foreign certbot certificates and UFW rules untouched. Domain-mode ACME webroot `/var/www/xrayebator-domain-acme` may remain for manual cleanup.
 - The `tcp-mux` route is kept for compatibility; it is not a mux preset.
-- H2, WebSocket, SplitHTTP and Clash/mihomo subscriptions are not supported.
+- H2, WebSocket and SplitHTTP are not supported.
+- The Clash/mihomo and sing-box formats carry no routes with PQ encryption (VLESS Encryption is not
+  supported by their clients) and no xhttp: sing-box has no such transport at all, while in
+  Clash/mihomo it is enabled by the `?xhttp=1` parameter and requires mihomo ≥ 1.19.
 - The interface imposes no hard limit on users, but real capacity is bound by CPU, RAM, VPS
   bandwidth, route count and provider limits.
 - Installation and project-update lifecycle paths use their own validation/restart/rollback sequences;
@@ -405,7 +422,7 @@ Import the subscription URL into the client, not an individual `vless://` link. 
 | v2rayNG | Partial | Receives the base64 subscription, ignores HAPP metadata |
 | v2rayN | Partial | VLESS subscriptions work, HAPP specifics are unused |
 | Shadowrocket | Manual | Fine for raw VLESS, not the primary subscription client |
-| sing-box · Hiddify · NekoBox · mihomo | Not targeted | Do not expect PQ-XHTTP or HAPP routing |
+| sing-box · Hiddify · NekoBox · mihomo | Subscription | Receive YAML (Clash/mihomo) or JSON (sing-box) over the same URL; no PQ-XHTTP and no HAPP routing |
 
 - Android: [HAPP](https://www.happ.su/) · [v2rayNG](https://github.com/2dust/v2rayNG) · [NekoBox](https://github.com/MatsuriDayo/NekoBoxForAndroid)
 - iOS: [HAPP](https://www.happ.su/) · [Shadowrocket](https://apps.apple.com/app/shadowrocket/id932747118) · [V2Box](https://apps.apple.com/app/v2box-v2ray-client/id6446814690)

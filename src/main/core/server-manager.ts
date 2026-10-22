@@ -22,6 +22,17 @@ export function isSafeUpdateBranch(branch: string): boolean {
 }
 
 /**
+ * Ветка обновления: закреплённая на сервере (.current_branch) или явная.
+ * Явная ветка — бета-режим «обновиться с dev, не трогая main» (см. ServerManager.update).
+ * Префикс xrayebator- — тег v0.6.0: legacy-серверы с .current_branch=xrayebator-0.2.0.
+ */
+export function isAllowedUpdateBranch(branch: string): boolean {
+  if (branch === 'main' || branch === 'dev' || branch === 'experimental') return true
+  if (branch.startsWith('xrayebator-')) return true
+  return isSafeUpdateBranch(branch)
+}
+
+/**
  * Операции над установкой на сервере: обновление скрипта/Xray и полное удаление.
  * Требует root-доступа напрямую или через sudo.
  */
@@ -31,13 +42,15 @@ export class ServerManager {
   /**
    * Обновление: self-update скрипта xrayebator с ветки + обновление Xray-core.
    * update_command с аргументом ветки делает self-update и exec'ится в свежий скрипт.
+   * Явная ветка (например, dev) — управляемая бета: сервер забирает менеджера с dev,
+   * не дожидаясь вливания в main; .current_branch на сервере переписывается на dev.
    */
-  async update(): Promise<ServerMaintenanceResult> {
+  async update(branch?: string): Promise<ServerMaintenanceResult> {
     const client = new SshClient(this.creds)
     // Ветка берётся из .current_branch на сервере (её закрепляет
     // `xrayebator update <branch>`); main — только дефолт для серверов,
-    // где ветка ещё не закреплена.
-    let branch = 'main'
+    // где ветка ещё не закреплена. Явная ветка перекрывает обе.
+    let tracked = 'main'
     try {
       await client.connect()
       const result = await client.exec(
@@ -50,13 +63,19 @@ export class ServerManager {
       if (result.code !== 0) {
         return { ok: false, error: 'Не удалось прочитать закреплённую ветку обновления' }
       }
-      const tracked = result.stdout.trim()
-      if (tracked) branch = tracked
-      if (!isSafeUpdateBranch(branch)) {
-        return { ok: false, error: 'На сервере записано некорректное имя ветки обновления' }
+      tracked = result.stdout.trim() || 'main'
+      const target = branch ?? tracked
+      if (!isAllowedUpdateBranch(target)) {
+        return {
+          ok: false,
+          error:
+            branch !== undefined
+              ? `Ветка обновления «${branch}» не разрешена: используйте main, dev или experimental`
+              : 'На сервере записано некорректное имя ветки обновления'
+        }
       }
 
-      const command = shellCommand('xrayebator', ['update', branch])
+      const command = shellCommand('xrayebator', ['update', target])
       const updated = await client.exec(
         shellCommand('timeout', ['600', 'sh', '-c', command]),
         { elevated: true }
