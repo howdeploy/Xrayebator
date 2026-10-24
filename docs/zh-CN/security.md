@@ -117,6 +117,44 @@ ClientAliveCountMax 120
 TCPKeepAlive yes
 ```
 
+### 防爆破保护（fail2ban）
+
+公开 VPS 的 SSH 端口会被持续扫描。实测数据（2026-10-23）：**24 小时 9 953 次失败登录，来自 115 个
+地址**——其中 6 个 `109.160.32.0/24` 地址各尝试 1 197 次，而 `root` 当时允许用密码登录。
+
+`sudo xrayebator ssh-protect --enable` 在不把运营者锁在门外的前提下堵住这个洞：
+
+- 安装 `fail2ban` 并启用 `sshd` 规则——journald 后端，`findtime = 10m` 内 `maxretry = 4`，
+  `bantime = 30m`，另加 `bantime.increment`（屡犯最长一天）；所有参数都位于 `[sshd]` 段内，
+  因此运营者已有的其他 fail2ban 规则保持原有默认值；
+- 写入 `/etc/ssh/sshd_config.d/99-xrayebator-hardening.conf`（`MaxAuthTries 3` /
+  `LoginGraceTime 30`）——单个连接内尝试次数更少，可用时间也更短；
+- 应用前用 `sshd -t` 校验 drop-in，并且只 `reload` 而不 `restart`，因此已打开的会话（包括 GUI
+  正在使用的那个）不会被断开。
+
+执行安装或部署的地址**在 24 小时内免于封禁**：它连同 `# xrayebator-ignore-until: <epoch>` 一起写入
+`ignoreip`，而 `xrayebator-ssh-ignoreip.timer`（每 30 分钟、开机后 10 分钟）调用
+`ssh-protect --prune-ignore`，到期后移除该记录。因此连续输错不会把运营者——以及从同一地址访问的
+GUI——锁在外面 30 分钟，而其他人仍会被过滤。该例外可在 `ssh-protect --status` 的
+`ignore_ip` / `ignore_until` 中查看；回环基线 `ignoreip = 127.0.0.1/8 ::1` 永久保留。这是命令行与
+JSON 的细节，桌面 GUI 不展示。
+
+**密码登录被有意保留。** 桌面应用以 `root` 身份通过 SSH 密码管理服务器（`authMethod: password`）；
+改用密钥属于运营者的独立决定，该路径已在上文描述。即便改用密钥，也建议保留 `fail2ban`：它没有
+代价，还能清掉日志噪音。
+
+同一功能也可通过菜单第 `15` 项、GUI 的**安全与 TLS**选项卡使用，并且会自动启用：`install.sh` 与
+`quickstart` 在每次部署时都会开启。没有 `apt` 或 `systemd` 的主机上，命令返回 `supported: false`
+且不做任何修改。
+
+多次输错后解封自己的地址：
+
+```bash
+sudo xrayebator ssh-protect --unban <IP>
+```
+
+没有 SSH 访问时封禁会自行过期（30 分钟，屡犯更久），而且托管商控制台始终可用。
+
 ## 桌面 GUI 凭据
 
 活跃的 Electron GUI 支持 SSH 密码和私钥，并可选择直接 root 或 sudo。通过 Electron 原生文件对话框选择的私钥由 main process 读取，并通过 `keytar` 保存到操作系统钥匙串（Windows Credential Manager、macOS Keychain 或 Linux Secret Service），因此后续 SSH 操作和应用重启后都可以复用。Renderer 只收到非敏感 credential id 和显示文件名；私钥字节不会跨越 preload boundary。

@@ -15,7 +15,7 @@ for test_file in validation/*.sh; do bash "$test_file" || exit; done
 
 ## 测试覆盖范围
 
-`validation/` 中有 42 个静态与本地回归测试：
+`validation/` 中有 45 个静态与本地回归测试：
 
 | 测试 | 检查内容 |
 |---|---|
@@ -34,12 +34,15 @@ for test_file in validation/*.sh; do bash "$test_file" || exit; done
 | `test-update-branch-pinning.sh` | `update <branch>` 在 `.current_branch` 固定分支；GUI 更新不会切回其它分支 |
 | `test-update-xray-core-sync.sh` | Xray-core 更新同步 |
 | `test-vless-url-generation.sh` | `vless://` 链接生成 |
+| `test-config-temp-json-suffix.sh` | 安装与更新时的配置校验：交给 `xray run -test` 的临时配置必须以 `.json` 结尾（Xray ≥ 26.10 按扩展名判断格式并忽略 `-format json`），失败时打印内核输出，并功能性验证 `mktemp --suffix=.json` |
 | `test-installer-network-fallbacks.sh` | 安装脚本网络回退 |
 | `test-bbr-removal-migration.sh` | 已删除 BBR/TCP 调优在所有路径上的安全清理 |
 | `test-legacy-udp443-migration.sh` | 一次性清理旧版 UDP/443 阻断规则 |
 | `test-main-menu-numbering.sh` | 主菜单条目编号连续并与处理函数一致（含后端条目与监控的 1..14） |
 | `test-backend-registry.sh` | 后端注册表（多协议阶段）：source-mode 下的注册表 CRUD（经 `safe_jq_write`）、installed/field 读取、生命周期入口的安全 no-op、`backend-status` JSON 结构 |
 | `test-hysteria2-lifecycle.sh` | Hysteria 2 后端：`server.yaml` 渲染（userpass 映射、占位回退）、systemd 单元安全模型、架构映射、TLS 探测、授权/吊销/过期-恢复事件、预删除配置档后的 deleted 重生成、created 为无操作（不自动签发）、纯函数 `hysteria2://` 构造器、CLI 分发与订阅接线 |
+| `test-ssh-protect.sh` | SSH 防爆破：jail 配置（journald、10 分钟内 4 次失败、封禁 30 分钟、递增），sshd drop-in（`MaxAuthTries 3` / `LoginGraceTime 30`），保留密码登录，面向 GUI 的状态 JSON，关闭时的清理，菜单/CLI/quickstart/install.sh 的接线与 `--unban` 校验。另含部署地址的 24 小时豁免：带过期标记的 `ignoreip`、从 `SSH_CONNECTION`/`SSH_CLIENT` 解析地址、跳过回环、到期移除并保留回环基线 |
+| `test-awg-ppa-repo.sh` | `amnezia/ppa` 必须与签名密钥一起添加：`signed-by` 仓库行、先取密钥再写仓库、无密钥不写仓库、修复已损坏的未签名仓库、按标记幂等，以及在 `main_menu`/`quickstart`/`happ-setup` 中的接线 |
 | `test-awg-lifecycle.sh` | AmneziaWG 后端：Amnezia 默认 junk 方言（Jc=5、Jmin=10、Jmax=50、H1–H4=1..4、S1–S4 互不相同）、密钥生成、服务端配置渲染（PostUp MASQUERADE、安装时无 peer）、peer 地址分配、客户端 `.conf` 内容、revoke/expire/restore 事件、预删除配置档后的 deleted 重生成、created 为无操作（不自动签发）、CLI 分发、`/etc/modules-load.d` 的开机模块登记（仅在模块可用时写入）、`backend-start`（「已安装」≠「正在运行」）、以及安装成功判定：内核模块必须针对**当前**内核（`AWG_MODULES_ROOT` 为测试接缝） |
 | `test-main-readiness-regressions.sh` | 审计后的 readiness 回归：certbot manifest、UFW manifest、nginx 回滚、权限与 SSH 端口 |
 | `test-sni-change-cli.sh` | `sni-change` CLI：JSON 输出、Reality、XHTTP host、配置档同步与回滚 |
@@ -152,7 +155,7 @@ npm test              # Vitest 单元测试
 
 三个独立 workflow：
 
-- **ci-linux.yml** — Bash validation：在 ubuntu-24.04 上对所有脚本执行 `bash -n`，并运行全部 42 个
+- **ci-linux.yml** — Bash validation：在 ubuntu-24.04 上对所有脚本执行 `bash -n`，并运行全部 45 个
   `validation/test-*.sh`；在 push 到 `main`、`dev`、`experimental` 以及 pull request 时运行。
 - **release.yml** — Electron 构建（Windows/macOS/Linux）。只在 `v*` tag 和手动触发时运行；先由
   `preflight` 检查发布说明 `docs/releases/<tag>.en.md` 是否存在，以及仓库密钥 `AP3X0`（若已设置）

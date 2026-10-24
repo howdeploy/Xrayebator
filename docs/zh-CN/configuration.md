@@ -86,7 +86,7 @@ Xrayebator 不会更改主机的 TCP 拥塞控制算法，也不会写入或应�
 | `9` | 自有域名与 self-steal 挡板 |
 | `10` | 部署出站服务器，使本 VPS 成为级联的境外节点 |
 | `11` | Hysteria 2 后端：安装/状态/客户端链接/卸载（高速 UDP 传输） |
-| `12` | AmneziaWG 2.0 后端：安装/状态/客户端配置/卸载（系统级 VPN） |
+| `12` | AmneziaWG 后端（默认 3.1）：安装/状态/客户端配置/卸载（系统级 VPN） |
 | `13` | 所有后端的统一状态 |
 | `14` | Telegram 通知：配置、测试、启用/停用、监控状态 |
 | `0` | 退出 |
@@ -109,6 +109,7 @@ Xrayebator 不会更改主机的 TCP 拥塞控制算法，也不会写入或应�
 | `sudo xrayebator inspect --json` | GUI 导入时使用的只读安装检查：返回 Xray、配置档和订阅标记状态；不会安装、迁移或修改配置 |
 | `sudo xrayebator happ-setup` | 已有安装的精简 HAPP 路径：确保订阅服务和可用的多线路配置档；缺少订阅域或端口标记时，会先验证 `8443` 的产品 IP-TLS endpoint，否则失败 |
 | `quickstart` http_tls 模式 | 最后手段——只有当 http-01 与 DNS-01 都未成功时才发生：若 Let's Encrypt 无法对 IP 执行 http-01 验证（validation 主机报 `Connection reset by peer`——通常是服务商对境外来源过滤 80 端口）**且**未请求 DNS-01，部署不失败：订阅保持仅回环访问（完全不存在公共 URL——GUI 通过 SSH 从服务器本机的 `http://127.0.0.1:8080/sub/<token>` 加载密钥），并为后续后端生成自签证书；结果 JSON 携带 `degraded:true`、`tls_mode:"http_tls"` 与 Certbot 原因。服务器以「配置不完整」并带降级标记保存；80 端口上的 ACME challenge location 保持原位——解除封锁后重新运行 quickstart 即签发 LE 证书并把订阅切回 HTTPS |
+| `sudo xrayebator ssh-protect [--status\|--enable\|--disable] [--unban IP\|--prune-ignore] [--quiet]` | SSH 防爆破保护：安装 `fail2ban`，启用基于 journald 的 `sshd` 规则（10 分钟内 4 次失败 → 封禁 30 分钟，屡犯最长一天），并在 `sshd_config.d` 写入 `MaxAuthTries 3` / `LoginGraceTime 30`。**密码登录保持启用** —— 桌面 GUI 通过它管理服务器，改用密钥属于运营者的独立决定。幂等：drop-in 先经 `sshd -t` 校验，`ssh` 只 `reload` 不 `restart`，已打开的 GUI 会话不会被断开。`install.sh` 与 `quickstart` 会自动启用（部署 JSON 中有 `ssh_protect`）；`--quiet` 供脚本使用。菜单第 15 项与 GUI 的**安全与 TLS**选项卡提供同一功能。实测：公开 VPS 上 24 小时 9 953 次失败（115 个地址），启用后约 72 次/小时。执行命令的地址在 24 小时内免于封禁（`ignoreip` 加过期标记；到期后由 `--prune-ignore` 经 `xrayebator-ssh-ignoreip.timer` 移除） |
 | `sudo xrayebator profiles` | 以 JSON 数组输出服务器全部配置档（供桌面 GUI「服务器设置」页使用）；有效期同时包含用于服务端执行的 epoch 秒（`expire`）和用于界面显示的服务器本地日历日期（`expire_date`），因此不同时区的客户端也会显示用户选择的日期 |
 | `sudo xrayebator profile-create --name 名称 [--transport tcp\|tcp-utls\|tcp-xudp\|tcp-mux\|grpc\|xhttp] [--port P] [--count N] [--expire 日期]` | 非交互式创建单个或多个配置档；`--expire` 接受 `YYYY-MM-DD[ HH:MM]`、epoch 秒或 13 位毫秒。只选日期时，配置档在服务器本地时区的当天 `23:59:59` 之前（含该秒）有效；指定时间时按同一服务器时区执行。过去的有效期会被拒绝；已有名称不会被覆盖——它们会进入 `errors`（GUI 在创建前也会预检名称冲突，因为删除以配置档为单位，名称唯一才能保证删除精确），打印 `{"ok":true,"names":[...],"errors":[...]}` |
 | `sudo xrayebator profile-delete --name 名称` | 非交互式删除配置档；被删配置档的后端授权会立即吊销——AWG peer 从 `awg0.conf` 移除，Hysteria 密码从 `server.yaml` 移除（不会残留孤立凭据），名称可立即复用；打印 `{"ok":true,"name":"..."}` |
@@ -135,7 +136,7 @@ Xrayebator 不会更改主机的 TCP 拥塞控制算法，也不会写入或应�
 | `sudo xrayebator hysteria2-grant --name N` | 为配置档签发 Hysteria 2 凭据（存入配置档的 `.backends.hysteria2`）；服务端配置按全部配置档重新生成；JSON |
 | `sudo xrayebator hysteria2-subbody --on\|--off` | 两个订阅主体中 `hysteria2://` 行的总开关：标志存于后端注册表，处理器每次请求都会重读，无需重启服务；JSON |
 | `sudo xrayebator hysteria2-link --name N` | 以 JSON `{ok, name, link}` 输出持有授权配置档的 `hysteria2://` 链接（命名与 VLESS 路由一致，带国家旗帜） |
-| `sudo xrayebator awg-install [--grant-all]` | 安装 AmneziaWG 2.0 系统级 VPN 后端：DKMS 内核模块（首选 `amnezia/ppa` PPA，回退源码编译）、`awg0` 接口与随机高位 UDP 端口、junk 参数与 Amnezia 默认值一致、`ip_forward` + MASQUERADE；模块会写入 `/etc/modules-load.d/xrayebator-awg.conf` 以便开机加载（否则重启后隧道会一直处于关闭状态）；在已安装的机器上重跑会修复运行时；JSON |
+| `sudo xrayebator awg-install [--grant-all]` | 安装 AmneziaWG 系统级 VPN 后端（默认 3.1）：DKMS 内核模块（首选 `amnezia/ppa` PPA，回退源码编译）、`awg0` 接口与随机高位 UDP 端口、junk 参数与 Amnezia 默认值一致、`ip_forward` + MASQUERADE；模块会写入 `/etc/modules-load.d/xrayebator-awg.conf` 以便开机加载（否则重启后隧道会一直处于关闭状态）；在已安装的机器上重跑会修复运行时；JSON |
 | `sudo xrayebator awg-uninstall` | 移除 AmneziaWG 后端（接口、配置、symlink、防火墙规则；软件包与模块保留在系统中）；JSON |
 | `sudo xrayebator awg-status` | AmneziaWG 后端状态（JSON） |
 | `sudo xrayebator awg-grant --name N` | 为配置档签发 peer（密钥对 + 预共享密钥 + `10.8.1.x` 地址，存入 `.backends.awg`）；重新生成 `awg0.conf`；JSON |
@@ -304,11 +305,13 @@ Hysteria 拒绝空的 userpass 映射。客户端链接形如
 `hysteria2://user:pass@host:port/?sni=…&insecure=0|1#name`，会追加到两个订阅主体（HAPP 与通用）；
 注册表标志 `sub_body` 是客户端解析器出问题时的总开关。
 
-### AmneziaWG 2.0（系统级 VPN）
+### AmneziaWG（系统级 VPN，默认 3.1）
 
 `awg-install` 通过 DKMS 编译内核模块（首选 `amnezia/ppa` PPA；回退为源码编译，内核 ≥ 5.6 需要
 完整 `linux-source`），并通过 `awg-quick@awg0` 拉起 `awg0` 接口：随机高位 UDP 端口、网段
-`10.8.1.0/24`、`ip_forward` 与默认路由接口上的 MASQUERADE。junk 参数与 Amnezia 默认值一致——
+`10.8.1.0/24`、`ip_forward` 与默认路由接口上的 MASQUERADE。DKMS 需要内核头文件：安装器会自行安装；
+若运行中的内核比仓库更旧、其头文件已不存在，则针对最新可用内核编译模块、同时安装其镜像，并返回
+`reboot_required: true`；重启后再次执行该命令即可完成配置。junk 参数与 Amnezia 默认值一致——
 这是所有官方 AmneziaVPN 客户端（手机与桌面）都能可靠应用的方言：`Jc` 5、`Jmin` 10、`Jmax` 50、
 `H1`–`H4` = 1..4（WireGuard 魔数）、`S1`/`S2` 随机 12..150、`S3`/`S4` 随机 12..64
 （均互不相同，`S1+56 ≠ S2`）。每个配置档 peer 获得密钥对、预共享密钥与首个空闲地址；客户端 `.conf`（菜单项 12 或

@@ -140,7 +140,13 @@ xrayebator backend-status
 xrayebator backend-start --type hysteria2|awg
 xrayebator hysteria2-install [--port P] [--grant-all] / hysteria2-uninstall / hysteria2-grant --name N / hysteria2-subbody --on|--off / hysteria2-link --name N
 xrayebator awg-install [--grant-all] / awg-uninstall / awg-grant --name N / awg-conf --name N / awg-31 --on|--off
+xrayebator ssh-protect [--status|--enable|--disable] [--unban IP]
 ```
+
+Защита SSH от перебора управляется командой `ssh-protect` и вынесена во вкладку **Безопасность и TLS**:
+она показывает, установлен и запущен ли `fail2ban`, действующие лимиты `sshd`, число неудачных
+входов за сутки и адреса в бане, а также включает и выключает защиту. Парольный вход при этом
+осознанно сохраняется — приложение само логинится по SSH-паролю.
 
 Карточка бэкенда различает «установлен» и «работает»: зелёный **Активен** — юнит
 поднят, красный **Не запущен** — установлен, но юнит не активен (обычно модуль ядра

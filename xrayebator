@@ -3563,12 +3563,12 @@ backend_status_menu() {
   done
 }
 
-# Меню 12: AmneziaWG 2.0 (системный VPN).
+# Меню 12: AmneziaWG (системный VPN).
 awg_menu() {
   while true; do
     show_ascii
     echo -e "${BLUE}╔═══════════════════════════════════════════════╗${NC}"
-    echo -e "${BLUE}║         AMNEZIAWG 2.0 (СИСТЕМНЫЙ VPN)         ║${NC}"
+    echo -e "${BLUE}║           AMNEZIAWG (СИСТЕМНЫЙ VPN)           ║${NC}"
     echo -e "${BLUE}╚═══════════════════════════════════════════════╝${NC}"
     echo ""
     if _backend_installed awg; then
@@ -3690,7 +3690,7 @@ hysteria2_menu() {
 # ═══════════════════════════════════════════════════════════
 
 # ═══════════════════════════════════════════════════════════
-# BACKEND: AMNEZIAWG 2.0 (системный VPN) — срезы 4–5
+# BACKEND: AMNEZIAWG (системный VPN) — срезы 4–5
 # ═══════════════════════════════════════════════════════════
 # Решение 2026-10-04: kernel-модуль DKMS, не userspace. Официальный путь —
 # PPA amnezia/ppa (README amneziawg-linux-kernel-module); фолбэк — сборка
@@ -3845,17 +3845,159 @@ EOF
   return 0
 }
 
+# --- PPA amnezia/ppa: репозиторий ставим только вместе с ключом подписи ---------
+# Живой дефект 2026-10-23 (2.26.125.228): ветка без add-apt-repository писала
+# sources.list.d/amneziawg.list БЕЗ ключа. После этого `apt-get update` возвращал
+# rc=100 («NO_PUBKEY 4166F2C257290828 / repository is not signed»), на сервере
+# переставали работать ЛЮБЫЕ apt-операции (включая установку плагина certbot для
+# DNS-01), а `apt install amneziawg` переставал находить пакет. Правило теперь
+# обратное: нет ключа — нет репозитория, apt остаётся рабочим, и установка честно
+# уходит на ручную сборку.
+AWG_PPA_URI="${AWG_PPA_URI:-https://ppa.launchpadcontent.net/amnezia/ppa/ubuntu}"
+AWG_PPA_SUITE="${AWG_PPA_SUITE:-focal}"
+AWG_PPA_KEY_ID="${AWG_PPA_KEY_ID:-4166F2C257290828}"
+AWG_PPA_LIST_FILE="${AWG_PPA_LIST_FILE:-/etc/apt/sources.list.d/amneziawg.list}"
+AWG_PPA_KEYRING="${AWG_PPA_KEYRING:-/etc/apt/keyrings/amnezia-ppa.gpg}"
+
+# Строка репозитория в том виде, в каком apt её принимает: ключ подключён через
+# signed-by, поэтому apt не ищет его в системных доверенных ключах.
+_awg_ppa_sources_line_pure() {
+  printf 'deb [signed-by=%s] %s %s main\n' "$1" "$AWG_PPA_URI" "$AWG_PPA_SUITE"
+}
+
+# Единственная точка запуска apt-get update в этом блоке: тест подменяет её,
+# чтобы не ходить в сеть.
+_awg_ppa_apt_update() {
+  apt-get update -qq >/dev/null 2>&1
+}
+
+# Ключ подписи PPA → брелок в формате, который читает signed-by.
+_awg_ppa_fetch_key() {
+  [[ -s "$AWG_PPA_KEYRING" ]] && return 0
+  local armor rc=1
+  armor=$(mktemp) || return 1
+  if timeout 20 curl -fsSL \
+      "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x${AWG_PPA_KEY_ID}" \
+      -o "$armor" 2>/dev/null \
+     && grep -q 'BEGIN PGP PUBLIC KEY BLOCK' "$armor" 2>/dev/null; then
+    mkdir -p "$(dirname "$AWG_PPA_KEYRING")" 2>/dev/null
+    if gpg --dearmor < "$armor" > "$AWG_PPA_KEYRING" 2>/dev/null && [[ -s "$AWG_PPA_KEYRING" ]]; then
+      rc=0
+    fi
+  fi
+  rm -f "$armor"
+  if [[ $rc -ne 0 ]]; then
+    rm -f "$AWG_PPA_KEYRING" 2>/dev/null
+    return 1
+  fi
+  return 0
+}
+
+# Полностью убрать то, что мы добавили в apt (репозиторий + брелок) и обновить
+# списки. Нужен и при откате, и при ремонте уже испорченных серверов.
+_awg_ppa_remove() {
+  rm -f "$AWG_PPA_LIST_FILE" 2>/dev/null
+  rm -f "$AWG_PPA_KEYRING" 2>/dev/null
+  return 0
+}
+
+# Поставить репозиторий так, чтобы apt остался рабочим. 0 = репозиторий читается.
+_awg_ppa_configure() {
+  if command -v add-apt-repository >/dev/null 2>&1; then
+    # Официальный путь: add-apt-repository сам приносит ключ.
+    if add-apt-repository -y ppa:amnezia/ppa >/dev/null 2>&1 && _awg_ppa_apt_update; then
+      return 0
+    fi
+    # Он умеет оставить за собой неподписанный репозиторий (keyserver недоступен) —
+    # вычищаем, иначе apt снова сломается.
+    add-apt-repository -y --remove ppa:amnezia/ppa >/dev/null 2>&1 || true
+    _awg_ppa_remove
+  fi
+  _awg_ppa_fetch_key || return 1
+  _awg_ppa_sources_line_pure "$AWG_PPA_KEYRING" > "$AWG_PPA_LIST_FILE" 2>/dev/null || {
+    _awg_ppa_remove
+    return 1
+  }
+  if ! _awg_ppa_apt_update; then
+    _awg_ppa_remove
+    return 1
+  fi
+  return 0
+}
+
+# Ремонт серверов, где PPA уже успели добавить без ключа (дефект до 0.7.0):
+# либо подписываем репозиторий, либо убираем его — в обоих случаях apt-get update
+# должен снова возвращать 0. Идемпотентно по маркеру; Xray не перезапускается
+# (правка не касается его конфига), поэтому это не run_migration().
+migrate_awg_ppa_signed_2026() {
+  local marker="${1:-/usr/local/etc/xray/.awg_ppa_signed_2026}"
+  [[ -f "$marker" ]] && return 0
+
+  if [[ ! -f "$AWG_PPA_LIST_FILE" ]]; then
+    touch "$marker" 2>/dev/null && chown root:root "$marker" 2>/dev/null
+    return 0
+  fi
+  if grep -q 'signed-by=' "$AWG_PPA_LIST_FILE" 2>/dev/null; then
+    touch "$marker" 2>/dev/null && chown root:root "$marker" 2>/dev/null
+    return 0
+  fi
+
+  echo -e "${MAGENTA}[migration] PPA amnezia/ppa: восстановление ключа подписи${NC}"
+  if _awg_ppa_fetch_key; then
+    _awg_ppa_sources_line_pure "$AWG_PPA_KEYRING" > "$AWG_PPA_LIST_FILE" 2>/dev/null || true
+    echo -e "${GREEN}  ✓ Репозиторий amnezia/ppa подписан (signed-by=${AWG_PPA_KEYRING})${NC}"
+  else
+    _awg_ppa_remove
+    echo -e "${YELLOW}  ⚠ Ключ PPA недоступен — репозиторий amnezia/ppa убран, apt снова рабочий${NC}"
+  fi
+  if ! _awg_ppa_apt_update; then
+    _awg_ppa_remove
+    echo -e "${YELLOW}  ⚠ apt-get update всё ещё не чистый — проверьте /etc/apt/sources.list.d${NC}"
+  fi
+  touch "$marker" 2>/dev/null && chown root:root "$marker" 2>/dev/null
+  return 0
+}
+
 # Установка модуля+tools: PPA (официальный путь) → apt amneziawg.
 # Возвращает 0 только если awg-бинарник на месте.
+# Заголовки ядра для сборки модуля. Их часто нет вовсе (Debian/Ubuntu не ставят
+# linux-headers по умолчанию), а если ядро на сервере старше репозитория, точного
+# пакета `linux-headers-$(uname -r)` может уже не быть: живой случай 2026-10-24 —
+# Debian 12, запущено 6.1.0-45, в репо только 6.1.0-47/50/53/54, DKMS молча
+# оставлял «amneziawg/1.0.0: added» и модуль не появлялся.
+# 0 — headers для текущего ядра на месте; 1 — поставить не удалось.
+_awg_install_kernel_headers() {
+  local krel arch
+  krel="$(uname -r)"
+  [[ -d "/lib/modules/$krel/build" ]] && return 0
+  _apt_wait_lock 2>/dev/null || true
+
+  # 1) точный пакет текущего ядра
+  apt-get "${APT_LOCK_OPTS[@]}" install -y --no-install-recommends \
+    "linux-headers-$krel" >/dev/null 2>&1 || true
+  [[ -d "/lib/modules/$krel/build" ]] && return 0
+
+  # 2) метапакеты: точного пакета нет (ядро старше репозитория). Вместе с
+  #    заголовками ставим и образ — иначе DKMS соберёт модуль под ядро, в
+  #    которое сервер никогда не загрузится, и перезагрузка ничего не изменит.
+  arch=$(dpkg --print-architecture 2>/dev/null || echo amd64)
+  apt-get "${APT_LOCK_OPTS[@]}" install -y --no-install-recommends \
+    "linux-headers-$arch" "linux-image-$arch" >/dev/null 2>&1 || true
+  if ! ls -d /usr/src/linux-headers-* >/dev/null 2>&1; then
+    apt-get "${APT_LOCK_OPTS[@]}" install -y --no-install-recommends \
+      linux-headers-generic linux-image-generic >/dev/null 2>&1 || true
+  fi
+  [[ -d "/lib/modules/$krel/build" ]] && return 0
+  return 1
+}
+
 _awg_install_packages() {
   echo -e "${CYAN}  → Ставлю amneziawg из PPA amnezia/ppa (может занять несколько минут: DKMS)...${NC}"
   _apt_wait_lock
-  if command -v add-apt-repository >/dev/null 2>&1; then
-    add-apt-repository -y ppa:amnezia/ppa >/dev/null 2>&1 || true
-  else
-    echo "deb https://ppa.launchpadcontent.net/amnezia/ppa/ubuntu focal main" > /etc/apt/sources.list.d/amneziawg.list
+  if ! _awg_ppa_configure; then
+    echo -e "${YELLOW}  ⚠ PPA amnezia/ppa недоступен (нет ключа или сети) — репозиторий не добавлен, apt остался чистым${NC}" >&2
+    return 1
   fi
-  apt-get update -qq >/dev/null 2>&1 || true
   apt-get "${APT_LOCK_OPTS[@]}" install -y --no-install-recommends amneziawg >/dev/null 2>&1
   command -v awg >/dev/null 2>&1 || return 1
   # Наличие `awg` в PATH — НЕ признак успеха: бинарник остаётся от прежней ручной
@@ -3865,9 +4007,20 @@ _awg_install_packages() {
   # модуль собран именно под текущее ядро, и если нет — пересобираем через DKMS.
   _awg_module_for_kernel && return 0
   if command -v dkms >/dev/null 2>&1 && dkms status 2>/dev/null | grep -qi amnezia; then
-    echo -e "${CYAN}  → Модуля нет для ядра $(uname -r) — пересобираю DKMS...${NC}"
+    echo -e "${CYAN}  → Модуль не собран для ядра $(uname -r) — проверяю заголовки и пересобираю DKMS...${NC}"
+    if ! _awg_install_kernel_headers; then
+      echo -e "${YELLOW}  ⚠ Заголовков для ядра $(uname -r) нет в репозитории — DKMS не соберёт модуль для него${NC}" >&2
+    fi
     dkms autoinstall >/dev/null 2>&1 || true
     _awg_module_for_kernel && return 0
+    # Заголовки метапакета могли дать ДРУГОЕ ядро: модуль собран, но не для
+    # запущенного. Это не провал установки, а требование перезагрузки.
+    local built_for
+    built_for=$(_awg_module_kernels)
+    if [[ -n "$built_for" && "$built_for" != *"$(uname -r)"* ]]; then
+      echo -e "${YELLOW}  ⚠ Модуль собран для ядра ${built_for% }, запущено $(uname -r) — нужна перезагрузка${NC}" >&2
+      return 2
+    fi
   fi
   return 1
 }
@@ -3878,16 +4031,29 @@ _awg_install_packages_manual() {
   echo -e "${CYAN}  → PPA недоступен — ручная сборка amneziawg из исходников...${NC}"
   _apt_wait_lock
   apt-get "${APT_LOCK_OPTS[@]}" install -y --no-install-recommends \
-    build-essential dkms git "linux-headers-$(uname -r)" linux-source >/dev/null 2>&1 || true
+    build-essential git linux-source >/dev/null 2>&1 || true
+  _awg_install_kernel_headers >/dev/null 2>&1 || true
   local work
   work=$(mktemp -d) || return 1
   git clone --depth 1 "https://github.com/${AWG_REPO_MODULE}.git" "$work/module" >/dev/null 2>&1 || { rm -rf "$work"; return 1; }
   git clone --depth 1 "https://github.com/${AWG_REPO_TOOLS}.git" "$work/tools" >/dev/null 2>&1 || { rm -rf "$work"; return 1; }
   # Полное дерево исходников ядра для ядер ≥5.6 (README: нужны именно sources).
+  # Debian и Ubuntu кладут linux-source АРХИВОМ (/usr/src/linux-source-6.1.tar.xz),
+  # поэтому его надо распаковать: симлинк на архив модуль не соберёт (живой
+  # случай 2026-10-24 — ручная сборка падала на этом месте).
   local ks
   ks=$(ls -d /usr/src/linux-source-* 2>/dev/null | head -1)
-  if [[ -n "$ks" ]]; then
+  if [[ -n "$ks" && -d "$ks" ]]; then
     ln -sfn "$(readlink -f "$ks")" "$work/module/src/kernel"
+  elif [[ -n "$ks" ]]; then
+    if tar -xf "$ks" -C "$work" >/dev/null 2>&1; then
+      local tree
+      tree=$(find "$work" -maxdepth 1 -type d -name 'linux-source-*' | head -1)
+      [[ -n "$tree" ]] && ln -sfn "$tree" "$work/module/src/kernel"
+    fi
+    if [[ ! -e "$work/module/src/kernel" ]]; then
+      echo -e "${YELLOW}  ⚠ Не удалось распаковать $(basename "$ks") — сборка модуля может упасть${NC}"
+    fi
   else
     echo -e "${YELLOW}  ⚠ linux-source не найден — сборка модуля на ядре ≥5.6 может упасть${NC}"
   fi
@@ -3970,7 +4136,19 @@ _awg_install() {
   }
 
   # 1) Пакеты: PPA → ручная сборка. Оба шага честно логируются.
-  if ! _awg_install_packages; then
+  local pkgs_rc=0
+  _awg_install_packages || pkgs_rc=$?
+  if [[ $pkgs_rc -eq 2 ]]; then
+    # Модуль собран, но под другое ядро: останется только перезагрузиться.
+    local built_for
+    built_for=$(_awg_module_kernels)
+    echo -e "${YELLOW}⚠ AmneziaWG собран для ядра ${built_for% }, а запущено $(uname -r).${NC}"
+    echo -e "${YELLOW}  Заголовков для текущего ядра в репозитории нет, поэтому DKMS собрал модуль${NC}"
+    echo -e "${YELLOW}  для нового ядра и поставил его образ. Перезагрузите сервер и повторите:${NC}"
+    echo -e "${YELLOW}  sudo xrayebator awg-install${NC}"
+    return 3
+  fi
+  if [[ $pkgs_rc -ne 0 ]]; then
     if ! _awg_install_packages_manual; then
       echo -e "${RED}✗ Не удалось установить amneziawg (PPA и ручная сборка)${NC}"
       echo -e "${YELLOW}  Проверьте ядро/headers: uname -r; dpkg -l | grep linux-headers${NC}"
@@ -4147,6 +4325,17 @@ awg_install_command() {
   elif [[ $rc == 2 ]]; then
     jq -n '{ok: true, already: true}'
     rc=0
+  elif [[ $rc == 3 ]]; then
+    # Установка «наполовину»: модуль собран под новое ядро, нужен ребут.
+    # Отдаём ok:false с человеческой причиной, но код 0 — иначе GUI покажет
+    # первую строку stderr (прогресс установки) вместо этой причины.
+    local built_for
+    built_for=$(_awg_module_kernels)
+    jq -n --arg cur "$(uname -r)" --arg built "${built_for% }" \
+      '{ok:false, reboot_required:true, running_kernel:$cur, built_for:$built,
+        error:("Модуль AmneziaWG собран для ядра " + $built + ", запущено " + $cur +
+               ": заголовков для текущего ядра нет в репозитории. Перезагрузите сервер и повторите awg-install — он завершит настройку")}'
+    return 0
   else
     jq -n --argjson code "$rc" '{ok: false, code: $code}'
   fi
@@ -11157,6 +11346,12 @@ main_menu() {
     ((migration_failures++))
   fi
 
+  # Репозиторий amnezia/ppa без ключа ломал apt-get update (rc=100) на серверах,
+  # где AWG ставили до 0.7.0: чиним/убираем один раз, Xray не перезапускаем.
+  if ! migrate_awg_ppa_signed_2026; then
+    ((migration_failures++))
+  fi
+
   run_migration "xhttp_migrated"                       "XHTTP host/SNI sync"             migrate_xhttp_profiles             || ((migration_failures++))
   run_migration "routing_v132_migrated"                "Routing default direct rule"      migrate_routing_config             || ((migration_failures++))
   run_migration "legacy_udp443_block_removed_v3"       "Remove legacy UDP/443 block (Telegram)" migrate_legacy_managed_udp443_block_v3 || ((migration_failures++))
@@ -11274,11 +11469,14 @@ main_menu() {
     echo ""
     echo -e "${MAGENTA} MULTI-PROTOCOL BACKENDS:${NC}"
     echo -e "${CYAN}11)${NC} Hysteria 2 (быстрый UDP)"
-    echo -e "${CYAN}12)${NC} AmneziaWG 2.0 (системный VPN)"
+    echo -e "${CYAN}12)${NC} AmneziaWG (системный VPN)"
     echo -e "${CYAN}13)${NC} Статус бэкендов"
     echo ""
     echo -e "${MAGENTA} МОНИТОРИНГ:${NC}"
     echo -e "${CYAN}14)${NC} Уведомления в Telegram (мониторинг сервера)"
+    echo ""
+    echo -e "${MAGENTA} БЕЗОПАСНОСТЬ:${NC}"
+    echo -e "${CYAN}15)${NC} Защита SSH от перебора (fail2ban)"
     echo ""
     echo -e "${RED} 0)${NC} Выход"
     echo ""
@@ -11300,6 +11498,7 @@ main_menu() {
       12) awg_menu ;;
       13) backend_status_menu ;;
       14) telegram_alerts_menu ;;
+      15) ssh_protect_menu ;;
       0) exit 0 ;;
       *) echo -e "${RED}Неверный выбор${NC}"; sleep 1 ;;
     esac
@@ -14833,6 +15032,7 @@ quickstart_command() {
   echo "=== Миграции ===" >&2
   migrate_remove_legacy_tcp_tuning_v3 >/dev/null 2>&1 || true
   migrate_client_fingerprint_state_2026 >/dev/null 2>&1 || true
+  migrate_awg_ppa_signed_2026 >/dev/null 2>&1 || true
   run_migration "xhttp_migrated" "XHTTP host/SNI sync" migrate_xhttp_profiles >/dev/null 2>&1 || true
   run_migration "routing_v132_migrated" "Routing default direct rule" migrate_routing_config >/dev/null 2>&1 || true
   run_migration "legacy_udp443_block_removed_v3" "Remove legacy UDP/443 block" migrate_legacy_managed_udp443_block_v3 >/dev/null 2>&1 || true
@@ -15416,6 +15616,14 @@ NGINXHTTPS
   result_flag=$(_geo_flag_emoji "$(_geo_country_code)")
   result_os=$(awk -F'"' '/^PRETTY_NAME=/{print $2; exit}' /etc/os-release 2>/dev/null)
 
+  # Защита SSH от перебора — часть установки, а не отдельное пожелание: публичный
+  # сервер с root-паролем иначе перебирают тысячами попыток в сутки. Провал не
+  # должен валить деплой: GUI получит ssh_protect:false и включит кнопкой.
+  local ssh_protect_ok=false
+  if _ssh_protect_auto_enable; then
+    ssh_protect_ok=true
+  fi
+
   # Транзакция завершена: per-run vhost backup больше не нужен. Backup default
   # остаётся до uninstall, чтобы вернуть исходный сайт.
   rm -f -- "$QS_VHOST_BACKUP" 2>/dev/null || true
@@ -15435,13 +15643,15 @@ NGINXHTTPS
       --arg flag "$result_flag" --arg os "$result_os" \
       --argjson pq "$pq_route_added" \
       --argjson staging "$acme_staging" \
+      --argjson ssh_protect "$ssh_protect_ok" \
       --arg cert_reason "${certbot_reason:-}" \
       '{ok:true, degraded:true, tls_mode:"http_tls", certbot_reason:$cert_reason,
         subscription_url:$url, base_url:$base, profile:$profile, routes:$routes,
-        country:$country, city:$city, flag:$flag, os:$os, pq_route:$pq, staging:$staging}'
+        country:$country, city:$city, flag:$flag, os:$os, pq_route:$pq, staging:$staging,
+        ssh_protect:$ssh_protect}'
     return 0
   fi
-  echo "{\"ok\":true,\"subscription_url\":\"${subscription_url}\",\"base_url\":\"${base}\",\"profile\":\"${HAPP_DEFAULT_PROFILE}\",\"routes\":${route_count},\"tls_mode\":\"${SUB_TLS_MODE}\",\"pq_route\":${pq_route_added},\"staging\":${acme_staging},\"country\":\"${result_country}\",\"city\":\"${result_city}\",\"flag\":\"${result_flag}\",\"os\":\"${result_os}\"}"
+  echo "{\"ok\":true,\"subscription_url\":\"${subscription_url}\",\"base_url\":\"${base}\",\"profile\":\"${HAPP_DEFAULT_PROFILE}\",\"routes\":${route_count},\"tls_mode\":\"${SUB_TLS_MODE}\",\"pq_route\":${pq_route_added},\"staging\":${acme_staging},\"ssh_protect\":${ssh_protect_ok},\"country\":\"${result_country}\",\"city\":\"${result_city}\",\"flag\":\"${result_flag}\",\"os\":\"${result_os}\"}"
   return 0
 }
 
@@ -15468,6 +15678,7 @@ happ_setup_command() {
   run_migration "alerts_monitor_2026" "Telegram alerts monitor timer" _migrate_alerts_monitor_2026 >/dev/null 2>&1 || true
   run_migration "subhttp_formats_2026" "Subhttp Clash/sing-box formats" _migrate_subhttp_formats_2026 >/dev/null 2>&1 || true
   run_migration "awg_module_2026" "AWG kernel module load at boot" _migrate_awg_module_2026 >/dev/null 2>&1 || true
+  migrate_awg_ppa_signed_2026 >/dev/null 2>&1 || true
   fix_xray_permissions >/dev/null 2>&1 || true
 
   # 1. Убедиться, что subscription server установлен и запущен
@@ -18602,6 +18813,515 @@ port_change_command() {
   return 0
 }
 
+# ============================================================================
+# Защита SSH от перебора (fail2ban + лимиты авторизации sshd)
+# ============================================================================
+# Зачем: на публичном VPN-сервере SSH перебирают постоянно. Замер на живом
+# сервере (2026-10-23): ~9 950 неудачных попыток за сутки со 115 адресов, при
+# этом root пускался по паролю без ограничений. fail2ban банит источник после
+# 4 неудач, а MaxAuthTries/LoginGraceTime сужают окно до бана.
+#
+# Парольный вход НЕ выключается осознанно: GUI и деплой ходят на сервер как root
+# по SSH-паролю (authMethod: password). Ключи — отдельное решение оператора,
+# здесь мы его не навязываем, иначе управление сервером из приложения отвалится.
+SSH_PROTECT_JAIL_FILE="${SSH_PROTECT_JAIL_FILE:-/etc/fail2ban/jail.d/xrayebator-sshd.local}"
+SSH_PROTECT_SSHD_FILE="${SSH_PROTECT_SSHD_FILE:-/etc/ssh/sshd_config.d/99-xrayebator-hardening.conf}"
+SSH_PROTECT_MARKER="${SSH_PROTECT_MARKER:-/usr/local/etc/xray/.ssh_protect_2026}"
+SSH_PROTECT_JAIL="sshd"
+SSH_PROTECT_BANTIME="${SSH_PROTECT_BANTIME:-30m}"
+SSH_PROTECT_FINDTIME="${SSH_PROTECT_FINDTIME:-10m}"
+SSH_PROTECT_MAXRETRY="${SSH_PROTECT_MAXRETRY:-4}"
+# Сколько действует исключение для адреса, с которого шла установка/деплой.
+# Смысл: 4 опечатки в пароле не должны запирать оператора (и GUI, который ходит
+# с того же адреса) на 30 минут. Через сутки исключение снимается само.
+SSH_PROTECT_IGNORE_TTL="${SSH_PROTECT_IGNORE_TTL:-86400}"
+SSH_PROTECT_IGNORE_UNIT="${SSH_PROTECT_IGNORE_UNIT:-/etc/systemd/system/xrayebator-ssh-ignoreip.service}"
+SSH_PROTECT_IGNORE_TIMER="${SSH_PROTECT_IGNORE_TIMER:-/etc/systemd/system/xrayebator-ssh-ignoreip.timer}"
+
+# Конфиг джейла: journald-backend (Ubuntu/Debian с systemd), бан 30 минут,
+# 4 неудачи за 10 минут. bantime.increment растягивает наказание повторным
+# нарушителям до суток — иначе один и тот же бот возвращается каждые полчаса.
+_ssh_protect_jail_conf_pure() {
+  # $1 — адрес, исключённый из банов (необязательно), $2 — epoch, до которого
+  # исключение действует. Строка ignoreip пишется только вместе с датой: таймер
+  # xrayebator-ssh-ignoreip снимает её по истечении срока.
+  local ignore_ip="${1:-}" ignore_until="${2:-}"
+  cat <<EOF
+# Managed by xrayebator — защита SSH от перебора. Парольный вход оставлен.
+# Настройки живут ВНУТРИ джейла [${SSH_PROTECT_JAIL}], а не в [DEFAULT]: защита
+# включается автоматически при установке, и она не должна менять поведение
+# чужих джейлов fail2ban на сервере, где оператор уже настроил свои.
+[${SSH_PROTECT_JAIL}]
+enabled = true
+backend = systemd
+bantime = ${SSH_PROTECT_BANTIME}
+findtime = ${SSH_PROTECT_FINDTIME}
+maxretry = ${SSH_PROTECT_MAXRETRY}
+bantime.increment = true
+bantime.factor = 2
+bantime.maxtime = 1d
+EOF
+  if [[ -n "$ignore_ip" ]]; then
+    cat <<EOF
+
+# Адрес, с которого шла установка/деплой: исключён из банов, чтобы серия
+# опечаток в пароле не заперла оператора. Срок — ${SSH_PROTECT_IGNORE_TTL} с,
+# дальше строка снимается автоматически (xrayebator-ssh-ignoreip.timer).
+# xrayebator-ignore-until: ${ignore_until}
+ignoreip = 127.0.0.1/8 ::1 ${ignore_ip}
+EOF
+  else
+    # Loopback не банится никогда — как в дефолтах fail2ban. Строку пишем
+    # всегда: если джейл её не содержит, политика ignoreip становится пустой.
+    cat <<'EOF'
+
+# Loopback не банится (как в дефолтах fail2ban); адрес деплоя сюда добавляется
+# на 24 часа и снимается таймером xrayebator-ssh-ignoreip.
+ignoreip = 127.0.0.1/8 ::1
+EOF
+  fi
+}
+
+# Адрес клиента текущей SSH-сессии: с него пришёл деплой/установка. sshd кладёт
+# его в SSH_CONNECTION даже для неинтерактивных команд (`ssh host bash x.sh`),
+# поэтому GUI-деплой тоже виден.
+_ssh_protect_client_ip() {
+  local ip=""
+  if [[ -n "${SSH_CONNECTION:-}" ]]; then
+    ip="${SSH_CONNECTION%% *}"
+  elif [[ -n "${SSH_CLIENT:-}" ]]; then
+    ip="${SSH_CLIENT%% *}"
+  fi
+  [[ "$ip" =~ ^[0-9a-fA-F:.]+$ ]] || return 1
+  [[ "$ip" == "127.0.0.1" || "$ip" == "::1" ]] && return 1
+  printf '%s\n' "$ip"
+}
+
+_ssh_protect_ignore_until_file() {
+  sed -n 's/^# xrayebator-ignore-until: \([0-9][0-9]*\)$/\1/p' "$SSH_PROTECT_JAIL_FILE" 2>/dev/null | head -1
+}
+
+_ssh_protect_ignore_ip_file() {
+  sed -n 's/^ignoreip = 127\.0\.0\.1\/8 ::1 \(.*\)$/\1/p' "$SSH_PROTECT_JAIL_FILE" 2>/dev/null | head -1
+}
+
+_ssh_protect_reload_fail2ban() {
+  fail2ban-client reload "$SSH_PROTECT_JAIL" >/dev/null 2>&1 \
+    || systemctl restart fail2ban >/dev/null 2>&1 || true
+}
+
+# Раз в 30 минут и при загрузке: снять истёкшее исключение.
+_ssh_protect_install_ignore_timer() {
+  [[ -f "$SSH_PROTECT_IGNORE_TIMER" ]] && return 0
+  cat > "$SSH_PROTECT_IGNORE_UNIT" 2>/dev/null <<'EOF'
+[Unit]
+Description=Xrayebator: снятие истёкшего исключения из банов SSH
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/xrayebator ssh-protect --prune-ignore
+Nice=10
+EOF
+  cat > "$SSH_PROTECT_IGNORE_TIMER" 2>/dev/null <<'EOF'
+[Unit]
+Description=Xrayebator: проверка срока исключения из банов SSH
+
+[Timer]
+# Календарное расписание, а не только OnUnitActiveSec: относительное правило
+# считается от последней активации сервиса, и после пересоздания таймера
+# (prune → повторный --enable) systemd оставлял next_elapse=infinity, то есть
+# таймер замолкал навсегда. Живая находка 2026-10-24 на Ubuntu 24.04.
+OnCalendar=*:0/30
+OnBootSec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  systemctl enable --now xrayebator-ssh-ignoreip.timer >/dev/null 2>&1 || true
+}
+
+_ssh_protect_remove_ignore_timer() {
+  systemctl disable --now xrayebator-ssh-ignoreip.timer >/dev/null 2>&1 || true
+  rm -f "$SSH_PROTECT_IGNORE_TIMER" "$SSH_PROTECT_IGNORE_UNIT" 2>/dev/null
+  systemctl daemon-reload >/dev/null 2>&1 || true
+}
+
+# Снять исключение, если срок вышел. Коды: 0 — снял, 1 — ещё действует,
+# 2 — исключения нет. Время можно подставить (SSH_PROTECT_NOW) — для теста.
+_ssh_protect_prune_ignore() {
+  local now="${SSH_PROTECT_NOW:-$(date +%s)}"
+  local until
+  until=$(_ssh_protect_ignore_until_file)
+  if [[ -z "$until" ]]; then
+    _ssh_protect_remove_ignore_timer
+    return 2
+  fi
+  [[ "$until" -gt "$now" ]] && return 1
+  _ssh_protect_jail_conf_pure > "$SSH_PROTECT_JAIL_FILE" 2>/dev/null || return 2
+  _ssh_protect_reload_fail2ban
+  _ssh_protect_remove_ignore_timer
+  return 0
+}
+
+# Drop-in для sshd. Только лимиты: сам запрет делает fail2ban, а полный запрет
+# паролей сломал бы GUI (он логинится паролем).
+_ssh_protect_sshd_conf_pure() {
+  cat <<'EOF'
+# Managed by xrayebator — сужение окна перебора.
+# MaxAuthTries/LoginGraceTime ограничивают попытки в одном соединении.
+MaxAuthTries 3
+LoginGraceTime 30
+EOF
+}
+
+_ssh_protect_supported() {
+  command -v apt-get >/dev/null 2>&1 && command -v systemctl >/dev/null 2>&1
+}
+
+_ssh_protect_installed() { command -v fail2ban-client >/dev/null 2>&1; }
+
+_ssh_protect_active() { systemctl is-active --quiet fail2ban 2>/dev/null; }
+
+_ssh_protect_boot_enabled() { systemctl is-enabled --quiet fail2ban 2>/dev/null; }
+
+# Действующее значение директивы sshd (sshd -T печатает всё в нижнем регистре).
+_ssh_protect_sshd_setting() {
+  sshd -T 2>/dev/null | awk -v k="$1" 'tolower($1) == k { $1 = ""; sub(/^ +/, ""); print; exit }'
+}
+
+# Число из вывода fail2ban-client status (например «Currently banned: 2»).
+_ssh_protect_jail_number() {
+  fail2ban-client status "$SSH_PROTECT_JAIL" 2>/dev/null \
+    | awk -F: -v k="$1" 'index($1, k) { gsub(/[^0-9]/, "", $2); print $2 + 0; exit }'
+}
+
+# Забаненные сейчас адреса — JSON-массивом (для GUI).
+_ssh_protect_banned_ips_json() {
+  local ips
+  ips=$(fail2ban-client get "$SSH_PROTECT_JAIL" banip 2>/dev/null | tr -s ' \t' '\n' | sed '/^$/d')
+  if [[ -z "$ips" ]]; then
+    echo '[]'
+    return 0
+  fi
+  printf '%s\n' "$ips" | jq -R . | jq -s -c . 2>/dev/null || echo '[]'
+}
+
+_ssh_protect_failed_24h() {
+  local n
+  n=$(journalctl -u ssh -u sshd --since '-24 hours' --no-pager 2>/dev/null \
+    | grep -c 'Failed password' 2>/dev/null)
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  echo "$n"
+}
+
+# Полный статус одним JSON-объектом: и для GUI, и для `ssh-protect --status`.
+_ssh_protect_status_json() {
+  local supported=false installed=false active=false boot=false hardened=false
+  local banned_cur=0 banned_total=0 failed=0 ips='[]'
+  _ssh_protect_supported && supported=true
+  _ssh_protect_installed && installed=true
+  _ssh_protect_active && active=true
+  _ssh_protect_boot_enabled && boot=true
+  [[ -f "$SSH_PROTECT_SSHD_FILE" ]] && hardened=true
+  if [[ "$installed" == true ]]; then
+    banned_cur=$(_ssh_protect_jail_number "Currently banned")
+    banned_total=$(_ssh_protect_jail_number "Total banned")
+    ips=$(_ssh_protect_banned_ips_json)
+  fi
+  failed=$(_ssh_protect_failed_24h)
+  [[ "$banned_cur" =~ ^[0-9]+$ ]] || banned_cur=0
+  [[ "$banned_total" =~ ^[0-9]+$ ]] || banned_total=0
+  local ignore_ip ignore_until
+  ignore_ip=$(_ssh_protect_ignore_ip_file)
+  ignore_until=$(_ssh_protect_ignore_until_file)
+  [[ "$ignore_until" =~ ^[0-9]+$ ]] || ignore_until=0
+  jq -n \
+    --argjson supported "$supported" \
+    --argjson installed "$installed" \
+    --argjson active "$active" \
+    --argjson boot "$boot" \
+    --argjson hardened "$hardened" \
+    --arg mat "$(_ssh_protect_sshd_setting maxauthtries)" \
+    --arg lgt "$(_ssh_protect_sshd_setting logingracetime)" \
+    --arg pw "$(_ssh_protect_sshd_setting passwordauthentication)" \
+    --arg prl "$(_ssh_protect_sshd_setting permitrootlogin)" \
+    --argjson failed "$failed" \
+    --argjson banned_cur "$banned_cur" \
+    --argjson banned_total "$banned_total" \
+    --argjson ips "$ips" \
+    --arg ignore_ip "$ignore_ip" \
+    --argjson ignore_until "$ignore_until" \
+    --arg jail "$SSH_PROTECT_JAIL_FILE" \
+    --arg sshd "$SSH_PROTECT_SSHD_FILE" \
+    '{ok:true, supported:$supported, installed:$installed, active:$active,
+      enabled_at_boot:$boot, sshd_hardened:$hardened,
+      max_auth_tries:$mat, login_grace_time:$lgt,
+      password_authentication:$pw, permit_root_login:$prl,
+      failed_24h:$failed, banned_current:$banned_cur, banned_total:$banned_total,
+      banned_ips:$ips, ignore_ip:$ignore_ip, ignore_until:$ignore_until,
+      jail_file:$jail, sshd_file:$sshd}'
+}
+
+# Включить защиту. Идемпотентно: можно звать повторно — файлы перезапишутся,
+# сервис перезапустится, sshd перечитает конфиг через reload (не restart, чтобы
+# не рвать уже открытые SSH-сессии: по ним работает GUI).
+_ssh_protect_enable() {
+  _ssh_protect_supported || {
+    echo "apt/systemd недоступны — защита поддерживается только на Debian/Ubuntu" >&2
+    return 1
+  }
+
+  if ! _ssh_protect_installed; then
+    _apt_wait_lock
+    DEBIAN_FRONTEND=noninteractive apt-get "${APT_LOCK_OPTS[@]}" update -qq >/dev/null 2>&1 || true
+    DEBIAN_FRONTEND=noninteractive apt-get "${APT_LOCK_OPTS[@]}" install -y -qq fail2ban >/dev/null 2>&1 || true
+    if ! _ssh_protect_installed; then
+      echo "не удалось установить fail2ban (нет пакета или сети)" >&2
+      return 1
+    fi
+  fi
+
+  mkdir -p "$(dirname "$SSH_PROTECT_JAIL_FILE")" 2>/dev/null
+  # Исключение для адреса, с которого пришла установка/деплой: сутки он не
+  # банится, чтобы серия опечаток в пароле не заперла оператора (и GUI, который
+  # ходит с того же адреса). Если сейчас мы не по SSH (консоль хостера) —
+  # сохраняем ещё действующее исключение, а не выкидываем его.
+  local ignore_ip='' ignore_until='' client_ip='' prev_until=''
+  client_ip=$(_ssh_protect_client_ip 2>/dev/null || true)
+  prev_until=$(_ssh_protect_ignore_until_file)
+  if [[ -n "$client_ip" ]]; then
+    ignore_ip="$client_ip"
+    ignore_until=$(( $(date +%s) + SSH_PROTECT_IGNORE_TTL ))
+  elif [[ -n "$prev_until" && "$prev_until" -gt "$(date +%s)" ]]; then
+    ignore_ip=$(_ssh_protect_ignore_ip_file)
+    ignore_until="$prev_until"
+  fi
+  _ssh_protect_jail_conf_pure "$ignore_ip" "$ignore_until" > "$SSH_PROTECT_JAIL_FILE" 2>/dev/null || {
+    echo "не удалось записать ${SSH_PROTECT_JAIL_FILE}" >&2
+    return 1
+  }
+  if [[ -n "$ignore_ip" ]]; then
+    _ssh_protect_install_ignore_timer
+    echo "  адрес ${ignore_ip} исключён из банов на ${SSH_PROTECT_IGNORE_TTL} с" >&2
+  else
+    _ssh_protect_remove_ignore_timer
+  fi
+
+  # sshd: пишем → проверяем синтаксис → при отказе возвращаем как было. Битый
+  # drop-in без проверки означал бы «ssh не поднимется после перезагрузки».
+  local previous='' had_previous=0
+  if [[ -f "$SSH_PROTECT_SSHD_FILE" ]]; then
+    previous=$(cat "$SSH_PROTECT_SSHD_FILE")
+    had_previous=1
+  fi
+  _ssh_protect_sshd_conf_pure > "$SSH_PROTECT_SSHD_FILE" 2>/dev/null
+  if ! sshd -t >/dev/null 2>&1; then
+    if [[ $had_previous -eq 1 ]]; then
+      printf '%s\n' "$previous" > "$SSH_PROTECT_SSHD_FILE"
+    else
+      rm -f "$SSH_PROTECT_SSHD_FILE"
+    fi
+    echo "sshd отверг конфиг (sshd -t) — изменения отменены" >&2
+    return 1
+  fi
+
+  systemctl enable fail2ban >/dev/null 2>&1 || true
+  systemctl restart fail2ban >/dev/null 2>&1 || true
+  if ! _ssh_protect_active; then
+    echo "fail2ban не запустился — смотрите journalctl -u fail2ban" >&2
+    return 1
+  fi
+
+  systemctl reload ssh >/dev/null 2>&1 || systemctl reload sshd >/dev/null 2>&1 || true
+  touch "$SSH_PROTECT_MARKER" 2>/dev/null && chown root:root "$SSH_PROTECT_MARKER" 2>/dev/null
+  return 0
+}
+
+# Выключить защиту: снять джейл и drop-in, остановить fail2ban. Пакет оставляем
+# (его удаление — отдельное решение: без пакета пропадут и логи банов).
+_ssh_protect_disable() {
+  systemctl disable --now fail2ban >/dev/null 2>&1 || true
+  _ssh_protect_remove_ignore_timer
+  rm -f "$SSH_PROTECT_JAIL_FILE" 2>/dev/null
+  rm -f "$SSH_PROTECT_SSHD_FILE" 2>/dev/null
+  rm -f "$SSH_PROTECT_MARKER" 2>/dev/null
+  if sshd -t >/dev/null 2>&1; then
+    systemctl reload ssh >/dev/null 2>&1 || systemctl reload sshd >/dev/null 2>&1 || true
+  fi
+  return 0
+}
+
+# Автовключение при установке/деплое. Молча: stdout quickstart занят JSON.
+_ssh_protect_auto_enable() {
+  _ssh_protect_supported || return 1
+  if _ssh_protect_active && _ssh_protect_boot_enabled && [[ -f "$SSH_PROTECT_SSHD_FILE" ]]; then
+    return 0
+  fi
+  _ssh_protect_enable >/dev/null 2>&1
+}
+
+ssh_protect_command() {
+  local action="status" quiet=0 unban_ip=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --status) action="status" ;;
+      --enable) action="enable" ;;
+      --disable) action="disable" ;;
+      --unban) shift; unban_ip="${1:-}"; action="unban" ;;
+      --prune-ignore) action="prune-ignore" ;;
+      --quiet) quiet=1 ;;
+      -h|--help) action="help" ;;
+      *) echo "ssh-protect: неизвестный аргумент: $1" >&2; return 2 ;;
+    esac
+    shift
+  done
+
+  if [[ "$action" == "help" ]]; then
+    echo "sudo xrayebator ssh-protect [--status|--enable|--disable] [--quiet]"
+    echo "sudo xrayebator ssh-protect --unban IP"
+    echo "sudo xrayebator ssh-protect --prune-ignore   # снять истёкшее 24-часовое исключение"
+    return 0
+  fi
+
+  # Stdout занят JSON: весь прогресс уводим в stderr (как в остальных CLI).
+  exec 3>&1
+  exec 1>&2
+
+  local rc=0 payload='{"ok":false,"error":"неизвестное состояние"}'
+  case "$action" in
+    status)
+      payload=$(_ssh_protect_status_json) || rc=1
+      ;;
+    enable)
+      if _ssh_protect_enable; then
+        payload=$(_ssh_protect_status_json | jq -c '. + {changed:true}')
+      else
+        rc=1
+        payload='{"ok":false,"error":"не удалось включить защиту SSH (fail2ban/sshd)"}'
+      fi
+      ;;
+    disable)
+      if _ssh_protect_disable; then
+        payload=$(_ssh_protect_status_json | jq -c '. + {changed:true}')
+      else
+        rc=1
+        payload='{"ok":false,"error":"не удалось выключить защиту SSH"}'
+      fi
+      ;;
+    unban)
+      if [[ ! "$unban_ip" =~ ^[0-9a-fA-F:.]+$ ]]; then
+        rc=2
+        payload='{"ok":false,"error":"укажите корректный IP для разбана"}'
+      elif ! _ssh_protect_installed || ! _ssh_protect_active; then
+        rc=1
+        payload='{"ok":false,"error":"fail2ban не установлен или не запущен"}'
+      elif fail2ban-client set "$SSH_PROTECT_JAIL" unbanip "$unban_ip" >/dev/null 2>&1; then
+        payload=$(jq -nc --arg ip "$unban_ip" '{ok:true, unbanned:$ip}')
+      else
+        rc=1
+        payload=$(jq -nc --arg ip "$unban_ip" '{ok:false, error:("адрес " + $ip + " не был забанен")}')
+      fi
+      ;;
+    prune-ignore)
+      # Вызывается таймером xrayebator-ssh-ignoreip каждые 30 минут.
+      _ssh_protect_prune_ignore
+      case $? in
+        0)
+          echo "[ssh-protect] исключение из банов снято по сроку" >&2
+          payload='{"ok":true,"pruned":true}'
+          ;;
+        1) payload='{"ok":true,"pruned":false,"active":true}' ;;
+        *) payload='{"ok":true,"pruned":false,"active":false}' ;;
+      esac
+      ;;
+  esac
+
+  if [[ $quiet -eq 0 ]]; then
+    printf '%s\n' "$payload" >&3
+  fi
+  exec 1>&3
+  return $rc
+}
+
+# Меню «Безопасность»: статус + включение/выключение + разбан.
+ssh_protect_menu() {
+  local status installed active hardened failed banned ips
+  status=$(_ssh_protect_status_json 2>/dev/null)
+  installed=$(jq -r '.installed' <<< "$status" 2>/dev/null)
+  active=$(jq -r '.active' <<< "$status" 2>/dev/null)
+  hardened=$(jq -r '.sshd_hardened' <<< "$status" 2>/dev/null)
+  failed=$(jq -r '.failed_24h' <<< "$status" 2>/dev/null)
+  banned=$(jq -r '.banned_current' <<< "$status" 2>/dev/null)
+  ips=$(jq -r '(.banned_ips // []) | join(" ")' <<< "$status" 2>/dev/null)
+
+  show_ascii
+  echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
+  echo -e "${BLUE}     ЗАЩИТА SSH ОТ ПЕРЕБОРА (fail2ban)         ${NC}"
+  echo -e "${BLUE}═══════════════════════════════════════════════${NC}\n"
+
+  if [[ "$installed" == "true" && "$active" == "true" ]]; then
+    echo -e "  Статус:        ${GREEN}включена${NC}"
+  elif [[ "$installed" == "true" ]]; then
+    echo -e "  Статус:        ${YELLOW}установлена, но не запущена${NC}"
+  else
+    echo -e "  Статус:        ${RED}выключена${NC}"
+  fi
+  if [[ "$hardened" == "true" ]]; then
+    echo -e "  Лимиты sshd:   ${GREEN}MaxAuthTries 3, LoginGraceTime 30${NC}"
+  else
+    echo -e "  Лимиты sshd:   ${YELLOW}не заданы${NC}"
+  fi
+  echo -e "  Неудач за сутки: ${YELLOW}${failed:-0}${NC}"
+  echo -e "  Забанено сейчас: ${YELLOW}${banned:-0}${NC}"
+  [[ -n "$ips" ]] && echo -e "  В бане:        ${CYAN}${ips}${NC}"
+  echo ""
+  echo -e "  Парольный вход оставлен (нужен GUI). Адрес можно разбанить вручную:"
+  echo -e "  ${CYAN}sudo xrayebator ssh-protect --unban <IP>${NC}\n"
+
+  echo -e "${CYAN} 1)${NC} Включить / обновить защиту"
+  echo -e "${CYAN} 2)${NC} Выключить защиту"
+  echo -e "${CYAN} 3)${NC} Разбанить адрес"
+  echo -e "${RED} 0)${NC} Назад"
+  echo ""
+  echo -n -e "${YELLOW}Выберите действие: ${NC}"
+  local choice
+  read -r choice || return 0
+  case "$choice" in
+    1)
+      if _ssh_protect_enable; then
+        echo -e "${GREEN}✓ Защита включена: fail2ban + лимиты sshd${NC}"
+      else
+        echo -e "${RED}✗ Не удалось включить защиту (см. вывод выше)${NC}"
+      fi
+      sleep 2
+      ;;
+    2)
+      if _ssh_protect_disable; then
+        echo -e "${YELLOW}ℹ Защита выключена (пакет fail2ban оставлен)${NC}"
+      else
+        echo -e "${RED}✗ Не удалось выключить защиту${NC}"
+      fi
+      sleep 2
+      ;;
+    3)
+      echo -n -e "${YELLOW}IP для разбана: ${NC}"
+      local ip
+      read -r ip
+      if [[ -n "$ip" ]] && fail2ban-client set "$SSH_PROTECT_JAIL" unbanip "$ip" >/dev/null 2>&1; then
+        echo -e "${GREEN}✓ ${ip} разбанен${NC}"
+      else
+        echo -e "${RED}✗ Не удалось разбанить ${ip:-<пусто>}${NC}"
+      fi
+      sleep 2
+      ;;
+    0) return ;;
+    *) echo -e "${RED}Неверный выбор${NC}"; sleep 1 ;;
+  esac
+}
+
 # Без аргументов → interactive main_menu (legacy behaviour).
 # При source-режиме (Phase 7, REQ-C10) dispatch пропускается — sourcing-скрипт сам решает,
 # что делать с определёнными функциями.
@@ -18670,6 +19390,10 @@ if [[ "$XRAYEBATOR_SOURCED" -eq 0 ]]; then
     monitor-check)
       shift
       monitor_check_command "$@"
+      ;;
+    ssh-protect)
+      shift
+      ssh_protect_command "$@"
       ;;
     alerts-setup)
       shift
@@ -18807,6 +19531,8 @@ if [[ "$XRAYEBATOR_SOURCED" -eq 0 ]]; then
       echo -e "  ${CYAN}sudo xrayebator alerts-test${NC} — тестовое сообщение в Telegram (JSON)"
       echo -e "  ${CYAN}sudo xrayebator alerts-enable|alerts-disable${NC} — включить/выключить алерты (JSON)"
       echo -e "  ${CYAN}sudo xrayebator monitor-check [--force-sni]${NC} — одна итерация мониторинга (--force-sni: probe SNI вне расписания) (JSON)"
+      echo -e "  ${CYAN}sudo xrayebator ssh-protect [--status|--enable|--disable|--unban IP|--prune-ignore] [--quiet]${NC}"
+      echo -e "                               — защита SSH от перебора: fail2ban + лимиты sshd; адрес деплоя не банится 24 ч (JSON)"
       echo -e "  ${CYAN}sudo xrayebator dns01-setup --domain sub.example.com --provider cloudflare|route53 [--staging]${NC}"
       echo -e "                               — HTTPS-подписка по домену без порта 80 (DNS-01) (JSON)"
       echo -e "  ${CYAN}sudo xrayebator dns01-test --domain sub.example.com --provider cloudflare|route53${NC}"
@@ -18829,7 +19555,7 @@ if [[ "$XRAYEBATOR_SOURCED" -eq 0 ]]; then
       echo -e "  ${CYAN}sudo xrayebator hysteria2-grant --name N${NC} — выдать грант профилю (JSON)"
       echo -e "  ${CYAN}sudo xrayebator hysteria2-subbody --on|--off${NC} — hysteria2-строки в подписке (JSON)"
       echo -e "  ${CYAN}sudo xrayebator hysteria2-link --name N${NC} — hysteria2-ссылка профиля (JSON)"
-      echo -e "  ${CYAN}sudo xrayebator awg-install${NC} — установить AmneziaWG 2.0 (JSON)"
+      echo -e "  ${CYAN}sudo xrayebator awg-install${NC} — установить AmneziaWG (системный VPN, JSON)"
       echo -e "  ${CYAN}sudo xrayebator awg-uninstall${NC} — удалить AmneziaWG (JSON)"
       echo -e "  ${CYAN}sudo xrayebator awg-status${NC} — статус AmneziaWG (JSON)"
       echo -e "  ${CYAN}sudo xrayebator awg-grant --name N${NC} — выдать peer-грант профилю (JSON)"

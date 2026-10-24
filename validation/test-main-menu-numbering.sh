@@ -15,7 +15,7 @@ menu_block=$(sed -n '/^main_menu() {$/,/^# Меню создания профи�
 mapfile -t displayed_numbers < <(
   sed -n 's/.*${CYAN} *\([0-9][0-9]*\))${NC}.*/\1/p' <<< "$menu_block"
 )
-[[ "${displayed_numbers[*]}" == "1 2 3 4 5 6 7 8 9 10 11 12 13 14" ]] \
+[[ "${displayed_numbers[*]}" == "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15" ]] \
   || fail "displayed main-menu actions are not consecutive: ${displayed_numbers[*]}"
 
 expected_dispatch=(
@@ -33,6 +33,7 @@ expected_dispatch=(
   "12) awg_menu ;;"
   "13) backend_status_menu ;;"
   "14) telegram_alerts_menu ;;"
+  "15) ssh_protect_menu ;;"
   "0) exit 0 ;;"
 )
 

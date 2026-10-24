@@ -80,7 +80,10 @@ _adguard_force_uninstall_if_present() {
       dns_doh_server="https+local://1.1.1.1/dns-query"
     fi
     local _tmp
-    _tmp=$(mktemp /tmp/xray-cfg.XXXXXX) || {
+    # Xray ≥ 26.10 определяет формат по расширению файла: без .json `run -test`
+    # отвечает «unsupported config file extension», и правка молча пропускается.
+    _tmp=$(mktemp --suffix=.json /tmp/xray-cfg.XXXXXX 2>/dev/null) \
+      || _tmp=$(mktemp /tmp/xray-cfg.XXXXXX) || {
       echo -e "${RED}  mktemp failed — DNS rollback пропущен${NC}"
       _tmp=""
     }
@@ -948,7 +951,9 @@ DNSEOF
     # Обновляем DNS секцию в конфиге.
     # Обновляем только servers/queryStrategy/disableCache, сохраняя пользовательские
     # hosts и прочие кастомные поля DNS (точечные полевые апдейты вместо сброса всего блока).
-    TMP_FILE=$(mktemp /tmp/xray-cfg.XXXXXX) || {
+    # См. выше: формат конфига Xray ≥ 26.10 берёт из расширения файла.
+    TMP_FILE=$(mktemp --suffix=.json /tmp/xray-cfg.XXXXXX 2>/dev/null) \
+      || TMP_FILE=$(mktemp /tmp/xray-cfg.XXXXXX) || {
       echo -e "${YELLOW}  ⚠ mktemp failed (DNS обновление пропущено)${NC}"
       true
     }

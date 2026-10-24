@@ -574,9 +574,41 @@ export interface ProfilePqInput {
   transport: 'tcp' | 'tcp-utls' | 'tcp-xudp' | 'tcp-mux' | 'grpc' | 'xhttp'
 }
 
+/**
+ * Ответ `ssh-protect --status|--enable|--disable`: защита SSH от перебора
+ * (fail2ban + лимиты sshd). Парольный вход остаётся включён — на нём держится
+ * управление сервером из GUI (authMethod: password).
+ */
+export interface SshProtectStatusResult {
+  ok: boolean
+  /** На сервере есть apt и systemd (Debian/Ubuntu): защита применима. */
+  supported: boolean
+  installed: boolean
+  active: boolean
+  enabled_at_boot: boolean
+  /** Наш drop-in с лимитами sshd на месте. */
+  sshd_hardened: boolean
+  /** Действующие значения sshd — строки в том виде, как их печатает `sshd -T`. */
+  max_auth_tries: string
+  login_grace_time: string
+  /** yes/no: GUI должен видеть, что парольный вход не отключён. */
+  password_authentication: string
+  permit_root_login: string
+  /** Неудачных попыток входа за сутки (по журналу sshd). */
+  failed_24h: number
+  banned_current: number
+  banned_total: number
+  /** Забаненные сейчас адреса (для списка в карточке). */
+  banned_ips: string[]
+  jail_file: string
+  sshd_file: string
+  /** true — команда изменила состояние (enable/disable). */
+  changed?: boolean
+  error?: string
+}
+
 /** Провайдер DNS-01 в payload'ах IPC (алиас для читаемости вызовов). */
 export type { Dns01Provider }
-
 export interface DeployDonePayload {
   serverId: string
   subscriptionUrl: string
@@ -677,6 +709,23 @@ export interface ElectronAPI {
       access: SshAccessInput,
       input: Dns01Input
     ) => Promise<Dns01RepairResult>
+  }
+  security: {
+    /** Состояние защиты SSH от перебора (fail2ban + лимиты sshd). */
+    sshProtectStatus: (
+      serverId: string,
+      access: SshAccessInput
+    ) => Promise<SshProtectStatusResult>
+    /** Включить/обновить защиту: fail2ban + MaxAuthTries/LoginGraceTime. */
+    sshProtectEnable: (
+      serverId: string,
+      access: SshAccessInput
+    ) => Promise<SshProtectStatusResult>
+    /** Выключить защиту (пакет fail2ban остаётся установленным). */
+    sshProtectDisable: (
+      serverId: string,
+      access: SshAccessInput
+    ) => Promise<SshProtectStatusResult>
   }
   server: {
     /**

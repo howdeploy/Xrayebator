@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { backendActionFailure } from '../../src/renderer/src/pages/backend-action'
 import { isSshAccessReady, setTypedSshPassword } from '../../src/renderer/src/components/SshAccessForm'
 import { buildDeployPayload, isDeployReady } from '../../src/renderer/src/pages/deploy-readiness'
 import { shouldAutoConnectServer, accessSummary } from '../../src/renderer/src/pages/server-access'
@@ -201,5 +202,28 @@ describe('deploy readiness', () => {
       awsKeyId: '',
       awsSecret: ''
     })
+  })
+})
+
+describe('backend action results', () => {
+  it('reports a failure that came back as ok:false instead of a thrown error', () => {
+    // Живой случай: awg-install вернул {ok:false, error:"…нужна перезагрузка…"}.
+    // Без разбора результата GUI показывал «ничего не произошло».
+    expect(
+      backendActionFailure({ ok: false, error: 'Модуль собран для другого ядра — нужна перезагрузка' })
+    ).toEqual({ failed: true, error: 'Модуль собран для другого ядра — нужна перезагрузка' })
+    expect(backendActionFailure({ ok: false })).toEqual({ failed: true, error: undefined })
+    expect(backendActionFailure({ ok: false, error: '   ' })).toEqual({
+      failed: true,
+      error: undefined
+    })
+  })
+
+  it('treats successful and malformed results as success', () => {
+    expect(backendActionFailure({ ok: true })).toEqual({ failed: false })
+    expect(backendActionFailure({ ok: true, already: true })).toEqual({ failed: false })
+    expect(backendActionFailure(undefined)).toEqual({ failed: false })
+    expect(backendActionFailure(null)).toEqual({ failed: false })
+    expect(backendActionFailure('ok')).toEqual({ failed: false })
   })
 })

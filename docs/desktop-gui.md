@@ -145,7 +145,13 @@ xrayebator backend-status
 xrayebator backend-start --type hysteria2|awg
 xrayebator hysteria2-install [--port P] [--grant-all] / hysteria2-uninstall / hysteria2-grant --name N / hysteria2-subbody --on|--off / hysteria2-link --name N
 xrayebator awg-install [--grant-all] / awg-uninstall / awg-grant --name N / awg-conf --name N / awg-31 --on|--off
+xrayebator ssh-protect [--status|--enable|--disable] [--unban IP]
 ```
+
+SSH brute-force protection is managed by `ssh-protect` and exposed in the **Security and TLS** tab: it shows
+whether `fail2ban` is installed and running, the effective `sshd` limits, the number of failed logins
+over 24 hours and the addresses currently banned, and toggles protection on and off. Password
+authentication is deliberately kept — the app itself logs in with an SSH password.
 
 A backend card tells "installed" from "working": green **Active** means the unit is
 up, red **Not running** means installed but inactive (usually the kernel module did

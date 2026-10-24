@@ -40,6 +40,7 @@ import type {
   ServerMaintenanceResult,
   ServerProfile,
   SshAccessInput,
+  SshProtectStatusResult,
   SubscriptionResult
 } from '@shared/types'
 
@@ -218,6 +219,24 @@ const api: ElectronAPI = {
       ipcRenderer.invoke('backends:awgConf', serverId, access, name),
     awg31: (serverId: string, access: SshAccessInput, on: boolean): Promise<BackendToggleResult> =>
       ipcRenderer.invoke('backends:awg31', serverId, access, on)
+  },
+
+  security: {
+    sshProtectStatus: (
+      serverId: string,
+      access: SshAccessInput
+    ): Promise<SshProtectStatusResult> =>
+      ipcRenderer.invoke('security:sshProtectStatus', serverId, access),
+    sshProtectEnable: (
+      serverId: string,
+      access: SshAccessInput
+    ): Promise<SshProtectStatusResult> =>
+      ipcRenderer.invoke('security:sshProtectEnable', serverId, access),
+    sshProtectDisable: (
+      serverId: string,
+      access: SshAccessInput
+    ): Promise<SshProtectStatusResult> =>
+      ipcRenderer.invoke('security:sshProtectDisable', serverId, access)
   },
 
   server: {

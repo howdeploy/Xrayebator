@@ -98,7 +98,7 @@ The interactive menu uses these exact meanings:
 | `9` | Custom domain and self-steal stub |
 | `10` | Set up an outbound server so another VPS can use this server as a foreign cascade node |
 | `11` | Hysteria 2 backend: install/status/client link/uninstall (fast UDP transport) |
-| `12` | AmneziaWG 2.0 backend: install/status/client conf/uninstall (system VPN) |
+| `12` | AmneziaWG backend (3.1 by default): install/status/client conf/uninstall (system VPN) |
 | `13` | Status of all multi-protocol backends |
 | `14` | Telegram alerts: setup, test, enable/disable, monitoring state |
 | `0` | Exit |
@@ -121,6 +121,7 @@ is a client-side profile/route setting; changing it does not restart Xray or alt
 | `sudo xrayebator inspect --json` | Read-only GUI import probe: reports manager, Xray, profile and subscription markers without installing, migrating or changing services/configuration |
 | `sudo xrayebator happ-setup` | Reduced existing-install HAPP path: ensures the subscription service and a usable multi-route profile, but does not replace the endpoint prerequisite; when `.subscription_domain` or `.subscription_port` is missing, it verifies a real public TLS endpoint before writing markers and otherwise fails |
 | `quickstart` http_tls mode | Last-resort fallback, when neither http-01 nor DNS-01 worked: if Let's Encrypt cannot validate the IP over http-01 (`Connection reset by peer` from validation hosts — usually the hoster filters port 80 for foreign sources) **and** DNS-01 was not requested, the deploy does not fail: the subscription is published over HTTP (port 8080 outbound, token gate and 404 without token preserved), a self-signed certificate is generated for future backends, and the result JSON carries `degraded:true`, `tls_mode:"http_tls"` and the Certbot reason. The GUI stores the server as *Partially configured* and loads keys over SSH from the loopback handler; the ACME challenge location on port 80 stays in place — rerunning quickstart after the port is unblocked issues the LE certificate and switches the subscription back to HTTPS |
+| `sudo xrayebator ssh-protect [--status\|--enable\|--disable] [--unban IP\|--prune-ignore] [--quiet]` | SSH brute-force protection: installs `fail2ban` with a journald-backed `sshd` jail (4 failures in 10 minutes → 30-minute ban, repeat offenders escalate up to a day) plus a `sshd_config.d` drop-in with `MaxAuthTries 3` / `LoginGraceTime 30`. **Password login stays enabled** — the desktop GUI manages the server with it, and key-only access remains a separate operator decision. Idempotent: the drop-in is validated with `sshd -t` before `ssh` is reloaded (not restarted), so open GUI sessions survive. Enabled automatically by `install.sh` and `quickstart` (the deploy JSON reports `ssh_protect`); `--quiet` suppresses the JSON for scripts. Also available as menu item 15 and as the **Security and TLS** tab in the GUI. Live measurement on a public VPS: 9 953 failed logins in 24 h from 115 addresses before, ≈72/h after. The address the command was run from is exempted from bans for 24 hours (`ignoreip` plus an epoch stamp; `--prune-ignore`, driven by `xrayebator-ssh-ignoreip.timer`, removes it on expiry) |
 | `sudo xrayebator profiles` | Print all server profiles as a JSON array for the desktop GUI Server Settings page; expiry includes both epoch seconds (`expire`) for enforcement and the server-local calendar date (`expire_date`) for display, so clients in another timezone still see the selected date |
 | `sudo xrayebator profile-create --name NAME [--transport tcp\|tcp-utls\|tcp-xudp\|tcp-mux\|grpc\|xhttp] [--port P] [--count N] [--expire DATE]` | Create one or more profiles non-interactively; `--expire` accepts `YYYY-MM-DD[ HH:MM]`, epoch seconds or 13-digit milliseconds. A date without time is inclusive through `23:59:59` in the server's local timezone; an explicit time uses that server-local time. Past expiries are rejected; existing names are never overwritten — they are reported in `errors` (the GUI also pre-checks a name collision before creating, since deletion is per-profile and unique names keep it precise); prints `{"ok":true,"names":[...],"errors":[...]}` |
 | `sudo xrayebator profile-delete --name NAME` | Delete a profile non-interactively; the deleted profile's backend grants are revoked immediately (the AWG peer is dropped from `awg0.conf`, the Hysteria password from `server.yaml` — no orphaned credentials) and the name is free for reuse; prints `{"ok":true,"name":"..."}` |
@@ -147,7 +148,7 @@ is a client-side profile/route setting; changing it does not restart Xray or alt
 | `sudo xrayebator hysteria2-grant --name N` | Issue a per-profile Hysteria 2 credential (stored in the profile's `.backends.hysteria2`); the server config is regenerated from all profiles; prints JSON |
 | `sudo xrayebator hysteria2-subbody --on\|--off` | Kill switch for the `hysteria2://` lines in both subscription bodies: the flag lives in the backend registry and the handler re-reads it on every request, no service restart; prints JSON |
 | `sudo xrayebator hysteria2-link --name N` | Print the `hysteria2://` link of a profile with a grant as JSON `{ok, name, link}` (naming mirrors the VLESS routes, with the country flag) |
-| `sudo xrayebator awg-install [--grant-all]` | Install the AmneziaWG 2.0 system-VPN backend: kernel module via DKMS (PPA `amnezia/ppa`, source-build fallback), `awg0` interface with a random high UDP port, junk parameters matching the Amnezia defaults, `ip_forward` + MASQUERADE; the module is registered for boot in `/etc/modules-load.d/xrayebator-awg.conf` (without it a reboot left the tunnel down); re-running on an existing installation repairs the runtime; prints JSON |
+| `sudo xrayebator awg-install [--grant-all]` | Install the AmneziaWG system-VPN backend (3.1 by default): kernel module via DKMS (PPA `amnezia/ppa`, source-build fallback), `awg0` interface with a random high UDP port, junk parameters matching the Amnezia defaults, `ip_forward` + MASQUERADE; the module is registered for boot in `/etc/modules-load.d/xrayebator-awg.conf` (without it a reboot left the tunnel down); re-running on an existing installation repairs the runtime; prints JSON |
 | `sudo xrayebator awg-uninstall` | Remove the AmneziaWG backend (interface, config, symlink, firewall rule; packages/module stay in the system); prints JSON |
 | `sudo xrayebator awg-status` | AmneziaWG backend status as JSON |
 | `sudo xrayebator awg-grant --name N` | Issue a per-profile peer (keypair + preshared key + `10.8.1.x` address in the profile's `.backends.awg`); `awg0.conf` is regenerated; prints JSON |
@@ -336,12 +337,15 @@ like `hysteria2://user:pass@host:port/?sni=…&insecure=0|1#name` and are append
 subscription bodies (HAPP and generic); the registry flag `sub_body` is the kill switch if a client
 parser objects.
 
-### AmneziaWG 2.0 (system VPN)
+### AmneziaWG (system VPN, 3.1 by default)
 
 `awg-install` builds the kernel module via DKMS (primary path: the `amnezia/ppa` PPA; fallback: a
 source build that needs the full `linux-source` tree on kernels ≥ 5.6) and brings up the `awg0`
 interface through `awg-quick@awg0` with a random high UDP port, subnet `10.8.1.0/24`, `ip_forward`
-and MASQUERADE on the default-route interface. Junk parameters mirror the Amnezia defaults — the
+and MASQUERADE on the default-route interface. DKMS needs kernel headers: the installer fetches them
+itself, and when the running kernel is older than the repository and its headers are gone, it builds
+against the newest available kernel, installs its image and answers `reboot_required: true` — after a
+reboot the same command finishes the setup. Junk parameters mirror the Amnezia defaults — the
 dialect every official AmneziaVPN client (phone and desktop) applies reliably: `Jc` 5, `Jmin` 10,
 `Jmax` 50, `H1`–`H4` = 1..4 (the WireGuard magic headers), `S1`/`S2` random 12..150 and `S3`/`S4`
 random 12..64 (all unique, `S1+56 ≠ S2`). Each profile peer gets a keypair, a preshared key and the

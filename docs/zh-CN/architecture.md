@@ -156,7 +156,7 @@ certbot；续期使用标准的 `certbot.timer` 加 reload nginx 的 deploy-hook
   `hysteria` 用户运行并持有 `CAP_NET_BIND_SERVICE`；默认 UDP 443；自适应 TLS（复用订阅的
   Let's Encrypt 证书并附续期 deploy-hook，或自签证书）；`auth: userpass`，每个配置档一个凭据，
   映射可能为空时使用占位用户（Hysteria 拒绝空映射）。
-- **AmneziaWG 2.0** —— 系统级 VPN。通过 DKMS 的内核模块（首选 PPA `amnezia/ppa`，回退源码
+- **AmneziaWG（2.0 / 3.1）** —— 系统级 VPN。通过 DKMS 的内核模块（首选 PPA `amnezia/ppa`，回退源码
   编译），接口 `awg0` 走 `awg-quick@awg0`，网段 `10.8.1.0/24`，按配置档的 peer（密钥对 +
   预共享密钥 + 地址），`ip_forward` 与默认路由接口上的 MASQUERADE。发行版单元读取
   `/etc/amnezia/amneziawg/awg0.conf`——它是指向受管文件的 symlink。
@@ -181,6 +181,12 @@ certbot；续期使用标准的 `certbot.timer` 加 reload nginx 的 deploy-hook
   恢复单独发一条消息，未投递的告警会在下一个周期重试。机器人令牌以 `0600` 存放在中性根目录的
   `alerts.json` 中：它不是 Xray 状态，`/usr/local/etc/xray` 路径保持 Xray-only。迁移：
   `alerts_monitor_2026`。
+- **SSH 防爆破保护。** `ssh-protect` 写入 `jail.d/xrayebator-sshd.local`，所有参数都在 `[sshd]`
+  段内，因此已配置的 fail2ban 保持原有默认值。若调用来自 SSH，启动它的地址会带过期标记
+  （`# xrayebator-ignore-until: …`）写入 `ignoreip`，而 `xrayebator-ssh-ignoreip.timer`（30 分钟）
+  调用 `ssh-protect --prune-ignore`：过期标记被移除、规则重新加载、定时器单元被删除，而回环基线
+  `ignoreip = 127.0.0.1/8 ::1` 始终保留。GUI 的**安全与 TLS**选项卡提供同一操作，并由
+  `install.sh` 与 `quickstart` 自动启用。
 
 本节提到的每一个迁移都注册在全部三条入口路径中——`main_menu`、`quickstart` 与 `happ-setup`。
 

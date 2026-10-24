@@ -3,7 +3,34 @@ import { shellCommand } from './shell-command'
 import { describeFailure, isUnknownCommandFailure, unknownCommandHint } from './cli-failure'
 import { extractJson } from './profiles'
 import { dns01CliArgs, isDns01Ready, isValidDns01Domain, type Dns01Input } from '@shared/dns01'
-import type { Dns01RepairResult, Dns01StatusResult } from '@shared/types'
+import type {
+  Dns01RepairResult,
+  Dns01StatusResult,
+  SshProtectStatusResult
+} from '@shared/types'
+
+/** Пустой статус защиты SSH — на случай ошибки SSH-вызова (поля обязательны для GUI). */
+function emptySshProtect(error: string): SshProtectStatusResult {
+  return {
+    ok: false,
+    supported: false,
+    installed: false,
+    active: false,
+    enabled_at_boot: false,
+    sshd_hardened: false,
+    max_auth_tries: '',
+    login_grace_time: '',
+    password_authentication: '',
+    permit_root_login: '',
+    failed_24h: 0,
+    banned_current: 0,
+    banned_total: 0,
+    banned_ips: [],
+    jail_file: '',
+    sshd_file: '',
+    error
+  }
+}
 
 /** Человекочитаемая причина, почему набор DNS-01 неполный (для ошибки в GUI). */
 function dns01Problem(input: Dns01Input): string | null {
@@ -119,5 +146,56 @@ export class MaintenanceManager {
     const problem = dns01Problem(input)
     if (problem) return { ok: false, error: problem }
     return this.dns01(['repair-dns01', ...dns01CliArgs(input)])
+  }
+
+  /**
+   * Защита SSH от перебора. Один разбор ответа на все три действия: сервер
+   * печатает одинаковый статус-JSON и для --status, и после --enable/--disable,
+   * отличаясь только полем changed.
+   */
+  private async sshProtect(args: readonly string[]): Promise<SshProtectStatusResult> {
+    try {
+      const payload = extractJson(await this.run(args)) as Partial<SshProtectStatusResult>
+      const num = (value: unknown): number => {
+        const parsed = Number(value)
+        return Number.isFinite(parsed) ? parsed : 0
+      }
+      return {
+        ok: payload.ok === true,
+        supported: payload.supported === true,
+        installed: payload.installed === true,
+        active: payload.active === true,
+        enabled_at_boot: payload.enabled_at_boot === true,
+        sshd_hardened: payload.sshd_hardened === true,
+        max_auth_tries: payload.max_auth_tries ?? '',
+        login_grace_time: payload.login_grace_time ?? '',
+        password_authentication: payload.password_authentication ?? '',
+        permit_root_login: payload.permit_root_login ?? '',
+        failed_24h: num(payload.failed_24h),
+        banned_current: num(payload.banned_current),
+        banned_total: num(payload.banned_total),
+        banned_ips: Array.isArray(payload.banned_ips)
+          ? payload.banned_ips.filter((ip): ip is string => typeof ip === 'string')
+          : [],
+        jail_file: payload.jail_file ?? '',
+        sshd_file: payload.sshd_file ?? '',
+        changed: payload.changed === true,
+        error: payload.error
+      }
+    } catch (err) {
+      return emptySshProtect(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  sshProtectStatus(): Promise<SshProtectStatusResult> {
+    return this.sshProtect(['ssh-protect', '--status'])
+  }
+
+  sshProtectEnable(): Promise<SshProtectStatusResult> {
+    return this.sshProtect(['ssh-protect', '--enable'])
+  }
+
+  sshProtectDisable(): Promise<SshProtectStatusResult> {
+    return this.sshProtect(['ssh-protect', '--disable'])
   }
 }

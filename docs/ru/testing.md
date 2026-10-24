@@ -36,7 +36,7 @@ Linux-машину. Проверки lifecycle должны также убеж�
 
 ## Что покрывают тесты
 
-В `validation/` ровно 42 скрипта. Запускайте каждый `validation/test-*.sh`; текущий набор:
+В `validation/` ровно 45 скриптов. Запускайте каждый `validation/test-*.sh`; текущий набор:
 
 | Тест | Что проверяет |
 |---|---|
@@ -59,11 +59,14 @@ Linux-машину. Проверки lifecycle должны также убеж�
 | `test-happ-subscription-static.sh` | Обработчик HAPP-подписки (плейсхолдеры routing, порядок валидации) |
 | `test-happ-client-routing.sh` | HAPP клиентский split-профиль: генератор из bypass-наборов (258 доменов, плейсхолдеры, `geoip:ru`), nginx-буферы, проводка меню |
 | `test-legacy-profile-port-sync.sh` | Легаси-профили без `routes` получают обновления SNI/порта |
+| `test-config-temp-json-suffix.sh` | Валидация конфига в установщике и обновлении: временный конфиг для `xray run -test` обязан заканчиваться на `.json` (Xray ≥ 26.10 определяет формат по расширению и игнорирует `-format json`), провал печатает вывод ядра, а `mktemp --suffix=.json` проверяется функционально |
 | `test-installer-network-fallbacks.sh` | Сетевые fallback'и установщика |
 | `test-legacy-udp443-migration.sh` | Одноразовое удаление legacy правила блокировки UDP/443 |
 | `test-main-menu-numbering.sh` | Нумерацию пунктов меню и их соответствие обработчикам (1..14 с бэкенд-пунктами и мониторингом) |
 | `test-backend-registry.sh` | Реестр бэкендов (мультипротокольный этап): source-mode CRUD через `safe_jq_write`, чтение installed/field, lifecycle-точка как безопасный no-op, форма JSON `backend-status` |
 | `test-hysteria2-lifecycle.sh` | Бэкенд Hysteria 2: рендер `server.yaml` (userpass-карта, placeholder-fallback), модель безопасности юнита, arch-маппинг, TLS-детект, события грантов/revoke/expire-restore, реген deleted при заранее удалённом файле профиля, created = no-op (без авто-выдачи), pure-строитель `hysteria2://`, проводка диспетчера и подписки |
+| `test-ssh-protect.sh` | Защита SSH от перебора: конфиг джейла (journald, 4 неудачи за 10 минут, бан 30 минут, эскалация), drop-in sshd (`MaxAuthTries 3` / `LoginGraceTime 30`), сохранение парольного входа, форма статус-JSON для GUI, снятие защиты, проводка в меню/CLI/quickstart/install.sh и валидация `--unban`. Плюс 24-часовое исключение для адреса деплоя: `ignoreip` с меткой срока, разбор адреса из `SSH_CONNECTION`/`SSH_CLIENT`, отказ для loopback, снятие по сроку и сохранение loopback-базы |
+| `test-awg-ppa-repo.sh` | PPA `amnezia/ppa` ставится только вместе с ключом подписи: строка `signed-by`, порядок «ключ до репозитория», отсутствие репозитория без ключа, ремонт уже испорченного неподписанного репозитория, идемпотентность по маркеру и проводка ремонта в `main_menu`/`quickstart`/`happ-setup` |
 | `test-awg-lifecycle.sh` | Бэкенд AmneziaWG: junk-диалект по умолчанию Amnezia (Jc=5, Jmin=10, Jmax=50, H1–H4=1..4, S1–S4 уникальные), генерация ключей, рендер серверного конфига (PostUp MASQUERADE, без peer-ов при установке), аллокация адресов, содержимое клиентского `.conf`, события revoke/expire/restore, реген deleted при заранее удалённом файле профиля, created = no-op (без авто-выдачи), диспетчер CLI |
 | `test-main-readiness-regressions.sh` | Регрессии readyness после аудита: certbot-manifest, UFW manifest, nginx rollback, привилегии, SSH-порт |
 | `test-multiroute-argument-preservation.sh` | Сохранение transport-аргументов multiroute-профиля |
@@ -192,7 +195,7 @@ npm run build
 
 - `.github/workflows/ci-linux.yml` — гейт Bash-ядра на `ubuntu-24.04`: ставит `jq`, `uuid-runtime`
   и `ripgrep`, прогоняет все четыре проверки синтаксиса Bash, затем запускает каждый
-  `validation/test-*.sh` (на момент написания — 42).
+  `validation/test-*.sh` (на момент написания — 45).
 - `.github/workflows/release.yml` — активный путь релиза Electron для тегов `v*` и ручных запусков.
   Сначала job `preflight` проверяет, что файл релизных заметок `docs/releases/<tag>.en.md` существует
   и что секрет репозитория `AP3X0` (если задан) действительно может создавать релизы — проверка идёт

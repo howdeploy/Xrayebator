@@ -333,6 +333,22 @@ group Xrayebator installs mirrors the Amnezia defaults (`Jc` 5, `Jmin` 10, `Jmax
 
 ## AWG install fails
 
+> **`apt-get update` reports `NO_PUBKEY …` / `The repository … is not signed`.** Until 0.7.1 the
+> installer could add `ppa:amnezia/ppa` without its signing key, and every later `apt` operation broke
+> (`dns01-setup` included, because it installs a certbot plugin; `apt install amneziawg` also stopped
+> finding the package). Migration `awg_ppa_signed_2026` runs on the next `sudo xrayebator` or
+> `quickstart` and either signs the repository or removes it, so `apt-get update` returns 0 again.
+> Manually: `sudo rm -f /etc/apt/sources.list.d/amneziawg.list && sudo apt-get update`, and re-run
+> `sudo xrayebator awg-install` — the PPA path now refuses to leave an unsigned repo behind and falls
+> back to the source build instead.
+
+- **`dkms status` shows `amneziawg/1.0.0: added` but no module appears.** DKMS could not build: Debian
+  and Ubuntu do not install kernel headers by default, and on a kernel older than the repository the
+  exact `linux-headers-$(uname -r)` package may be gone (live case 2026-10-24: Debian 12, running
+  `6.1.0-45`, the repo ships `47/50/53/54`). Since 0.7.1 the installer fetches the
+  headers itself, and when only newer ones exist it builds against that kernel, installs its image and
+  answers `reboot_required: true` — reboot the server and re-run `sudo xrayebator awg-install`, which
+  finishes the setup.
 - The primary path is the `amnezia/ppa` PPA; on distribution series without PPA builds Xrayebator
   falls back to a source build. For kernels ≥ 5.6 that build needs the **full** `linux-source`
   package — kernel headers alone are not enough (the module build links the whole source tree).
@@ -469,6 +485,16 @@ certificate: it is signed by the test root, the state is reported as `staging:tr
   (`dns01-status` shows `deploy_hook: true`).
 
 ## An error appeared during installation or use
+
+### `Сгенерированный config.json не прошёл валидацию — live-конфиг не изменён`
+
+On a clean server with Xray 26.10.21+ the install could stop right after the kernel was downloaded.
+The config itself was fine — the **temp file name** was not: since 26.10 Xray infers the config
+format from the file extension and ignores `-format json`, so `config.json.tmp.XXXXXX` was rejected
+with `main/confloader/external: unsupported config file extension`. Fixed in 0.7.1:
+the installer creates the temp config as `*.json` and prints the kernel's own reason on any future
+validation failure. `update.sh` had the same defect in its two temp configs, where the DNS update was
+skipped silently. On an older build, install from a branch that contains the fix.
 
 Copy the full error text from the terminal. For installation failures, include the relevant
 `/tmp/xrayebator-*.log` file and the output of `systemctl status xray --no-pager -l`. If the problem is

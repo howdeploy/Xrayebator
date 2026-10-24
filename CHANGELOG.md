@@ -2,10 +2,67 @@
 
 User-facing Xrayebator changes. The server manager and Electron application are published from the canonical `howdeploy/Xrayebator` repository.
 
-## [Unreleased]
+## [0.7.1] - 2026-10-24
+
+The `0.7.1` patch: SSH brute-force protection (command, menu, GUI and automatic enablement) plus the
+fixes without which a fresh install and AmneziaWG broke on the newest Xray-core and on Debian 12.
+Validation: 45 Bash scripts, 174 unit tests; live runs on Ubuntu 22.04 (production), Ubuntu 24.04 (a
+clean install with 8/8 routes verified) and Debian 12 (AWG install with the reboot path).
+
+### Added
+
+- **SSH brute-force protection — command, menu, GUI tab and automatic enablement.** A public VPN
+  server with an open SSH port is scanned constantly; measured on the live deployment on 2026-10-23,
+  `root` accepted password logins while **9 953 attempts failed in 24 hours from 115 addresses** (six
+  of them in `109.160.32.0/24` with 1 197 attempts each). `xrayebator ssh-protect` (`--status`,
+  `--enable`, `--disable`, `--unban IP`, `--quiet`) installs `fail2ban` with a journald-backed `sshd`
+  jail (4 failures in 10 minutes → 30-minute ban, repeat offenders escalating up to a day) and writes
+  `sshd_config.d/99-xrayebator-hardening.conf` with `MaxAuthTries 3` / `LoginGraceTime 30`. Password
+  authentication is deliberately kept: the desktop app manages the server as `root` over an SSH
+  password, so key-only access stays a separate operator decision. The drop-in is validated with
+  `sshd -t` before `ssh` is reloaded (not restarted), so open sessions survive. Protection is enabled
+  automatically by `install.sh` and `quickstart` (the deploy JSON reports `ssh_protect`), appears as
+  menu item `15`, and is toggled from the **Security and TLS** tab in the GUI, which also shows the
+  effective limits, failed logins over 24 hours and the addresses currently banned. On the live
+  server the failure rate fell from ~415/hour to ≈72/hour within minutes. The address the install or
+  deploy was run from is exempt from bans for 24 hours (`ignoreip` with an expiry stamp, pruned by
+  `xrayebator-ssh-ignoreip.timer`), so a run of typos cannot lock the operator — or the GUI, which
+  connects from the same address — out for half an hour; the loopback baseline stays permanently.
 
 ### Fixed
 
+- **The GUI silently threw away a backend failure returned as `{ok:false, error}`.** Backend actions
+  only reacted to thrown exceptions, so a command that reported the problem inside its JSON looked
+  like "clicked — nothing happened": on a live Debian 12 box `awg-install` answered
+  `{ok:false, reboot_required:true, error:"…reboot the server…"}` and the card simply stayed at
+  "Not installed". Every backend operation now goes through a shared result check and shows the
+  server's own reason.
+- **AmneziaWG install failed on Debian 12 with a generic "не удалось установить amneziawg".** The
+  `amneziawg` package from the PPA was installed, but DKMS never built the module: Debian and Ubuntu
+  do not install kernel headers by default, and on a kernel older than the repository the exact
+  `linux-headers-$(uname -r)` package is gone (live case: running `6.1.0-45`, the repo ships
+  `47/50/53/54`), so `dkms status` stayed at `added`. The installer now installs the headers itself
+  (exact package, then the `linux-headers-<arch>` meta), and when only a newer kernel has headers it
+  builds against that kernel **and** installs its image so the reboot actually lands there; the result
+  is reported as `reboot_required: true` with both kernel names instead of a dead end. The manual
+  source build no longer symlinks the `linux-source` **archive** — it extracts the tree first.
+- **A fresh install aborted on Xray 26.10.21 with "Сгенерированный config.json не прошёл валидацию".**
+  The installer validated a `mktemp` file named `config.json.tmp.XXXXXX`; since 26.10 the kernel
+  infers the config format from the **file extension** and ignores `-format json`, so it answered
+  `main/confloader/external: unsupported config file extension` and the install stopped on every
+  clean server (production still runs 26.3.27, where the flag worked — that is why the defect stayed
+  invisible). The temp config is now created with `--suffix=.json` (with a rename fallback), the same
+  fix is applied to both temp configs in `update.sh` (the DNS update there was silently skipped for
+  the same reason), and a validation failure now prints the kernel's own reason instead of only
+  "not validated".
+- **The AmneziaWG installer could leave `apt` broken (`NO_PUBKEY …` / repository not signed).** On
+  systems without `add-apt-repository` the fallback wrote `sources.list.d/amneziawg.list` **without
+  the signing key**, so every later `apt-get update` returned `rc=100` — `dns01-setup` (it installs a
+  certbot plugin) and `apt install amneziawg` both stopped working, and the module on that server only
+  came from the manual source build. The repository is now written only together with its key
+  (`signed-by`), no key means no repository, and `add-apt-repository` is rolled back if it leaves an
+  unsigned PPA behind. Migration `awg_ppa_signed_2026` repairs already-affected servers on the next
+  run: signs the repository or removes it, without touching Xray.
 - **`channel-test` labelled every route as post-quantum.** The shell variable holds the string
   `false` rather than an empty flag, so `${pq:+, PQ}` appended ", PQ" to every successful route. The
   JSON was correct all along — only the human output lied, and on a live 8/8 run every line claimed

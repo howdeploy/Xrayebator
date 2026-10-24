@@ -359,5 +359,33 @@ grep -Fq '/etc/modules-load.d/xrayebator-awg.conf' uninstall.sh \
   || fail "uninstall.sh must drop the AWG modules-load.d entry"
 pass "uninstall.sh tears the AWG runtime down before deleting the neutral root"
 
+# --- 4. Установка: заголовки ядра и отдельный статус «нужна перезагрузка» -------
+# Живой случай 2026-10-24 (Debian 12, ядро 6.1.0-45): заголовков для запущенного
+# ядра в репозитории нет, DKMS оставался в «added», и установка падала общим
+# «не удалось установить amneziawg». Теперь заголовки доустанавливаются, а
+# «модуль собран под другое ядро» — отдельный, понятный оператору статус.
+grep -Fq '_awg_install_kernel_headers() {' xrayebator \
+  || fail "kernel headers helper missing"
+headers_fn=$(sed -n '/^_awg_install_kernel_headers() {/,/^}/p' xrayebator)
+[[ -n "$headers_fn" ]] || fail "_awg_install_kernel_headers block not found"
+grep -Fq '"linux-headers-$krel"' <<< "$headers_fn" \
+  || fail "headers helper must try the running-kernel package first"
+grep -Fq '"linux-headers-$arch" "linux-image-$arch"' <<< "$headers_fn" \
+  || fail "headers helper must fall back to meta headers AND image"
+pkgs_fn=$(sed -n '/^_awg_install_packages() {/,/^}/p' xrayebator)
+[[ -n "$pkgs_fn" ]] || fail "_awg_install_packages block not found"
+grep -Fq '_awg_install_kernel_headers' <<< "$pkgs_fn" \
+  || fail "PPA path must install kernel headers before DKMS rebuild"
+grep -Fq 'return 2' <<< "$pkgs_fn" \
+  || fail "PPA path must report 'built for another kernel' separately"
+install_fn=$(sed -n '/^_awg_install() {/,/^}/p' xrayebator)
+grep -Fq 'return 3' <<< "$install_fn" \
+  || fail "_awg_install must return the reboot-required status"
+grep -Fq 'reboot_required:true' xrayebator \
+  || fail "awg-install JSON must report reboot_required"
+grep -Fq 'tar -xf "$ks"' xrayebator \
+  || fail "manual build must extract linux-source instead of symlinking the archive"
+pass "AWG install: kernel headers, reboot-required status, linux-source extraction"
+
 echo ""
 pass "amneziawg backend (slice 4): all checks green"

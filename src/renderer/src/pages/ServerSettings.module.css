@@ -959,6 +959,25 @@
   color: var(--accent);
 }
 
+/* Состояние защиты SSH читается по щиту: работает — зелёный, выключена —
+   красноватый перечёркнутый, нет данных — нейтральный. Раньше иконка была
+   одна на все состояния, и об этом говорил только бейдж. */
+.subIconOk {
+  border-color: color-mix(in srgb, var(--success, #3fb950) 45%, var(--border));
+  background: color-mix(in srgb, var(--success, #3fb950) 10%, var(--bg-2));
+  color: var(--success, #3fb950);
+}
+
+.subIconOff {
+  border-color: color-mix(in srgb, var(--danger, #f85149) 40%, var(--border));
+  background: color-mix(in srgb, var(--danger, #f85149) 9%, var(--bg-2));
+  color: color-mix(in srgb, var(--danger, #f85149) 80%, var(--text-2));
+}
+
+.subIconIdle {
+  color: var(--text-2);
+}
+
 .subHeadText {
   display: flex;
   flex-direction: column;

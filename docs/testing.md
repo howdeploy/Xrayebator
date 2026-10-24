@@ -36,7 +36,7 @@ promise that installer and updater paths behave identically.
 
 ## Validation suite
 
-`validation/` contains exactly 42 scripts. Run every `validation/test-*.sh`; the current set is:
+`validation/` contains exactly 45 scripts. Run every `validation/test-*.sh`; the current set is:
 
 | Script | What it checks |
 |---|---|
@@ -59,11 +59,14 @@ promise that installer and updater paths behave identically.
 | `test-happ-subscription-static.sh` | Static HAPP subscription handler behavior (routing placeholders, schema validation order) |
 | `test-happ-client-routing.sh` | HAPP client split-profile: generator from bypass bundles (258 domains, placeholders, `geoip:ru`), nginx proxy buffers, menu wiring |
 | `test-legacy-profile-port-sync.sh` | Legacy profiles without `routes` still receive SNI/port sync updates |
+| `test-config-temp-json-suffix.sh` | Installer/update config validation: the temp config handed to `xray run -test` must end in `.json` (Xray ≥ 26.10 infers the format from the extension and ignores `-format json`), the failure path prints the kernel output, and `mktemp --suffix=.json` is verified functionally |
 | `test-installer-network-fallbacks.sh` | Installer network and resolver fallbacks |
 | `test-legacy-udp443-migration.sh` | One-time removal of the legacy UDP/443 block |
 | `test-main-menu-numbering.sh` | Consecutive menu numbering and matching handlers (1..14 including the backend items and monitoring) |
 | `test-backend-registry.sh` | Backend registry (multi-protocol stage): source-mode registry CRUD via `safe_jq_write`, installed/field reads, the lifecycle choke point as a safe no-op, `backend-status` JSON shape |
 | `test-hysteria2-lifecycle.sh` | Hysteria 2 backend: `server.yaml` renderer (userpass map, placeholder fallback), systemd unit security model, arch mapping, TLS detection, grants/revocation/expire-restore events, deleted-regen with a pre-removed profile file, created-is-a-no-op (no auto-grant), pure `hysteria2://` builder, CLI dispatch and subscription wiring |
+| `test-ssh-protect.sh` | SSH brute-force protection: jail config (journald backend, 4 failures per 10 min, 30-minute ban, escalation), sshd drop-in (`MaxAuthTries 3` / `LoginGraceTime 30`), the fact that password login stays enabled, the status-JSON shape the GUI renders, disable cleanup, wiring into menu/CLI/quickstart/install.sh and `--unban` validation. Also the 24-hour deploy-address exemption: `ignoreip` with an expiry stamp, the address parsed from `SSH_CONNECTION`/`SSH_CLIENT`, loopback skipped, pruning on expiry and the loopback baseline kept |
+| `test-awg-ppa-repo.sh` | `amnezia/ppa` is added only together with its signing key: the `signed-by` repo line, key-before-repo ordering, no repo without a key, repair of an already broken unsigned repo, idempotency by marker, and the repair wiring in `main_menu`/`quickstart`/`happ-setup` |
 | `test-awg-lifecycle.sh` | AmneziaWG backend: the Amnezia-default junk dialect (Jc=5, Jmin=10, Jmax=50, H1–H4=1..4, S1–S4 unique), key generation, server conf renderer (PostUp MASQUERADE, no peers at install), peer address allocation, client `.conf` contents, revoke/expire/restore events, deleted-regen with a pre-removed profile file, created-is-a-no-op (no auto-grant), CLI dispatch |
 | `test-main-readiness-regressions.sh` | Main-menu readiness and first-run regression checks |
 | `test-multiroute-argument-preservation.sh` | Preservation of multiroute transport arguments |
@@ -191,7 +194,7 @@ The workflows have separate responsibilities:
 
 - `.github/workflows/ci-linux.yml` is the Bash core gate on `ubuntu-24.04`: it installs `jq`,
   `uuid-runtime` and `ripgrep`, runs all four Bash syntax checks, then runs every
-  `validation/test-*.sh` script (42 at the time of writing).
+  `validation/test-*.sh` script (45 at the time of writing).
 - `.github/workflows/release.yml` is the active Electron release path for `v*` tags or manual runs.
   A `preflight` job first checks that the release notes file `docs/releases/<tag>.en.md` exists and
   that the `AP3X0` repository secret (if set) can actually create releases — it probes with a draft

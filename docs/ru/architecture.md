@@ -182,7 +182,7 @@ URL и способ проверки домена для Let's Encrypt: `dns01-s
   TLS (сертификат подписки Let's Encrypt + deploy-hook на продление, иначе self-signed);
   `auth: userpass` — один credential на профиль и placeholder-пользователь, пока карта пуста
   (Hysteria отвергает пустую карту).
-- **AmneziaWG 2.0** — системный VPN. Kernel-модуль через DKMS (основной путь — PPA `amnezia/ppa`,
+- **AmneziaWG (2.0 / 3.1)** — системный VPN. Kernel-модуль через DKMS (основной путь — PPA `amnezia/ppa`,
   фолбэк — сборка из исходников), интерфейс `awg0` через `awg-quick@awg0`, подсеть `10.8.1.0/24`,
   peer-ы на профиль (ключевая пара + preshared key + адрес), `ip_forward` и MASQUERADE на
   интерфейс default-route. Дистрибутивный юнит читает `/etc/amnezia/amneziawg/awg0.conf` — это
@@ -212,6 +212,13 @@ URL и способ проверки домена для Let's Encrypt: `dns01-s
   сообщением, недоставленный алерт повторяется на следующем тике. Токен бота хранится в `0600`
   `alerts.json` в нейтральном корне: это не состояние Xray, и путь `/usr/local/etc/xray` остаётся
   Xray-only. Миграция: `alerts_monitor_2026`.
+- **Защита SSH от перебора.** `ssh-protect` пишет `jail.d/xrayebator-sshd.local`, где все ключи
+  лежат внутри `[sshd]` — уже настроенный fail2ban сохраняет свои значения. Если вызов пришёл по
+  SSH, адрес вызывающей стороны добавляется в `ignoreip` вместе с меткой срока
+  (`# xrayebator-ignore-until: …`), а `xrayebator-ssh-ignoreip.timer` (30 минут) вызывает
+  `ssh-protect --prune-ignore`: истёкшая метка снимается, джейл перезагружается, юниты таймера
+  удаляются, а базовая строка `ignoreip = 127.0.0.1/8 ::1` остаётся всегда. То же доступно в GUI
+  (вкладка **Безопасность и TLS**) и включается автоматически в `install.sh` и `quickstart`.
 
 Все упомянутые в этом разделе миграции зарегистрированы во всех трёх входных путях — `main_menu`,
 `quickstart` и `happ-setup`.

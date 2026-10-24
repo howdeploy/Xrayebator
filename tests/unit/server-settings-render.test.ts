@@ -62,6 +62,8 @@ describe('ServerSettings render', () => {
 describe('settings sections', () => {
   it('lists all three sections with distinct ids', () => {
     const ids = SETTINGS_SECTIONS.map((s) => s.id)
+    // Защита SSH живёт блоком внутри «Безопасность и TLS»: это серверная настройка
+    // рядом с подпиской, а отдельная вкладка под неё была бы лишним кликом.
     expect(ids).toEqual(['create', 'backends', 'subscription'])
     expect(new Set(SETTINGS_SECTIONS.map((s) => s.labelKey)).size).toBe(3)
   })

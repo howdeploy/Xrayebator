@@ -242,6 +242,17 @@ tcpdump -l -ni <iface> 'udp port <port>'
 
 ## AWG 安装失败
 
+> **`apt-get update` 报 `NO_PUBKEY …` / `The repository … is not signed`。** 0.7.1 之前，安装流程
+> 可能在没有签名密钥的情况下写入 `ppa:amnezia/ppa`，此后所有 apt 操作都会失败（包括安装 certbot
+> 插件的 `dns01-setup`，`apt install amneziawg` 也找不到包）。迁移 `awg_ppa_signed_2026` 会在下一次
+> `sudo xrayebator` 或 `quickstart` 时执行：要么为仓库补上密钥，要么删除它，`apt-get update` 重新
+> 返回 0。手动处理：`sudo rm -f /etc/apt/sources.list.d/amneziawg.list && sudo apt-get update`，再
+> 运行 `sudo xrayebator awg-install` —— PPA 路径现在不会再留下未签名仓库，而是回退到源码编译。
+
+- **`dkms status` 显示 `amneziawg/1.0.0: added`，但没有模块。** DKMS 未能编译：Debian 与 Ubuntu
+  默认不安装内核头文件，而当内核比仓库更旧时，精确的 `linux-headers-$(uname -r)` 包可能已不存在
+  （实测 2026-10-24：Debian 12，运行 `6.1.0-45`，仓库只有 `47/50/53/54`）。自 0.7.1 起，安装器会自行安装头文件；若只有更新的内核可用，则针对该内核编译模块、安装其镜像，并返回
+  `reboot_required: true` —— 重启服务器后再执行 `sudo xrayebator awg-install` 完成配置。
 - 首选路径是 `amnezia/ppa` PPA；在没有对应发行版构建的系列上，Xrayebator 回退到源码编译。内核
   ≥ 5.6 时需要**完整的** `linux-source` 包——仅有内核头文件不够（模块构建会链接整个源码树）。
 - 安装后验证：`lsmod | grep amneziawg` 显示模块，`awg --version` 有响应。
@@ -355,5 +366,14 @@ dig +short TXT _acme-challenge.sub.example.com   # 签发期间应出现 TXT 记
   deploy-hook，因此订阅会自动采用新证书，无需人工操作（`dns01-status` 会显示 `deploy_hook: true`）。
 
 ## 安装或使用过程中出现报错
+
+### `Сгенерированный config.json не прошёл валидацию — live-конфиг не изменён`
+
+在 Xray 26.10.21+ 的干净服务器上，安装可能在内核下载完成后立即中断。配置本身没有问题——问题在
+**临时文件名**：自 26.10 起，Xray 按文件扩展名判断格式并忽略 `-format json`，因此
+`config.json.tmp.XXXXXX` 会被以 `main/confloader/external: unsupported config file extension`
+拒绝。0.7.1 已修复：安装程序把临时配置命名为 `*.json`，并在任何校验失败时打印
+内核给出的原因。`update.sh` 的两个临时配置也有同样缺陷，导致 DNS 更新被静默跳过。旧版本请从包含
+修复的分支安装。
 
 请完整复制终端中的报错文本。如果问题出在 Xrayebator 代码上，请提交 issue。

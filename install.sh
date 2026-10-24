@@ -914,10 +914,23 @@ if [[ -s "$CONFIG_FILE" ]]; then
   echo -e "${YELLOW}⚠ Существующий config.json сохранён: $config_backup${NC}"
 fi
 
-config_tmp=$(mktemp "${CONFIG_FILE}.tmp.XXXXXX") || {
+# Xray ≥ 26.10 определяет формат конфига по РАСШИРЕНИЮ файла и `-format json`
+# больше не спасает: на имени config.json.tmp.XXXXXX ядро отвечает
+# «unsupported config file extension» и валидация падает на ЛЮБОЙ чистой
+# установке (живой случай: Ubuntu 22.04 + Xray 26.10.21). Поэтому временный
+# файл обязан заканчиваться на .json — mktemp требует X в конце шаблона,
+# отсюда --suffix с фолбэком на переименование.
+config_tmp=""
+if ! config_tmp=$(mktemp --suffix=.json "${CONFIG_FILE}.tmp.XXXXXX" 2>/dev/null); then
+  config_tmp=$(mktemp "${CONFIG_FILE}.tmp.XXXXXX") || config_tmp=""
+  if [[ -n "$config_tmp" ]]; then
+    mv -f -- "$config_tmp" "${config_tmp}.json" && config_tmp="${config_tmp}.json"
+  fi
+fi
+if [[ -z "$config_tmp" ]]; then
   echo -e "${RED}✗ Не удалось создать временный config.json${NC}"
   exit 1
-}
+fi
 if ! cat > "$config_tmp" << EOF
 {
   "log": {
@@ -1023,10 +1036,17 @@ fi
 # «XXXXXX», а не «json». Без флага ядро отвечает «Failed to get format» и валидация
 # падает на ЛЮБОЙ чистой установке (проверено и на 25.9.5, и на 26.3.27). Тот же
 # приём уже применён в xrayebator → safe_restart_xray (run -test -format json).
+#
+# Вывод ядра обязательно печатаем при провале: без него сообщение «не прошёл
+# валидацию» не даёт понять, что именно не понравилось новой версии Xray, и
+# причина ищется вслепую (живой случай: Xray 26.10.21 на чистой Ubuntu 22.04).
+config_test_output=$(xray run -test -format json -config "$config_tmp" 2>&1 || true)
 if ! jq -e . "$config_tmp" >/dev/null 2>&1 ||
-   ! xray run -test -format json -config "$config_tmp" 2>&1 | grep -q '^Configuration OK\.$'; then
+   ! grep -q '^Configuration OK\.$' <<< "$config_test_output"; then
   rm -f -- "$config_tmp"
   echo -e "${RED}✗ Сгенерированный config.json не прошёл валидацию — live-конфиг не изменён${NC}"
+  echo -e "${YELLOW}Вывод xray run -test:${NC}"
+  printf '%s\n' "$config_test_output" | head -20
   exit 1
 fi
 if ! chown root:root "$config_tmp" || ! chmod 644 "$config_tmp" ||
@@ -1272,6 +1292,17 @@ if systemctl is-active --quiet xray && jq -e '.inbounds | length > 0' "$CONFIG_F
 else
   echo -e "${CYAN}✓ Xray установлен (запустится при создании профиля)${NC}\n"
 fi
+
+# Защита SSH от перебора: fail2ban + лимиты авторизации. Публичный сервер с
+# root-паролем иначе перебирают тысячами попыток в сутки (замер: ~9 950 за
+# сутки со 115 адресов). Не критично для установки: нет apt/сети — идём дальше,
+# включить можно позже одной командой.
+if command -v xrayebator >/dev/null 2>&1 && xrayebator ssh-protect --enable --quiet >/dev/null 2>&1; then
+  echo -e "${GREEN}✓ SSH защищён от перебора (fail2ban, maxretry=4)${NC}"
+else
+  echo -e "${YELLOW}⚠ Защиту SSH включить не удалось — позже: ${NC}${CYAN}sudo xrayebator ssh-protect --enable${NC}"
+fi
+echo ""
 
 # Финальное сообщение
 clear

@@ -617,6 +617,33 @@ export function registerIpcHandlers({ store }: IpcContext): void {
     }
   )
 
+  // Защита SSH от перебора — операция уровня сервера (как DNS-01, update и
+  // uninstall), поэтому идёт через MaintenanceManager. Парольный вход не
+  // трогается: GUI продолжает управлять сервером по SSH-паролю.
+  ipcMain.handle(
+    'security:sshProtectStatus',
+    async (_e, serverId: string, access: SshAccessInput) => {
+      const manager = await maintenanceManagerFor(serverId, access)
+      return manager.sshProtectStatus()
+    }
+  )
+
+  ipcMain.handle(
+    'security:sshProtectEnable',
+    async (_e, serverId: string, access: SshAccessInput) => {
+      const manager = await maintenanceManagerFor(serverId, access)
+      return manager.sshProtectEnable()
+    }
+  )
+
+  ipcMain.handle(
+    'security:sshProtectDisable',
+    async (_e, serverId: string, access: SshAccessInput) => {
+      const manager = await maintenanceManagerFor(serverId, access)
+      return manager.sshProtectDisable()
+    }
+  )
+
   const backendManagerFor = async (
     serverId: string,
     access: SshAccessInput

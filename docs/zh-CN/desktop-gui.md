@@ -136,7 +136,12 @@ xrayebator backend-status
 xrayebator backend-start --type hysteria2|awg
 xrayebator hysteria2-install [--port P] [--grant-all] / hysteria2-uninstall / hysteria2-grant --name N / hysteria2-subbody --on|--off / hysteria2-link --name N
 xrayebator awg-install [--grant-all] / awg-uninstall / awg-grant --name N / awg-conf --name N / awg-31 --on|--off
+xrayebator ssh-protect [--status|--enable|--disable] [--unban IP]
 ```
+
+SSH 防爆破由 `ssh-protect` 管理，并显示在**安全与 TLS**选项卡中：是否安装并运行 `fail2ban`、生效的
+`sshd` 限制、24 小时失败次数、当前封禁地址，以及一键开关保护。密码登录被有意保留 —— 应用本身
+就用 SSH 密码登录。
 
 后端卡片区分「已安装」与「正在运行」：绿色 **运行中** 表示单元已启动，红色
 **未运行** 表示已安装但单元未激活（通常是重启后内核模块没有加载），灰色
