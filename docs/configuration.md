@@ -716,3 +716,6 @@ The generated `subscription_url` follows the selected public listener: port `443
 the HTTPS URL, while `8443` or another public port is included, for example
 `https://domain:8443/sub/<token>`. A DNS record alone does not change the saved subscription domain;
 re-run the domain setup when changing the endpoint.
+
+Where to get a domain, how to move a zone to Cloudflare and how to issue a DNS token with the minimum
+rights is described in [recommendations](recommendations.md), together with the criteria for choosing a VPS.

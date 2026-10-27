@@ -319,6 +319,7 @@ Electron 检查：`npm test` 运行 `tests/` 中的 19 个单元测试文件；`
 | 文档 | 内容 |
 |---|---|
 | [配置](docs/zh-CN/configuration.md) | 环境变量、防火墙与主机网络设置、主菜单、命令、分流、级联、self-steal、域名与 DNS |
+| [建议](docs/zh-CN/recommendations.md) | 按标准选择 VPS、域名与 DNS、Cloudflare 与 Route 53 分步操作、客户端订阅格式——不含品牌与推广链接 |
 | [架构](docs/zh-CN/architecture.md) | 仓库结构与服务器状态目录树、入站与配置档的区别、订阅内部机制 |
 | [安全](docs/zh-CN/security.md) | 服务账户与权限、订阅保护、VPS 的 SSH 访问 |
 | [故障排查](docs/zh-CN/troubleshooting.md) | 订阅不刷新、XHTTP 不可用、客户端连不上等常见问题 |

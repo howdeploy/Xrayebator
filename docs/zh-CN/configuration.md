@@ -627,3 +627,6 @@ certbot 需要通过 80 端口的 HTTP challenge 访问 VPS。
 
 如果 `443` 已被 Xray 或其他服务占用，订阅会转到 `8443`，链接中会带上端口：
 `https://domain:8443/sub/<token>`。
+
+如何获得域名、如何把区域迁到 Cloudflare、如何签发最小权限的 DNS 令牌，见[建议](recommendations.md)；
+该文档还列出了选择 VPS 的标准。

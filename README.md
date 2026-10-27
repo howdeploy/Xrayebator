@@ -334,6 +334,7 @@ See [Testing](docs/testing.md#desktop-gui) and [Electron Desktop GUI](docs/deskt
 | Document | Contents |
 |---|---|
 | [Configuration](docs/configuration.md) | Environment variables, firewall and host networking, main menu, commands, bypass, cascade, self-steal, domain and DNS |
+| [Recommendations](docs/recommendations.md) | Choosing a VPS by criteria, domain and DNS setup, Cloudflare and Route 53 step by step, subscription formats for clients — no brands, no affiliate links |
 | [Architecture](docs/architecture.md) | Repository and on-server state trees, inbound versus profile, subscription internals |
 | [Security](docs/security.md) | Service account and permissions, subscription protection, SSH access to the VPS |
 | [Troubleshooting](docs/troubleshooting.md) | Subscription not refreshing, XHTTP not working, client not connecting and other cases |

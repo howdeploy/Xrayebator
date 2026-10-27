@@ -139,6 +139,20 @@ both grants, an expire/restore cycle, and both subscription bodies containing ex
 wiring with mocked binaries; the package installation itself (network, DKMS build, real systemctl)
 and a real client connection are live-server checks by design.
 
+A week of observation on a live server checks "has nothing degraded on its own" rather than "does it work
+now":
+
+```bash
+systemctl show <unit> -p NRestarts --value              # 0 for every unit
+journalctl -u xray --since "7 days ago" -p warning      # empty
+xrayebator inspect --json | jq '.profile_count, .route_count'
+xrayebator channel-test --name <profile>                # 8/8 routes, latencies of the same order
+```
+
+On a live server such a week produced: no Xray warnings at all, no unit restarts caused by a failure, and
+8/8 live routes with 150–250 ms latency. The only entries in the Hysteria 2 backend journal over that week
+are `timeout: no recent network activity` when a client disconnects; there were no server-side errors.
+
 ## Electron GUI unit tests
 
 The active Electron GUI has exactly twenty-five Vitest unit files:

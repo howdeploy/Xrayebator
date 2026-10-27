@@ -106,6 +106,19 @@ peer）、一次 `profile-revoke` 轮换（两个后端的授权同时轮换）�
 恰好一行 `hysteria2://`（每个已授权配置档一行）。CI 用 mock 二进制覆盖渲染器、注册表集成与 dispatch
 接线；软件包安装本身（网络、DKMS 构建、真实 systemctl）与真实客户端连接按设计属于实机检查。
 
+在实机上观察一周，检查的不是"现在能用"，而是"有没有自行退化"：
+
+```bash
+systemctl show <unit> -p NRestarts --value              # 所有单元均为 0
+journalctl -u xray --since "7 days ago" -p warning      # 为空
+xrayebator inspect --json | jq '.profile_count, .route_count'
+xrayebator channel-test --name <profile>                # 8/8 路由，延迟处于同一量级
+```
+
+这样的实机一周给出：没有任何 Xray warning，没有因故障导致的单元重启，8/8 路由存活，延迟 150–250 ms。
+这一周内 Hysteria 2 后端日志里只有客户端断开时的 `timeout: no recent network activity`；服务器侧没有
+错误。
+
 ## 桌面图形界面
 
 GUI（`src/`）在 `tests/` 中有独立的 Vitest 单元测试：
