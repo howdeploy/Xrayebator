@@ -4,6 +4,7 @@
 
 Sections: [Service account and permissions](#service-account-and-permissions) ·
 [Subscription security](#subscription-security) · [SSH access to the VPS](#ssh-access-to-the-vps) ·
+[Kernel and network stack](#kernel-and-network-stack-cve-2026-98432) ·
 [Desktop GUI credentials](#desktop-gui-credentials)
 
 ---
@@ -176,6 +177,51 @@ sudo xrayebator ssh-protect --unban <IP>
 
 Without SSH access the ban expires on its own (30 minutes, longer for repeat offenders), and the
 hosting provider's console always remains.
+
+## Kernel and network stack (CVE-2026-98432)
+
+On 15 October 2026 the Linux kernel received a fix for a use-after-free in IPv4 option
+processing (upstream `e3f33b0a1d89`, "ipv4: free inet_opt and ireq_opt after an RCU grace
+period"). A retransmitted SYN racing with a SYNACK leaves a freed `inet_opt`/`ireq_opt`
+reachable, and `ip_options_build()` reads it a second time. NVD rates it **9.8, critical**
+(`AV:N/AC:L/PR:N/UI:N`) and it affects every IPv4 TCP listener — Xray, nginx and sshd alike.
+That is why it cannot be fixed inside a proxy manager, and why two surfaces we *do* control
+are closed instead.
+
+**1. The MPTCP listener.** Go 1.24+ turns MPTCP on by default, and the exploit described
+publicly so far (Anthropic's, unreleased) rooted servers through a multipath TCP listener.
+Xray-core stopped enabling MPTCP in `DefaultListener` in **26.10.31** (upstream PR #7291),
+and on the server side `xrayebator` disables it in the kernel: `net.mptcp.enabled = 0` in
+`/etc/sysctl.d/99-xrayebator-netguard.conf`, applied by migration `netguard_mptcp_2026`.
+Nothing in this stack uses MPTCP — VLESS/Reality is TCP, Hysteria 2 and AmneziaWG are UDP —
+so no route changes behaviour.
+
+**2. Inbound packets that carry IPv4 options** (`IHL > 5`). Those are exactly the packets the
+vulnerable code parses, and neither the VPN, nor nginx, nor sshd advertise IPv4 options. The
+rule is Ubuntu Security Team's published mitigation, applied to a dedicated nftables table
+with its own boot unit. Enabling `nftables.service` instead would be a trap: the default
+`/etc/nftables.conf` starts with `flush ruleset`, which would wipe the UFW ruleset at boot.
+
+Unlike the MPTCP switch, this one is opt-in — it changes which packets the server accepts at
+all, so it is not enabled behind your back:
+
+```bash
+sudo xrayebator kernel-guard --status    # facts as JSON (kernel, MPTCP, nft rule, Xray version)
+sudo xrayebator kernel-guard --enable    # MPTCP off + drop inbound IPv4 packets with IP options
+sudo xrayebator kernel-guard --disable   # revert both
+```
+
+What this is **not**: a kernel update. Dropping IPv4 options narrows the attack surface, but
+the actual fix is a patched kernel package. As of 2 November 2026 the Ubuntu fixes were in the
+`-proposed` pocket only (jammy `5.15.0-203.213`, noble `6.8.0-149.149`) and `-updates` had
+none yet, so compare `uname -r` with the current advisory instead of assuming unattended
+upgrades landed it. `kernel-guard --status` reports the running kernel, whether a newer kernel
+is already installed but not booted (`newer_kernel_installed`) and whether a reboot is pending —
+deliberately without a hard-coded version table, which goes stale faster than it helps.
+
+One caveat in fairness to the other side: the MPTCP maintainer argued against disabling MPTCP
+in the proxy itself, since it penalises clients that benefit from it. We follow Xray's decision
+as defence in depth, not as a replacement for the kernel update.
 
 ## Desktop GUI credentials
 
