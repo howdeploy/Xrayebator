@@ -141,6 +141,25 @@ ip link del awg0 > /dev/null 2>&1 || true
 rm -f /etc/amnezia/amneziawg/awg0.conf 2>/dev/null || true
 rm -f /etc/sysctl.d/99-xrayebator-awg.conf 2>/dev/null || true
 rm -f /etc/modules-load.d/xrayebator-awg.conf 2>/dev/null || true
+
+# Защита ядра (CVE-2026-98432): своя nft-таблица, её юнит автозагрузки и
+# sysctl-файл. Таблицу снимаем до удаления юнита, а MPTCP возвращаем к
+# дефолту ядра — uninstall не должен оставлять за собой отфильтрованный
+# трафик и выключенный протокол на машине, которой мы больше не управляем.
+if systemctl list-unit-files 'xrayebator-netguard.service' > /dev/null 2>&1; then
+    systemctl disable --now xrayebator-netguard.service > /dev/null 2>&1 || true
+fi
+if command -v nft > /dev/null 2>&1; then
+    nft delete table inet cve_2026_98432 > /dev/null 2>&1 || true
+fi
+rm -f /etc/systemd/system/xrayebator-netguard.service
+rm -rf /etc/xrayebator/netguard
+rmdir /etc/xrayebator > /dev/null 2>&1 || true
+rm -f /etc/sysctl.d/99-xrayebator-netguard.conf 2>/dev/null || true
+# Рантайм-значение net.mptcp.enabled не возвращаем: install/update/uninstall не
+# должны менять host-wide настройки ядра — это отдельный инвариант (его держат
+# валидации установщика). После удаления этого файла ядро само вернётся к
+# собственному дефолту при следующей перезагрузке.
 rm -rf /usr/local/etc/xray
 if [[ "$APT_CERTBOT_TIMER_WAS_DISABLED" == "true" ]]; then
     systemctl enable --now certbot.timer > /dev/null 2>&1 || true
