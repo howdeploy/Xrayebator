@@ -3,7 +3,7 @@
 [← 返回 README](../../README.zh-CN.md) · [English](../security.md) · [Русский](../ru/security.md)
 
 章节：[服务账户与权限](#服务账户与权限) · [订阅安全](#订阅安全) · [VPS 的 SSH 访问](#vps-的-ssh-访问) ·
-[桌面 GUI 凭据](#桌面-gui-凭据)
+[Linux 内核与网络栈](#linux-内核与网络栈-cve-2026-98432) · [桌面 GUI 凭据](#桌面-gui-凭据)
 
 ---
 
@@ -154,6 +154,44 @@ sudo xrayebator ssh-protect --unban <IP>
 ```
 
 没有 SSH 访问时封禁会自行过期（30 分钟，屡犯更久），而且托管商控制台始终可用。
+
+## Linux 内核与网络栈 (CVE-2026-98432)
+
+2026 年 10 月 15 日，Linux 内核修复了 IPv4 选项处理中的 use-after-free（上游 `e3f33b0a1d89`，
+「ipv4: free inet_opt and ireq_opt after an RCU grace period」）：重传的 SYN 与 SYNACK 并发时，
+已释放的 `inet_opt`/`ireq_opt` 仍可被访问，`ip_options_build()` 会再读一次。NVD 评分
+**9.8，critical**（`AV:N/AC:L/PR:N/UI:N`），受影响的**所有** IPv4 TCP 监听套接字——Xray、
+nginx、sshd 都一样。因此它无法在代理管理器内部修复；我们能控制的是以下两个面。
+
+**1. MPTCP 监听。** Go 1.24+ 默认开启 MPTCP，而目前公开描述的利用方式（Anthropic 的，
+尚未发布）正是通过 multipath TCP 套接字拿到 root。Xray-core 在 **26.10.31** 中不再于
+`DefaultListener` 启用 MPTCP（上游 PR #7291）；服务器侧 `xrayebator` 在内核里关闭它：
+`/etc/sysctl.d/99-xrayebator-netguard.conf` 中的 `net.mptcp.enabled = 0`，由迁移
+`netguard_mptcp_2026` 应用。整个协议栈都不使用 MPTCP——VLESS/Reality 是 TCP，Hysteria 2 与
+AmneziaWG 是 UDP——所以线路行为不变。
+
+**2. 带 IPv4 选项的入站报文**（`IHL > 5`）。这正是漏洞代码解析的报文，而 VPN、nginx 与 sshd
+都不使用 IPv4 选项。该规则取自 Ubuntu 安全团队公布的缓解措施，落在独立的 nftables 表中，并有
+自己的开机单元。反过来启用 `nftables.service` 会是陷阱：默认的 `/etc/nftables.conf` 以
+`flush ruleset` 开头，开机时会清掉 UFW 的规则集。
+
+与 MPTCP 开关不同，这一层需要显式开启——它改变服务器到底接受哪些报文，所以不会在背后替您打开：
+
+```bash
+sudo xrayebator kernel-guard --status    # JSON 事实（内核、MPTCP、nft 规则、Xray 版本）
+sudo xrayebator kernel-guard --enable    # 关闭 MPTCP + 丢弃带 IP 选项的入站 IPv4 报文
+sudo xrayebator kernel-guard --disable   # 撤销两项改动
+```
+
+它**不是**什么：内核更新。丢弃 IPv4 选项只是缩小攻击面，真正的修复是打好补丁的内核包。截至
+2026 年 11 月 2 日，Ubuntu 的修复只在 `-proposed` 口袋（jammy `5.15.0-203.213`、noble
+`6.8.0-149.149`），`-updates` 里还没有，所以请把 `uname -r` 与当前公告对照，而不是假定
+unattended-upgrades 已经装上。`kernel-guard --status` 会报告运行中的内核、「已安装更新的内核但
+未启动」（`newer_kernel_installed`）以及是否需要重启——有意不硬编码版本表，因为版本表过时的
+速度比它帮忙的速度更快。
+
+为公平起见还有一点：MPTCP 维护者反对在代理里关闭 MPTCP，因为这会牺牲能从 MPTCP 获益的客户端。
+我们跟随 Xray 的决定，把它作为纵深防御的一层，而不是内核更新的替代品。
 
 ## 桌面 GUI 凭据
 
