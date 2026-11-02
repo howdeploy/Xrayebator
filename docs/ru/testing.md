@@ -36,7 +36,7 @@ Linux-машину. Проверки lifecycle должны также убеж�
 
 ## Что покрывают тесты
 
-В `validation/` ровно 45 скриптов. Запускайте каждый `validation/test-*.sh`; текущий набор:
+В `validation/` ровно 47 скриптов. Запускайте каждый `validation/test-*.sh`; текущий набор:
 
 | Тест | Что проверяет |
 |---|---|
@@ -66,6 +66,8 @@ Linux-машину. Проверки lifecycle должны также убеж�
 | `test-backend-registry.sh` | Реестр бэкендов (мультипротокольный этап): source-mode CRUD через `safe_jq_write`, чтение installed/field, lifecycle-точка как безопасный no-op, форма JSON `backend-status` |
 | `test-hysteria2-lifecycle.sh` | Бэкенд Hysteria 2: рендер `server.yaml` (userpass-карта, placeholder-fallback), модель безопасности юнита, arch-маппинг, TLS-детект, события грантов/revoke/expire-restore, реген deleted при заранее удалённом файле профиля, created = no-op (без авто-выдачи), pure-строитель `hysteria2://`, проводка диспетчера и подписки |
 | `test-ssh-protect.sh` | Защита SSH от перебора: конфиг джейла (journald, 4 неудачи за 10 минут, бан 30 минут, эскалация), drop-in sshd (`MaxAuthTries 3` / `LoginGraceTime 30`), сохранение парольного входа, форма статус-JSON для GUI, снятие защиты, проводка в меню/CLI/quickstart/install.sh и валидация `--unban`. Плюс 24-часовое исключение для адреса деплоя: `ignoreip` с меткой срока, разбор адреса из `SSH_CONNECTION`/`SSH_CLIENT`, отказ для loopback, снятие по сроку и сохранение loopback-базы |
+| `test-kernel-guard.sh` | Защита ядра от CVE-2026-98432: sysctl-файл, выключающий MPTCP, nft-правило дропа входящих IPv4-пакетов с IP-опциями (хук `input`, приоритет `-310`, дословно правило Ubuntu), юнит автозагрузки, который **не** делает `flush ruleset` (иначе при загрузке снесло бы правила UFW), определение «ядро новее уже установлено, но не загружено» без захардкоженных таблиц версий, сравнение версий Xray-core (ведущий ноль читается как десятичный), включение/выключение на подставных `nft`/`sysctl`, JSON-контракт CLI и проводка в меню/диспетчер/миграцию/uninstall |
+| `test-freedom-sockopt.sh` | `freedom.domainStrategy` → `streamSettings.sockopt.domainStrategy` (26.10.31 помечает старое поле deprecated и «will be removed»): значение переносится, legacy-ключ удаляется, уже заданный sockopt побеждает, второй прогон — no-op (Xray не перезапускается зря), а шаблон `install.sh` пишет только новую форму |
 | `test-awg-ppa-repo.sh` | PPA `amnezia/ppa` ставится только вместе с ключом подписи: строка `signed-by`, порядок «ключ до репозитория», отсутствие репозитория без ключа, ремонт уже испорченного неподписанного репозитория, идемпотентность по маркеру и проводка ремонта в `main_menu`/`quickstart`/`happ-setup` |
 | `test-awg-lifecycle.sh` | Бэкенд AmneziaWG: junk-диалект по умолчанию Amnezia (Jc=5, Jmin=10, Jmax=50, H1–H4=1..4, S1–S4 уникальные), генерация ключей, рендер серверного конфига (PostUp MASQUERADE, без peer-ов при установке), аллокация адресов, содержимое клиентского `.conf`, события revoke/expire/restore, реген deleted при заранее удалённом файле профиля, created = no-op (без авто-выдачи), диспетчер CLI |
 | `test-main-readiness-regressions.sh` | Регрессии readyness после аудита: certbot-manifest, UFW manifest, nginx rollback, привилегии, SSH-порт |
