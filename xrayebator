@@ -5834,13 +5834,21 @@ migrate_config_optimization() {
     fi
   fi
 
-  local freedom_strategy=$(jq -r '.outbounds[] | select(.protocol == "freedom") | .settings.domainStrategy // "none"' "$CONFIG_FILE" 2>/dev/null)
+  # Значение живёт в streamSettings.sockopt: с 26.10.31 settings.domainStrategy
+  # помечен deprecated («will be removed»), и ядро переносит его само. Читаем
+  # оба места, чтобы миграция не переписывала конфиг на каждом запуске.
+  local freedom_strategy=$(jq -r '
+    (.outbounds[] | select(.protocol == "freedom"))
+    | (.streamSettings.sockopt.domainStrategy // .settings.domainStrategy // "none")
+  ' "$CONFIG_FILE" 2>/dev/null)
   if [[ "$freedom_strategy" == "$query_strategy" ]]; then
     echo -e "${GREEN}  ✓ Freedom уже использует $query_strategy${NC}"
   else
     echo -e "${YELLOW}  → Freedom: добавляю $query_strategy${NC}"
     if safe_jq_write --arg qs "$query_strategy" '
-      (.outbounds[] | select(.protocol == "freedom")).settings.domainStrategy = $qs
+      (.outbounds[] | select(.protocol == "freedom"))
+      | .streamSettings.sockopt.domainStrategy = $qs
+      | del(.settings.domainStrategy)
     ' "$CONFIG_FILE"; then
       echo -e "${GREEN}  ✓ Freedom переведён на $query_strategy${NC}"
       changed=true
@@ -11292,6 +11300,33 @@ _migrate_awg_module_2026() {
   return 2
 }
 
+# 26.10.31 помечает freedom.settings.domainStrategy как deprecated и переносит
+# значение в streamSettings.sockopt.domainStrategy само — но с оговоркой «will be
+# removed». Когда поле уберут, конфиг с ним перестанет резолвить домены так, как
+# мы задумали, а ядро обновляется автоматически (`xrayebator update`). Поэтому
+# переносим значение явно и удаляем legacy-ключ. Идемпотентно: второй запуск
+# видит пустой список и возвращает «no-op» (1), без перезапуска ядра.
+_migrate_freedom_sockopt_2026() {
+  local legacy
+  legacy=$(jq '[.outbounds[]? | select(.protocol == "freedom" and (.settings.domainStrategy? != null))] | length' \
+    "$CONFIG_FILE" 2>/dev/null)
+  [[ "$legacy" =~ ^[0-9]+$ ]] || return 2
+  [[ "$legacy" -eq 0 ]] && return 1
+  if ! safe_jq_write '
+    .outbounds[] |= (
+      if .protocol == "freedom" and (.settings.domainStrategy? != null) then
+        .streamSettings.sockopt.domainStrategy =
+          ((.streamSettings.sockopt.domainStrategy) // .settings.domainStrategy)
+        | del(.settings.domainStrategy)
+      else . end
+    )
+  ' "$CONFIG_FILE"; then
+    return 2
+  fi
+  echo -e "${GREEN}  ✓ Freedom: domainStrategy перенесён в sockopt${NC}"
+  return 0
+}
+
 # Регенерация subhttp.sh: форматы Clash/mihomo и sing-box (существующие установки).
 # Обработчик живёт в heredoc менеджера, поэтому новая логика появляется на сервере
 # только после повторной генерации. Маркер проверяем и внутри — так миграция
@@ -11400,6 +11435,7 @@ main_menu() {
   run_migration "alerts_monitor_2026" "Таймер мониторинга сервера (Telegram-алерты)" _migrate_alerts_monitor_2026 || ((migration_failures++))
   run_migration "awg_module_2026" "Загрузка модуля amneziawg при старте ОС (AWG)" _migrate_awg_module_2026 || ((migration_failures++))
   run_migration "netguard_mptcp_2026" "Защита ядра: MPTCP выключен (CVE-2026-98432)" _migrate_netguard_mptcp_2026 || ((migration_failures++))
+  run_migration "freedom_sockopt_2026" "Freedom: domainStrategy перенесён в sockopt" _migrate_freedom_sockopt_2026 || ((migration_failures++))
 
   # Aggregate report (RESEARCH §«Error reporting»): чтобы пользователь не пропустил
   # failure среди скроллящегося TUI вывода.
@@ -15067,6 +15103,7 @@ quickstart_command() {
   run_migration "alerts_monitor_2026" "Telegram alerts monitor timer" _migrate_alerts_monitor_2026 >/dev/null 2>&1 || true
   run_migration "awg_module_2026" "AWG kernel module load at boot" _migrate_awg_module_2026 >/dev/null 2>&1 || true
   run_migration "netguard_mptcp_2026" "Kernel hardening: MPTCP disabled (CVE-2026-98432)" _migrate_netguard_mptcp_2026 >/dev/null 2>&1 || true
+  run_migration "freedom_sockopt_2026" "Freedom domainStrategy moved to sockopt" _migrate_freedom_sockopt_2026 >/dev/null 2>&1 || true
   run_migration "subhttp_happ_xhttp_compat_2026" "Subhttp HAPP XHTTP compat" _migrate_subhttp_happ_xhttp_compat_2026 >/dev/null 2>&1 || true
   run_migration "subhttp_no_default_happ_routing_2026" "Subhttp no default HAPP routing profile" _migrate_subhttp_no_default_happ_routing_2026 >/dev/null 2>&1 || true
   run_migration "subhttp_stale_profiles_410_2026" "Subhttp stale profile 410 handler" _migrate_subhttp_stale_profiles_410_2026 >/dev/null 2>&1 || true
@@ -15683,6 +15720,7 @@ happ_setup_command() {
   run_migration "subhttp_formats_2026" "Subhttp Clash/sing-box formats" _migrate_subhttp_formats_2026 >/dev/null 2>&1 || true
   run_migration "awg_module_2026" "AWG kernel module load at boot" _migrate_awg_module_2026 >/dev/null 2>&1 || true
   run_migration "netguard_mptcp_2026" "Kernel hardening: MPTCP disabled (CVE-2026-98432)" _migrate_netguard_mptcp_2026 >/dev/null 2>&1 || true
+  run_migration "freedom_sockopt_2026" "Freedom domainStrategy moved to sockopt" _migrate_freedom_sockopt_2026 >/dev/null 2>&1 || true
   migrate_awg_ppa_signed_2026 >/dev/null 2>&1 || true
   fix_xray_permissions >/dev/null 2>&1 || true
 
