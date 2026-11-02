@@ -2,6 +2,60 @@
 
 User-facing Xrayebator changes. The server manager and Electron application are published from the canonical `howdeploy/Xrayebator` repository.
 
+## [0.7.2] - 2026-11-02
+
+The `0.7.2` security patch: Xray-core moved to `26.10.31` (the urgent release that stops
+enabling MPTCP in the listener because of the Linux kernel remote-root `CVE-2026-98432`), the
+manager gained its own kernel hardening for the same flaw (`kernel-guard`: MPTCP off in the
+kernel plus dropping inbound IPv4 packets that carry IP options) and the migration the new core
+asks for (`freedom.domainStrategy` → `streamSettings.sockopt.domainStrategy`). It also releases
+the VPS/domain/DNS guide written in the previous cycle. Validation: 47 Bash scripts (two new),
+174 unit tests (173 green on Windows; the single red is the known `shell-command` case without
+`/bin/sh`) and a clean `npm run typecheck`. A production-shaped config was validated with
+the `26.3.27` and `26.10.31` binaries (`Configuration OK` on both) and the release asset SHA-256
+digests were verified against the `.dgst` files. The live server was unreachable during this
+cycle, so no live `channel-test` run and no live `kernel-guard --enable` — both are stated as
+limits in the release notes.
+
+### Added
+
+- **`xrayebator kernel-guard [--status|--enable|--disable] [--quiet]` — hardening against
+  `CVE-2026-98432`, a Linux kernel use-after-free in IPv4 option processing (upstream
+  `e3f33b0a1d89`, CVSS 9.8, every IPv4 TCP listener affected).** A manager cannot patch the
+  kernel, but two surfaces are ours to close. `--enable` disables MPTCP in the kernel
+  (`net.mptcp.enabled = 0` in `/etc/sysctl.d/99-xrayebator-netguard.conf`) — Go 1.24+ enables
+  it by default and the publicly described exploit rooted servers through a multipath TCP
+  listener — and drops inbound IPv4 TCP packets that carry IP options (`IHL > 5`), which is
+  exactly the code path with the bug. The rule is Ubuntu Security Team's mitigation verbatim,
+  installed into a dedicated nftables table at priority `-310` with its own boot unit
+  `xrayebator-netguard.service`; enabling `nftables.service` instead would be a trap, because
+  the stock `/etc/nftables.conf` starts with `flush ruleset` and would wipe the UFW ruleset at
+  boot. `--status` reports the running kernel, `newer_kernel_installed`, `reboot_required`,
+  `mptcp_supported`/`mptcp_enabled`, `ipv4_options_drop`, the Xray-core version and
+  `xray_mptcp_safe` (≥ `26.10.31`). Also menu item `16`. It is a mitigation, not a kernel
+  update: the IPv4-option drop narrows the surface while the race stays in the kernel.
+- **MPTCP is disabled by default — migration `netguard_mptcp_2026`.** The same decision
+  Xray-core took in the listener (`26.10.31`, PR #7291), applied at the server level so every
+  Go service benefits. The migration changes no `config.json`, so it returns «no-op» and does
+  not restart the Xray core. The IPv4-option drop stays opt-in on purpose: it changes which
+  packets the server accepts at all.
+- **`docs/recommendations.md` (ru/en/zh)** — the VPS/domain/DNS guide from the previous cycle:
+  selection criteria without hoster brands or affiliate links, the four ways to get a name
+  (bare IP, free subdomain, Cloudflare, Route 53), step-by-step DNS-01 setup, and a resource
+  table built from measurements on live nodes.
+
+### Fixed
+
+- **`freedom.domainStrategy` is deprecated in `26.10.31` and would break domain resolution once
+  removed.** The new core prints `The "freedom.domainStrategy" setting is deprecated and will be
+  removed` on every start; `26.3.27` did not, so the behaviour changed in this update. Since the
+  core updates itself through `xrayebator update`, waiting for the removal is not an option — on
+  an IPv6-only server without `UseIP` client traffic would simply stop. `install.sh` now writes
+  `streamSettings.sockopt.domainStrategy` (understood by both `26.3.27` and `26.10.31`), and
+  migration `freedom_sockopt_2026` moves the value on existing servers, deletes the legacy key,
+  never overwrites an explicit `sockopt` value and stays a no-op (no Xray restart) when there is
+  nothing to move.
+
 ## [0.7.1] - 2026-10-24
 
 The `0.7.1` patch: SSH brute-force protection (command, menu, GUI and automatic enablement) plus the
