@@ -2,20 +2,25 @@
 
 User-facing Xrayebator changes. The server manager and Electron application are published from the canonical `howdeploy/Xrayebator` repository.
 
-## [0.7.2] - 2026-11-02
+## [0.7.2] - 2026-11-04
 
 The `0.7.2` security patch: Xray-core moved to `26.10.31` (the urgent release that stops
 enabling MPTCP in the listener because of the Linux kernel remote-root `CVE-2026-98432`), the
 manager gained its own kernel hardening for the same flaw (`kernel-guard`: MPTCP off in the
-kernel plus dropping inbound IPv4 packets that carry IP options) and the migration the new core
-asks for (`freedom.domainStrategy` → `streamSettings.sockopt.domainStrategy`). It also releases
-the VPS/domain/DNS guide written in the previous cycle. Validation: 47 Bash scripts (two new),
-174 unit tests (173 green on Windows; the single red is the known `shell-command` case without
-`/bin/sh`) and a clean `npm run typecheck`. A production-shaped config was validated with
-the `26.3.27` and `26.10.31` binaries (`Configuration OK` on both) and the release asset SHA-256
-digests were verified against the `.dgst` files. The live server was unreachable during this
-cycle, so no live `channel-test` run and no live `kernel-guard --enable` — both are stated as
-limits in the release notes.
+kernel plus dropping inbound IPv4 packets that carry IP options), the migration the new core
+asks for (`freedom.domainStrategy` → `streamSettings.sockopt.domainStrategy`) and two fixes the
+live run produced (a duplicated nft rule, and a legacy installer that still shipped a vulnerable
+core). It also releases the VPS/domain/DNS guide written in the previous cycle. Validation: 47
+Bash scripts (two new, green in CI on both `dev` and `main`), 174 unit tests (173 green on
+Windows; the single red is the known `shell-command` case without `/bin/sh`) and a clean
+`npm run typecheck`. A production-shaped config was validated with the `26.3.27` and `26.10.31`
+binaries (`Configuration OK` on both) and the release asset SHA-256 digests were verified against
+the `.dgst` files. A live run on a clean Ubuntu 22.04 covered the whole path: install → 7/7
+routes (twice, and again after a reboot), four subscription bodies, Hysteria 2 and AmneziaWG
+end-to-end through their own clients, `kernel-guard` with a real boot cycle, the profile
+operations and a real certificate renewal. Ubuntu 24.04 and Debian 12 were not exercised live in
+this cycle, and AmneziaWG was tested with `awg-quick` rather than the official AmneziaVPN app —
+both are stated as limits in the release notes.
 
 ### Added
 
@@ -32,8 +37,10 @@ limits in the release notes.
   the stock `/etc/nftables.conf` starts with `flush ruleset` and would wipe the UFW ruleset at
   boot. `--status` reports the running kernel, `newer_kernel_installed`, `reboot_required`,
   `mptcp_supported`/`mptcp_enabled`, `ipv4_options_drop`, the Xray-core version and
-  `xray_mptcp_safe` (≥ `26.10.31`). Also menu item `16`. It is a mitigation, not a kernel
-  update: the IPv4-option drop narrows the surface while the race stays in the kernel.
+  `xray_mptcp_safe` (≥ `26.10.31`). Also menu item `16`. When `nft` is absent (a minimal image
+  with UFW but without the `nftables` package) the command disables MPTCP and reports
+  `partial: true` instead of pretending. It is a mitigation, not a kernel update: the
+  IPv4-option drop narrows the surface while the race stays in the kernel.
 - **MPTCP is disabled by default — migration `netguard_mptcp_2026`.** The same decision
   Xray-core took in the listener (`26.10.31`, PR #7291), applied at the server level so every
   Go service benefits. The migration changes no `config.json`, so it returns «no-op» and does
@@ -55,6 +62,21 @@ limits in the release notes.
   migration `freedom_sockopt_2026` moves the value on existing servers, deletes the legacy key,
   never overwrites an explicit `sockopt` value and stays a no-op (no Xray restart) when there is
   nothing to move.
+- **The `kernel-guard` drop rule duplicated itself whenever the boot unit was activated.** Live
+  finding on a fresh install: after `kernel-guard --enable` the nft chain held two identical
+  `ip protocol tcp ip hdrlength > 5 ... drop` rules. `nft -f` of a file containing
+  `table inet X { ... }` does not replace the table, it appends the rule to the existing one, and
+  `systemctl enable --now` starts the unit, which loads the same file a second time. The extra
+  drop is harmless (the first already dropped the packet) but the chain would grow with every
+  activation. `ExecStartPre`/`ExecReload` now delete our table first
+  (`-nft delete table inet cve_2026_98432`, the minus keeps a fresh boot from failing), and the
+  validation requires that line. Verified live: three enables in a row leave exactly one rule,
+  and after a reboot there is still one.
+- **The legacy installer deployed a core with MPTCP enabled in the listener.**
+  `gui-legacy` (the archival PySide6 interface) installs a **server-side** core from a pinned
+  version and was pinning `v26.7.28`, which predates the listener fix. The pin is now
+  `26.10.31`, with the SHA-256 of both release assets verified against their `.dgst` files and
+  against the downloaded archives.
 
 ## [0.7.1] - 2026-10-24
 
