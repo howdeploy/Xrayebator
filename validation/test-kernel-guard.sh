@@ -67,6 +67,16 @@ grep -q '^Type=oneshot$' <<< "$unit" || fail "юнит должен быть one
 grep -q '^RemainAfterExit=yes$' <<< "$unit" || fail "юнит должен оставаться активным"
 grep -qF "ExecStart=/usr/sbin/nft -f $NETGUARD_NFT_FILE" <<< "$unit" \
   || fail "юнит должен грузить именно наш файл правил"
+# Живая находка 2026-11-03: `nft -f` НЕ заменяет существующую таблицу, а
+# дописывает правило в неё. Без удаления перед загрузкой активация юнита после
+# `kernel-guard --enable` оставляла в цепочке два одинаковых правила дропа.
+grep -qF "ExecStartPre=-/usr/sbin/nft delete table inet cve_2026_98432" <<< "$unit" \
+  || fail "юнит обязан удалять таблицу перед загрузкой (иначе правило дублируется)"
+grep -qF "ExecReload=-/usr/sbin/nft delete table inet cve_2026_98432" <<< "$unit" \
+  || fail "reload тоже должен удалять таблицу перед загрузкой"
+if grep -q '^ExecStartPre=[^-]' <<< "$unit"; then
+  fail "ExecStartPre для delete обязана быть с минусом: на свежей загрузке таблицы ещё нет"
+fi
 grep -q '^Before=network-pre.target' <<< "$unit" \
   || fail "правило должно вставать до сети, иначе окно без фильтра"
 if grep -qi 'flush' <<< "$unit"; then
