@@ -2,7 +2,12 @@
 set -Eeuo pipefail
 umask 077
 
-XRAY_VERSION="v26.7.28"
+# Закреплённая версия ядра для ЛЕГАСИ-установщика. Обновлено до 26.10.31:
+# начиная с этой версии DefaultListener не включает MPTCP, а MPTCP-листенер —
+# самый простой путь эксплуатации CVE-2026-98432 (remote root в ядре Linux,
+# CVSS 9.8). Версия ниже 26.10.31 разворачивала сервер с этой поверхностью.
+# Дайджесты взяты из .dgst тех же релизных ассетов.
+XRAY_VERSION="v26.10.31"
 INSTALL_ROOT="/opt/xrayebator-gui"
 CONFIG_ROOT="/etc/xrayebator-gui"
 SERVICE_PATH="/etc/systemd/system/xrayebator-gui-helper.service"
@@ -50,11 +55,11 @@ done
 case "$(uname -m)" in
   x86_64|amd64)
     XRAY_ASSET="Xray-linux-64.zip"
-    XRAY_SHA256="8195d909f1109b8f3d99eefe401a3c451d7bf4af71f24d3815420f77e5dd2a40"
+    XRAY_SHA256="e4bd9119f50ae7c41658b1abd0679ae06f98bd864a2907ff33f2f2cf7081b214"
     ;;
   aarch64|arm64)
     XRAY_ASSET="Xray-linux-arm64-v8a.zip"
-    XRAY_SHA256="f5698bb218ada3b4022db26fafc39601c5f53b46b19eb76c9616325985807501"
+    XRAY_SHA256="1811c8f1da0c3b6dc707ebaf1c8390e987ba39859a8f0a7aadd8526157f2ec8d"
     ;;
   *)
     die "неподдерживаемая архитектура: $(uname -m)"
