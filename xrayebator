@@ -19446,6 +19446,13 @@ EOF
 # начинается с `flush ruleset`, и его включение снесло бы правила UFW при
 # загрузке. Здесь грузим только нашу таблицу и не делаем flush ни на старте,
 # ни на остановке.
+#
+# ExecStartPre с минусом обязателен: `nft -f` файла с `table inet X { ... }` не
+# заменяет таблицу, а ДОПИСЫВАЕТ правило в существующую. Без удаления активация
+# юнита после прямой заливки правил (`kernel-guard --enable`) давала вторую
+# копию правила — живьём 2026-11-03 в цепочке оказались два одинаковых
+# `ip protocol tcp ip hdrlength > 5 ... drop`. Минус перед командой = «ошибку
+# игнорировать»: на свежей загрузке таблицы ещё нет, и delete вернёт ошибку.
 _netguard_unit_pure() {
   local nft_bin="${1:-/usr/sbin/nft}"
   cat <<EOF
@@ -19460,7 +19467,9 @@ DefaultDependencies=no
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+ExecStartPre=-${nft_bin} delete table inet ${NETGUARD_NFT_TABLE}
 ExecStart=${nft_bin} -f ${NETGUARD_NFT_FILE}
+ExecReload=-${nft_bin} delete table inet ${NETGUARD_NFT_TABLE}
 ExecReload=${nft_bin} -f ${NETGUARD_NFT_FILE}
 StandardInput=null
 ProtectSystem=full
