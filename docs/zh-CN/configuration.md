@@ -120,10 +120,10 @@ Xrayebator 不会更改主机的 TCP 拥塞控制算法，也不会写入或应�
 | `sudo xrayebator profile-limit --name 名称 --limit 100GB\|none [--reset]` | 设置配置档的流量限额（`500MB`、`1.5GB`、`2TB`、直接写字节数、`none` 为不限量；大小写不敏感）和/或重置计数器（`--reset`）；打印 JSON |
 | `sudo xrayebator traffic-check` | 读取 Stats API 计数器、按配置档累计用量并应用限额（限额耗尽的配置档会被从入站移除）。由 `xrayebator-traffic.timer` 每 5 分钟触发；幂等——无变化时不改动配置 |
 | `sudo xrayebator profile-pq --name 名称 [--transport tcp\|tcp-utls\|tcp-xudp\|tcp-mux\|grpc\|xhttp]` | 为配置档添加后量子 VLESS Encryption 线路（`mlkem768x25519plus`）：服务器预留一个空闲端口，并为该线路创建独立入站（密钥是服务器级的，来自 `.vless_decryption`）；JSON 包含 `port` 和现成的链接 `link`。密钥由迁移 `mlkem_keys` 生成（Xray-core 25.9.5+），没有密钥时命令返回带提示的错误 |
-| `sudo xrayebator fp-change --name 名称 [--route R] --fp 指纹` | 修改配置档的指纹，打印 JSON 结果 |
+| `sudo xrayebator fp-change --name 名称 [--route R] --fp 指纹` | 修改配置档的指纹，打印 JSON 结果。`R` 是**从 0 开始的线路序号**（像 `tcp-pq` 这样的标签会被拒绝）；多线路配置档不带 `--route` 时命令会拒绝并提示指定 |
 | `sudo xrayebator sni-change --name 名称 [--route R] --sni SNI` | 修改配置档的 SNI，并同步更新同一端口上的所有配置档，打印 JSON 结果 |
 | `sudo xrayebator sni-list` | 按类别列出 `sni_list.txt` 中的候选 SNI，打印 JSON 结果（供桌面 GUI 的 SNI 对话框使用）。`sni_list.txt`（`/usr/local/etc/xray/data/sni_list.txt`）中第一条非注释行是新配置档的默认 SNI（`www.cloudflare.com`）。管理器现在会**从服务器本机验证该 SNI 是否可达**（判定标准与 `probe-test`/监控相同），并取第一个可达的候选：Reality 会把从 dest 获取的证书交给客户端，因此不可达的 dest 会卡住握手，而配置本身仍然有效。若全部不可达，则保留原先的默认值——探测不会因此弄坏已有部署 |
-| `sudo xrayebator port-change --name 名称 [--route R] --port 端口\|random` | 修改配置档的端口；更新入站、防火墙与订阅。客户端需要重新连接，打印 JSON 结果 |
+| `sudo xrayebator port-change --name 名称 [--route R] --port 端口\|random` | 修改配置档的端口；更新入站、防火墙与订阅。客户端需要重新连接，打印 JSON 结果。`R` 是从 0 开始的线路序号（与 `fp-change`/`sni-change` 规则相同） |
 | `sudo xrayebator bypass list` | 按分组列出当前分流规则（JSON） |
 | `sudo xrayebator bypass add --domain D` | 向分流规则添加一个域名（JSON） |
 | `sudo xrayebator bypass remove --domain D` | 从分流规则移除一个域名（JSON） |
