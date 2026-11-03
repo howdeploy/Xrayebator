@@ -211,6 +211,11 @@ sudo xrayebator kernel-guard --enable    # MPTCP off + drop inbound IPv4 packets
 sudo xrayebator kernel-guard --disable   # revert both
 ```
 
+If `nft` is missing (happens on minimal images: UFW is installed but the `nftables` package is not),
+`--enable` disables MPTCP and honestly reports `partial: true` with a warning that the IPv4-option
+drop was not applied. Install the package (`apt install nftables`) and run the command again — it is
+idempotent.
+
 What this is **not**: a kernel update. Dropping IPv4 options narrows the attack surface, but
 the actual fix is a patched kernel package. As of 2 November 2026 the Ubuntu fixes were in the
 `-proposed` pocket only (jammy `5.15.0-203.213`, noble `6.8.0-149.149`) and `-updates` had

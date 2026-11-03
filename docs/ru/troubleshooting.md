@@ -451,6 +451,36 @@ dig +short TXT _acme-challenge.sub.example.com   # должна появлять
   nginx`, поэтому подписка подхватывает новый сертификат без ручных действий (`dns01-status` показывает
   `deploy_hook: true`).
 
+## Сертификат продлевается, но `--dry-run` и `dns01-test` падают
+
+**Симптом.** `certbot renew --dry-run`, `xrayebator dns01-test` и `dns01-setup --staging` висят по
+таймауту или отвечают `Connection reset by peer`, хотя обычный выпуск и продление проходят.
+
+**Причина.** Все три работают через **staging**-эндпоинт `acme-staging-v02.api.letsencrypt.org`. На
+части сетей (в том числе за DPI) этот SNI режется на уровне TLS: TCP-соединение устанавливается, а
+рукопожатие не завершается. Production-эндпоинт при этом доступен, и `certbot renew` (без
+`--dry-run`) проходит штатно.
+
+```bash
+curl -s -o /dev/null -w 'staging %{http_code} %{time_total}s\n' --max-time 10 \
+     https://acme-staging-v02.api.letsencrypt.org/directory
+curl -s -o /dev/null -w 'prod    %{http_code} %{time_total}s\n' --max-time 10 \
+     https://acme-v02.api.letsencrypt.org/directory
+```
+
+`staging 000` при `prod 200` — это ровно оно. Продление в такой сети работает; проверять его нужно
+настоящим `certbot renew --force-renewal --cert-name <домен>` (квота Let's Encrypt — 5 сертификатов
+на набор идентификаторов за 168 ч, поэтому не чаще раза в сутки) и по сроку в
+`xrayebator dns01-status`. Staging нужен только для отладки, на подписку он не влияет.
+
+**Сертификат на IP живёт около 6 дней.** Для IP-идентификатора Let's Encrypt выдаёт сертификат
+профиля `shortlived` (около 6 суток), поэтому продление идёт каждые несколько дней, а
+`days_left: 6` в `dns01-status` — норма, а не ошибка. Продлением занимается
+`snap.certbot.renew.timer`; отдельного `certbot.timer` в системе может не быть, если certbot
+поставлен через snap (так делает `quickstart`). После продления deploy-hook
+`xrayebator-hysteria.sh` копирует сертификат в каталог Hysteria 2 и перезапускает её, а
+`systemctl reload nginx` подхватывает новый сертификат для подписки.
+
 ## Вылезла ошибка при установке или работе
 
 ### `Сгенерированный config.json не прошёл валидацию — live-конфиг не изменён`

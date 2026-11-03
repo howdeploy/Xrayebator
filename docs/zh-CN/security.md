@@ -183,6 +183,10 @@ sudo xrayebator kernel-guard --enable    # 关闭 MPTCP + 丢弃带 IP 选项的
 sudo xrayebator kernel-guard --disable   # 撤销两项改动
 ```
 
+如果系统里没有 `nft`（精简镜像会出现：UFW 装了，但没有 `nftables` 包），`--enable` 会关闭 MPTCP，并
+如实返回 `partial: true` 与「未启用 IPv4 选项丢弃」的警告。安装该包（`apt install nftables`）后重新
+执行即可——命令是幂等的。
+
 它**不是**什么：内核更新。丢弃 IPv4 选项只是缩小攻击面，真正的修复是打好补丁的内核包。截至
 2026 年 11 月 2 日，Ubuntu 的修复只在 `-proposed` 口袋（jammy `5.15.0-203.213`、noble
 `6.8.0-149.149`），`-updates` 里还没有，所以请把 `uname -r` 与当前公告对照，而不是假定

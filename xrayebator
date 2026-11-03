@@ -3846,7 +3846,7 @@ EOF
 }
 
 # --- PPA amnezia/ppa: репозиторий ставим только вместе с ключом подписи ---------
-# Живой дефект 2026-10-23 (сервер): ветка без add-apt-repository писала
+# Живой дефект 2026-10-23 (Ubuntu 22.04, реальный VPS): ветка без add-apt-repository писала
 # sources.list.d/amneziawg.list БЕЗ ключа. После этого `apt-get update` возвращал
 # rc=100 («NO_PUBKEY 4166F2C257290828 / repository is not signed»), на сервере
 # переставали работать ЛЮБЫЕ apt-операции (включая установку плагина certbot для
