@@ -481,6 +481,36 @@ curl -s -o /dev/null -w 'prod    %{http_code} %{time_total}s\n' --max-time 10 \
 `xrayebator-hysteria.sh` копирует сертификат в каталог Hysteria 2 и перезапускает её, а
 `systemctl reload nginx` подхватывает новый сертификат для подписки.
 
+## Установка на минимальный Debian 13
+
+**`curl: command not found` на первой же команде.** В минимальном образе Debian 13 (trixie) нет
+`curl`, `jq` и `nginx` — только `wget`. Документированная однострочная установка начинается с `curl`,
+поэтому сначала поставьте его или скачайте `wget`-ом (он в образе есть):
+
+```bash
+apt-get update && apt-get install -y curl
+# либо без curl:
+wget -qO ./xrayebator-install.sh \
+  https://raw.githubusercontent.com/howdeploy/Xrayebator/main/install.sh
+```
+
+Дальше всё делает `install.sh`: он сам ставит `curl wget jq qrencode uuid-runtime ufw unzip openssl
+socat`, скачивает Xray-core, проверяет SHA-256 и поднимает сервис.
+
+**`certbot` и `snap` появляются только после `quickstart`.** Пакет `certbot` в apt Debian 13 есть
+(4.0.0), но `quickstart` идёт путём snap: ставит `snapd` и certbot 5.x из snap, а продлением
+занимается `snap.certbot.renew.timer`. В неинтерактивной SSH-сессии `/snap/bin` может отсутствовать
+в `PATH`, поэтому `certbot` «не находится» — менеджер ищет его сам по `/snap/bin/certbot`, а вручную
+запускайте полным путём: `sudo /snap/bin/certbot renew --dry-run`.
+
+**AmneziaWG на Debian собирается из Ubuntu-PPA.** Своей сборки `amnezia/ppa` для Debian нет, поэтому
+apt тянет пакеты для Ubuntu `focal` (они ставятся и работают), а DKMS собирает модуль под то ядро,
+для которого есть заголовки. Если запущено ядро старше репозитория (живой случай 2026-11-04:
+Debian 13, запущено `6.12.85`, в репозитории `6.12.115`), команда вернёт `reboot_required: true` с
+именем нового ядра — перезагрузите сервер и повторите `sudo xrayebator awg-install`. После
+перезагрузки модуль подхватывается через `/etc/modules-load.d/xrayebator-awg.conf`, а `awg0`
+поднимается юнитом.
+
 ## Вылезла ошибка при установке или работе
 
 ### `Сгенерированный config.json не прошёл валидацию — live-конфиг не изменён`
