@@ -392,6 +392,32 @@ curl -s -o /dev/null -w 'prod    %{http_code} %{time_total}s\n' --max-time 10 \
 单独的 `certbot.timer`。续期后 deploy-hook `xrayebator-hysteria.sh` 会把证书复制到 Hysteria 2 目录并
 重启它，`systemctl reload nginx` 则让订阅采用新证书。
 
+## 在精简版 Debian 13 上安装
+
+**第一条命令就报 `curl: command not found`。** 精简的 Debian 13（trixie）镜像里没有 `curl`、`jq`、
+`nginx`，只有 `wget`。文档里的一行安装命令从 `curl` 开始，所以先装上它，或用镜像自带的 `wget` 下载脚本：
+
+```bash
+apt-get update && apt-get install -y curl
+# 或者不用 curl：
+wget -qO ./xrayebator-install.sh \
+  https://raw.githubusercontent.com/howdeploy/Xrayebator/main/install.sh
+```
+
+其余由 `install.sh` 完成：它会安装 `curl wget jq qrencode uuid-runtime ufw unzip openssl socat`、
+下载 Xray-core、校验 SHA-256 并启动服务。
+
+**`certbot` 与 `snap` 只在 `quickstart` 之后才出现。** Debian 13 的 apt 里有 `certbot` 4.0.0，但
+`quickstart` 走 snap 路径：安装 `snapd` 和 snap 版 certbot 5.x，续期由 `snap.certbot.renew.timer`
+驱动。非交互 SSH 会话的 `PATH` 可能不含 `/snap/bin`，于是 `certbot` 看起来「不存在」——管理器会自行
+解析 `/snap/bin/certbot`，手动执行时请用完整路径：`sudo /snap/bin/certbot renew --dry-run`。
+
+**Debian 上的 AmneziaWG 来自 Ubuntu PPA。** `amnezia/ppa` 没有 Debian 构建，因此 apt 拉取的是 Ubuntu
+`focal` 的包（可以安装并正常工作），DKMS 则为「有头文件的那个内核」编译模块。若运行中的内核比仓库旧
+（实测 2026-11-04：Debian 13，运行 `6.12.85`，仓库 `6.12.115`），命令会返回 `reboot_required: true`
+并给出新内核名——重启后再执行一次 `sudo xrayebator awg-install`。重启后模块通过
+`/etc/modules-load.d/xrayebator-awg.conf` 加载，`awg0` 由其单元拉起。
+
 ## 安装或使用过程中出现报错
 
 ### `Сгенерированный config.json не прошёл валидацию — live-конфиг не изменён`

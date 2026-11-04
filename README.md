@@ -49,6 +49,10 @@ sudo bash ./xrayebator-install.sh
 #   --fresh   Reset all markers and start from zero
 ```
 
+> **A minimal Debian 13 image ships without `curl`** (it has `wget` only): either run
+> `apt-get update && apt-get install -y curl`, or fetch the script with
+> `wget -qO ./xrayebator-install.sh <the same URL>`. `install.sh` installs everything else itself.
+
 <div align="center">
 
 <p>
