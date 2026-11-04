@@ -484,6 +484,35 @@ certificate: it is signed by the test root, the state is reported as `staging:tr
   `systemctl reload nginx`, so the subscription picks up the new certificate with no manual action
   (`dns01-status` shows `deploy_hook: true`).
 
+## The certificate renews, but `--dry-run` and `dns01-test` fail
+
+**Symptom.** `certbot renew --dry-run`, `xrayebator dns01-test` and `dns01-setup --staging` time out
+or answer `Connection reset by peer`, while a normal issuance and renewal succeed.
+
+**Cause.** All three go through the **staging** endpoint `acme-staging-v02.api.letsencrypt.org`. On
+some networks (DPI in particular) that SNI is cut at the TLS layer: the TCP connection opens and the
+handshake never completes. The production endpoint stays reachable and `certbot renew` (without
+`--dry-run`) works.
+
+```bash
+curl -s -o /dev/null -w 'staging %{http_code} %{time_total}s\n' --max-time 10 \
+     https://acme-staging-v02.api.letsencrypt.org/directory
+curl -s -o /dev/null -w 'prod    %{http_code} %{time_total}s\n' --max-time 10 \
+     https://acme-v02.api.letsencrypt.org/directory
+```
+
+`staging 000` with `prod 200` is exactly it. Renewal works on such a network; verify it with a real
+`certbot renew --force-renewal --cert-name <domain>` (Let's Encrypt allows 5 certificates per exact
+set of identifiers per 168 h, so no more than once a day) and by the expiry reported in
+`xrayebator dns01-status`. Staging exists for debugging only and does not affect the subscription.
+
+**An IP certificate lives about 6 days.** For an IP identifier Let's Encrypt issues a `shortlived`
+profile certificate (roughly six days), so renewal happens every few days and `days_left: 6` in
+`dns01-status` is normal, not a failure. Renewal is driven by `snap.certbot.renew.timer`; a separate
+`certbot.timer` may be absent when certbot comes from snap (which is what `quickstart` does). After a
+renewal the deploy hook `xrayebator-hysteria.sh` copies the certificate into the Hysteria 2 directory
+and restarts it, and `systemctl reload nginx` picks up the new certificate for the subscription.
+
 ## An error appeared during installation or use
 
 ### `Сгенерированный config.json не прошёл валидацию — live-конфиг не изменён`

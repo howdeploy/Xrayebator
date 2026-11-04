@@ -3846,7 +3846,7 @@ EOF
 }
 
 # --- PPA amnezia/ppa: репозиторий ставим только вместе с ключом подписи ---------
-# Живой дефект 2026-10-23 (2.26.125.228): ветка без add-apt-repository писала
+# Живой дефект 2026-10-23 (Ubuntu 22.04, реальный VPS): ветка без add-apt-repository писала
 # sources.list.d/amneziawg.list БЕЗ ключа. После этого `apt-get update` возвращал
 # rc=100 («NO_PUBKEY 4166F2C257290828 / repository is not signed»), на сервере
 # переставали работать ЛЮБЫЕ apt-операции (включая установку плагина certbot для
@@ -5834,13 +5834,21 @@ migrate_config_optimization() {
     fi
   fi
 
-  local freedom_strategy=$(jq -r '.outbounds[] | select(.protocol == "freedom") | .settings.domainStrategy // "none"' "$CONFIG_FILE" 2>/dev/null)
+  # Значение живёт в streamSettings.sockopt: с 26.10.31 settings.domainStrategy
+  # помечен deprecated («will be removed»), и ядро переносит его само. Читаем
+  # оба места, чтобы миграция не переписывала конфиг на каждом запуске.
+  local freedom_strategy=$(jq -r '
+    (.outbounds[] | select(.protocol == "freedom"))
+    | (.streamSettings.sockopt.domainStrategy // .settings.domainStrategy // "none")
+  ' "$CONFIG_FILE" 2>/dev/null)
   if [[ "$freedom_strategy" == "$query_strategy" ]]; then
     echo -e "${GREEN}  ✓ Freedom уже использует $query_strategy${NC}"
   else
     echo -e "${YELLOW}  → Freedom: добавляю $query_strategy${NC}"
     if safe_jq_write --arg qs "$query_strategy" '
-      (.outbounds[] | select(.protocol == "freedom")).settings.domainStrategy = $qs
+      (.outbounds[] | select(.protocol == "freedom"))
+      | .streamSettings.sockopt.domainStrategy = $qs
+      | del(.settings.domainStrategy)
     ' "$CONFIG_FILE"; then
       echo -e "${GREEN}  ✓ Freedom переведён на $query_strategy${NC}"
       changed=true
@@ -11292,6 +11300,33 @@ _migrate_awg_module_2026() {
   return 2
 }
 
+# 26.10.31 помечает freedom.settings.domainStrategy как deprecated и переносит
+# значение в streamSettings.sockopt.domainStrategy само — но с оговоркой «will be
+# removed». Когда поле уберут, конфиг с ним перестанет резолвить домены так, как
+# мы задумали, а ядро обновляется автоматически (`xrayebator update`). Поэтому
+# переносим значение явно и удаляем legacy-ключ. Идемпотентно: второй запуск
+# видит пустой список и возвращает «no-op» (1), без перезапуска ядра.
+_migrate_freedom_sockopt_2026() {
+  local legacy
+  legacy=$(jq '[.outbounds[]? | select(.protocol == "freedom" and (.settings.domainStrategy? != null))] | length' \
+    "$CONFIG_FILE" 2>/dev/null)
+  [[ "$legacy" =~ ^[0-9]+$ ]] || return 2
+  [[ "$legacy" -eq 0 ]] && return 1
+  if ! safe_jq_write '
+    .outbounds[] |= (
+      if .protocol == "freedom" and (.settings.domainStrategy? != null) then
+        .streamSettings.sockopt.domainStrategy =
+          ((.streamSettings.sockopt.domainStrategy) // .settings.domainStrategy)
+        | del(.settings.domainStrategy)
+      else . end
+    )
+  ' "$CONFIG_FILE"; then
+    return 2
+  fi
+  echo -e "${GREEN}  ✓ Freedom: domainStrategy перенесён в sockopt${NC}"
+  return 0
+}
+
 # Регенерация subhttp.sh: форматы Clash/mihomo и sing-box (существующие установки).
 # Обработчик живёт в heredoc менеджера, поэтому новая логика появляется на сервере
 # только после повторной генерации. Маркер проверяем и внутри — так миграция
@@ -11399,6 +11434,8 @@ main_menu() {
   run_migration "subhttp_v2ray_pq_2026" "Subhttp: base64 для ?target=v2ray + PQ на xhttp в HAPP" _migrate_subhttp_v2ray_pq_2026 || ((migration_failures++))
   run_migration "alerts_monitor_2026" "Таймер мониторинга сервера (Telegram-алерты)" _migrate_alerts_monitor_2026 || ((migration_failures++))
   run_migration "awg_module_2026" "Загрузка модуля amneziawg при старте ОС (AWG)" _migrate_awg_module_2026 || ((migration_failures++))
+  run_migration "netguard_mptcp_2026" "Защита ядра: MPTCP выключен (CVE-2026-98432)" _migrate_netguard_mptcp_2026 || ((migration_failures++))
+  run_migration "freedom_sockopt_2026" "Freedom: domainStrategy перенесён в sockopt" _migrate_freedom_sockopt_2026 || ((migration_failures++))
 
   # Aggregate report (RESEARCH §«Error reporting»): чтобы пользователь не пропустил
   # failure среди скроллящегося TUI вывода.
@@ -11477,6 +11514,7 @@ main_menu() {
     echo ""
     echo -e "${MAGENTA} БЕЗОПАСНОСТЬ:${NC}"
     echo -e "${CYAN}15)${NC} Защита SSH от перебора (fail2ban)"
+    echo -e "${CYAN}16)${NC} Защита ядра (CVE-2026-98432: MPTCP и IPv4-опции)"
     echo ""
     echo -e "${RED} 0)${NC} Выход"
     echo ""
@@ -11499,6 +11537,7 @@ main_menu() {
       13) backend_status_menu ;;
       14) telegram_alerts_menu ;;
       15) ssh_protect_menu ;;
+      16) kernel_guard_menu ;;
       0) exit 0 ;;
       *) echo -e "${RED}Неверный выбор${NC}"; sleep 1 ;;
     esac
@@ -15063,6 +15102,8 @@ quickstart_command() {
   run_migration "subhttp_v2ray_pq_2026" "Subhttp v2ray base64 and HAPP PQ xhttp" _migrate_subhttp_v2ray_pq_2026 >/dev/null 2>&1 || true
   run_migration "alerts_monitor_2026" "Telegram alerts monitor timer" _migrate_alerts_monitor_2026 >/dev/null 2>&1 || true
   run_migration "awg_module_2026" "AWG kernel module load at boot" _migrate_awg_module_2026 >/dev/null 2>&1 || true
+  run_migration "netguard_mptcp_2026" "Kernel hardening: MPTCP disabled (CVE-2026-98432)" _migrate_netguard_mptcp_2026 >/dev/null 2>&1 || true
+  run_migration "freedom_sockopt_2026" "Freedom domainStrategy moved to sockopt" _migrate_freedom_sockopt_2026 >/dev/null 2>&1 || true
   run_migration "subhttp_happ_xhttp_compat_2026" "Subhttp HAPP XHTTP compat" _migrate_subhttp_happ_xhttp_compat_2026 >/dev/null 2>&1 || true
   run_migration "subhttp_no_default_happ_routing_2026" "Subhttp no default HAPP routing profile" _migrate_subhttp_no_default_happ_routing_2026 >/dev/null 2>&1 || true
   run_migration "subhttp_stale_profiles_410_2026" "Subhttp stale profile 410 handler" _migrate_subhttp_stale_profiles_410_2026 >/dev/null 2>&1 || true
@@ -15678,6 +15719,8 @@ happ_setup_command() {
   run_migration "alerts_monitor_2026" "Telegram alerts monitor timer" _migrate_alerts_monitor_2026 >/dev/null 2>&1 || true
   run_migration "subhttp_formats_2026" "Subhttp Clash/sing-box formats" _migrate_subhttp_formats_2026 >/dev/null 2>&1 || true
   run_migration "awg_module_2026" "AWG kernel module load at boot" _migrate_awg_module_2026 >/dev/null 2>&1 || true
+  run_migration "netguard_mptcp_2026" "Kernel hardening: MPTCP disabled (CVE-2026-98432)" _migrate_netguard_mptcp_2026 >/dev/null 2>&1 || true
+  run_migration "freedom_sockopt_2026" "Freedom domainStrategy moved to sockopt" _migrate_freedom_sockopt_2026 >/dev/null 2>&1 || true
   migrate_awg_ppa_signed_2026 >/dev/null 2>&1 || true
   fix_xray_permissions >/dev/null 2>&1 || true
 
@@ -19322,6 +19365,542 @@ ssh_protect_menu() {
   esac
 }
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# ЗАЩИТА ЯДРА И СЕТЕВОГО СТЕКА (CVE-2026-98432)
+# ═══════════════════════════════════════════════════════════════════════════════
+# 2026-10-15 в ядре Linux закрыли use-after-free в разборе IPv4-опций
+# (upstream e3f33b0a1d89, «ipv4: free inet_opt and ireq_opt after an RCU grace
+# period»): при повторном SYN и одновременной отправке SYNACK уже освобождённый
+# inet_opt/ireq_opt остаётся доступен, и ip_options_build() читает его повторно.
+# CVSS 3.1 = 9.8 (AV:N/AC:L/PR:N/UI:N) — «удалённо, без аутентификации».
+#
+# Уязвимы ВСЕ IPv4 TCP-листенеры, а не один сервис: Xray, nginx, sshd — всё, что
+# слушает TCP. Поэтому это не правится внутри Xrayebator, но два входа нам
+# подконтрольны, и оба закрыты здесь:
+#
+#  1) MPTCP-листенер. Go 1.24+ включает MPTCP по умолчанию, и публично описанный
+#     эксплойт (Anthropic) поднимал root именно через MPTCP-сокет. Xray-core
+#     закрыл это в 26.10.31 (PR #7291: DefaultListener больше не включает MPTCP).
+#     На сервере глушим MPTCP в ядре: ни VLESS/Reality (TCP), ни Hysteria 2 и
+#     AmneziaWG (UDP) MPTCP не используют, зато самый простой путь эксплуатации
+#     пропадает у любого Go-сервиса на этой машине.
+#  2) Пакеты с IPv4-опциями (IHL > 5). Именно их разбирает уязвимый код, а VPN,
+#     nginx и sshd их не используют. Рекомендация Ubuntu Security Team для этой
+#     CVE — дропать их на входе в собственной nft-таблице.
+#
+# Чего здесь НЕТ (и мы это не обещаем): обновления ядра. Дроп IPv4-опций
+# сокращает поверхность, но не заменяет фикс ядра — на 2026-11-02 у Ubuntu фиксы
+# лежали в -proposed (jammy 5.15.0-203.213, noble 6.8.0-149.149), не в -updates.
+#
+# Почему дроп IPv4-опций не включается сам при установке: это меняет то, какие
+# пакеты сервер вообще принимает. Переключатель MPTCP такой цены не имеет (он
+# ничего не фильтрует), поэтому MPTCP выключается миграцией, а дроп — решением
+# оператора: `xrayebator kernel-guard --enable`.
+NETGUARD_MPTCP_SYSCTL_FILE="${NETGUARD_MPTCP_SYSCTL_FILE:-/etc/sysctl.d/99-xrayebator-netguard.conf}"
+NETGUARD_NFT_DIR="${NETGUARD_NFT_DIR:-/etc/xrayebator/netguard}"
+NETGUARD_NFT_FILE="${NETGUARD_NFT_FILE:-${NETGUARD_NFT_DIR}/cve-2026-98432.nft}"
+NETGUARD_UNIT_FILE="${NETGUARD_UNIT_FILE:-/etc/systemd/system/xrayebator-netguard.service}"
+NETGUARD_UNIT_NAME="xrayebator-netguard.service"
+NETGUARD_PROC_ROOT="${NETGUARD_PROC_ROOT:-/proc/sys}"
+NETGUARD_BOOT_DIR="${NETGUARD_BOOT_DIR:-/boot}"
+NETGUARD_MPTCP_KEY="net.mptcp.enabled"
+NETGUARD_CVE="CVE-2026-98432"
+NETGUARD_NFT_TABLE="cve_2026_98432"
+# Минимальная версия Xray-core, где DefaultListener больше не включает MPTCP
+# (26.10.31). Ниже — MPTCP-листенер снова живёт на Go-дефолте.
+NETGUARD_XRAY_MPTCP_SAFE_VERSION="26.10.31"
+
+# Конфиг sysctl: MPTCP выключен на уровне ядра.
+_netguard_mptcp_conf_pure() {
+  cat <<EOF
+# Managed by xrayebator — защита от ${NETGUARD_CVE}.
+# Go 1.24+ включает MPTCP по умолчанию, а MPTCP-листенер — самый простой путь
+# эксплуатации этой уязвимости ядра. Ни VLESS/Reality (TCP), ни Hysteria 2 и
+# AmneziaWG (UDP) MPTCP не используют, поэтому выключение ничего не ломает.
+# Снимается командой: sudo xrayebator kernel-guard --disable
+${NETGUARD_MPTCP_KEY} = 0
+EOF
+}
+
+# nft-таблица: дроп IPv4 TCP-пакетов с IP-опциями (IHL > 5).
+# Правило взято из рекомендации Ubuntu Security Team для этой CVE дословно;
+# statement `comment` в само правило не добавляем — его поддержка зависит от
+# версии nft, а смысл и так в шапке файла.
+_netguard_nft_ruleset_pure() {
+  cat <<EOF
+#!/usr/sbin/nft -f
+# Managed by xrayebator — дроп IPv4 TCP-пакетов с IP-опциями (${NETGUARD_CVE}).
+# Приоритет -310: раньше filter-хука UFW, поэтому пакет не доходит до сокетов.
+# Ни VPN, ни nginx, ни sshd IPv4-опции не используют; TCP-опции (timestamps,
+# window scaling) и весь IPv6 не затрагиваются.
+table inet ${NETGUARD_NFT_TABLE} {
+  chain input {
+    type filter hook input priority -310; policy accept;
+    ip protocol tcp ip hdrlength > 5 counter drop
+  }
+}
+EOF
+}
+
+# Своя systemd-юнит, а НЕ nftables.service: на Debian/Ubuntu /etc/nftables.conf
+# начинается с `flush ruleset`, и его включение снесло бы правила UFW при
+# загрузке. Здесь грузим только нашу таблицу и не делаем flush ни на старте,
+# ни на остановке.
+#
+# ExecStartPre с минусом обязателен: `nft -f` файла с `table inet X { ... }` не
+# заменяет таблицу, а ДОПИСЫВАЕТ правило в существующую. Без удаления активация
+# юнита после прямой заливки правил (`kernel-guard --enable`) давала вторую
+# копию правила — живьём 2026-11-03 в цепочке оказались два одинаковых
+# `ip protocol tcp ip hdrlength > 5 ... drop`. Минус перед командой = «ошибку
+# игнорировать»: на свежей загрузке таблицы ещё нет, и delete вернёт ошибку.
+_netguard_unit_pure() {
+  local nft_bin="${1:-/usr/sbin/nft}"
+  cat <<EOF
+[Unit]
+Description=Xrayebator: дроп IPv4-пакетов с IP-опциями (${NETGUARD_CVE})
+Documentation=man:nft(8)
+Wants=network-pre.target
+Before=network-pre.target shutdown.target
+Conflicts=shutdown.target
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=-${nft_bin} delete table inet ${NETGUARD_NFT_TABLE}
+ExecStart=${nft_bin} -f ${NETGUARD_NFT_FILE}
+ExecReload=-${nft_bin} delete table inet ${NETGUARD_NFT_TABLE}
+ExecReload=${nft_bin} -f ${NETGUARD_NFT_FILE}
+StandardInput=null
+ProtectSystem=full
+ProtectHome=true
+CapabilityBoundingSet=CAP_NET_ADMIN
+
+[Install]
+WantedBy=sysinit.target
+EOF
+}
+
+# Бинарники вынесены в отдельные хелперы: тесты подставляют свои через
+# NETGUARD_NFT_BIN / NETGUARD_SYSCTL_BIN, чтобы не трогать систему.
+_netguard_nft_bin() {
+  if [[ -n "${NETGUARD_NFT_BIN:-}" ]]; then
+    printf '%s\n' "$NETGUARD_NFT_BIN"
+    return 0
+  fi
+  command -v nft 2>/dev/null
+}
+
+_netguard_sysctl_bin() { printf '%s\n' "${NETGUARD_SYSCTL_BIN:-sysctl}"; }
+
+_netguard_nft_available() {
+  local bin
+  bin=$(_netguard_nft_bin 2>/dev/null) || return 1
+  [[ -n "$bin" && -x "$bin" ]]
+}
+
+# MPTCP есть в ядре? До 5.6 (и без модуля mptcp) ключа просто нет — тогда
+# выключать нечего, и это не ошибка.
+_netguard_mptcp_supported() { [[ -e "${NETGUARD_PROC_ROOT}/net/mptcp/enabled" ]]; }
+
+# Действующее значение: 1 — MPTCP включён, 0 — выключен, пусто — MPTCP нет.
+_netguard_mptcp_value() {
+  local v=""
+  if _netguard_mptcp_supported; then
+    v=$(tr -d ' \n' < "${NETGUARD_PROC_ROOT}/net/mptcp/enabled" 2>/dev/null)
+  fi
+  printf '%s\n' "$v"
+}
+
+_netguard_nft_table_present() {
+  local bin
+  bin=$(_netguard_nft_bin 2>/dev/null) || return 1
+  [[ -n "$bin" ]] || return 1
+  "$bin" list tables 2>/dev/null | grep -q "table inet ${NETGUARD_NFT_TABLE}\$"
+}
+
+# Установленные ядра (без пути и префикса vmlinuz-).
+_netguard_installed_kernels() {
+  ls -1 "${NETGUARD_BOOT_DIR}"/vmlinuz-* 2>/dev/null | sed 's|^.*/vmlinuz-||'
+}
+
+# Есть ли на диске ядро новее запущенного (stdin: список версий, $1 — uname -r).
+# Захардкоженных таблиц «в какой версии починили» намеренно не держим: они
+# устаревают быстрее, чем мы их обновляем, и превращаются в ложные советы.
+_netguard_newer_kernel_pure() {
+  local running="${1:-}" newest=""
+  newest=$(sed '/^[[:space:]]*$/d' | sort -V 2>/dev/null | tail -1)
+  [[ -n "$newest" && "$newest" != "$running" ]]
+}
+
+_netguard_reboot_required() {
+  [[ -e /var/run/reboot-required ]] && return 0
+  _netguard_installed_kernels | _netguard_newer_kernel_pure "$(uname -r)"
+}
+
+# Сравнение версий вида 26.10.31 без sort -V: компоненты сравниваются как
+# десятичные (10#), иначе «26.08.1» bash прочитал бы как восьмеричное и упал.
+_xray_version_at_least_pure() {
+  local have="${1#v}" want="${2#v}" i hs ws
+  [[ -z "$have" || -z "$want" ]] && return 1
+  local -a h=() w=()
+  IFS='.-' read -r -a h <<< "$have"
+  IFS='.-' read -r -a w <<< "$want"
+  for i in 0 1 2; do
+    hs="${h[$i]:-0}"; ws="${w[$i]:-0}"
+    hs="${hs//[^0-9]/}"; ws="${ws//[^0-9]/}"
+    hs=${hs:-0}; ws=${ws:-0}
+    (( 10#$hs > 10#$ws )) && return 0
+    (( 10#$hs < 10#$ws )) && return 1
+  done
+  return 0
+}
+
+_netguard_xray_version() {
+  local bin="${NETGUARD_XRAY_BIN:-/usr/local/bin/xray}"
+  [[ -x "$bin" ]] || return 1
+  "$bin" version 2>/dev/null | head -1 | awk '{print $2}'
+}
+
+# Полный статус одним JSON-объектом: и для GUI-подобных вызовов, и для
+# `kernel-guard --status`. Всё, что можно проверить фактами, а не догадками.
+_netguard_status_json() {
+  local kernel mptcp_value="" mptcp_supported=false mptcp_enabled=false
+  local nft_available=false drop=false unit_present=false unit_enabled=false
+  local sysctl_present=false newer=false reboot=false xray_ver="" xray_safe=false
+
+  kernel=$(uname -r 2>/dev/null || echo "unknown")
+  mptcp_value=$(_netguard_mptcp_value)
+  if _netguard_mptcp_supported; then
+    mptcp_supported=true
+    [[ "$mptcp_value" == "0" ]] || mptcp_enabled=true
+  fi
+  [[ -f "$NETGUARD_MPTCP_SYSCTL_FILE" ]] && sysctl_present=true
+
+  _netguard_nft_available && nft_available=true
+  if [[ "$nft_available" == true ]] && _netguard_nft_table_present; then
+    drop=true
+  fi
+
+  [[ -f "$NETGUARD_UNIT_FILE" ]] && unit_present=true
+  if [[ "$unit_present" == true ]] && systemctl is-enabled --quiet "$NETGUARD_UNIT_NAME" 2>/dev/null; then
+    unit_enabled=true
+  fi
+
+  _netguard_installed_kernels | _netguard_newer_kernel_pure "$kernel" && newer=true
+  if [[ -e /var/run/reboot-required || "$newer" == true ]]; then
+    reboot=true
+  fi
+
+  xray_ver=$(_netguard_xray_version 2>/dev/null || true)
+  if [[ -n "$xray_ver" ]] && _xray_version_at_least_pure "$xray_ver" "$NETGUARD_XRAY_MPTCP_SAFE_VERSION"; then
+    xray_safe=true
+  fi
+
+  jq -n \
+    --arg cve "$NETGUARD_CVE" \
+    --arg kernel "$kernel" \
+    --argjson newer "$newer" \
+    --argjson reboot "$reboot" \
+    --argjson mptcp_supported "$mptcp_supported" \
+    --argjson mptcp_enabled "$mptcp_enabled" \
+    --arg mptcp_value "$mptcp_value" \
+    --argjson sysctl_present "$sysctl_present" \
+    --arg sysctl_file "$NETGUARD_MPTCP_SYSCTL_FILE" \
+    --argjson nft_available "$nft_available" \
+    --argjson drop "$drop" \
+    --arg nft_table "$NETGUARD_NFT_TABLE" \
+    --arg nft_file "$NETGUARD_NFT_FILE" \
+    --arg unit_file "$NETGUARD_UNIT_FILE" \
+    --arg unit_name "$NETGUARD_UNIT_NAME" \
+    --argjson unit_present "$unit_present" \
+    --argjson unit_enabled "$unit_enabled" \
+    --arg xray_version "$xray_ver" \
+    --argjson xray_safe "$xray_safe" \
+    --arg xray_safe_version "$NETGUARD_XRAY_MPTCP_SAFE_VERSION" \
+    '{ok:true, cve:$cve, cvss:9.8,
+      kernel:$kernel, newer_kernel_installed:$newer, reboot_required:$reboot,
+      mptcp_supported:$mptcp_supported, mptcp_enabled:$mptcp_enabled, mptcp_value:$mptcp_value,
+      mptcp_sysctl_file:$sysctl_file, mptcp_sysctl_present:$sysctl_present,
+      nft_available:$nft_available, ipv4_options_drop:$drop,
+      nft_table:$nft_table, nft_file:$nft_file,
+      unit_name:$unit_name, unit_file:$unit_file,
+      unit_present:$unit_present, unit_enabled:$unit_enabled,
+      xray_version:$xray_version, xray_mptcp_safe:$xray_safe,
+      xray_mptcp_safe_version:$xray_safe_version}'
+}
+
+_netguard_disable_mptcp() {
+  mkdir -p "$(dirname "$NETGUARD_MPTCP_SYSCTL_FILE")" 2>/dev/null || true
+  _netguard_mptcp_conf_pure > "$NETGUARD_MPTCP_SYSCTL_FILE" 2>/dev/null || {
+    echo "не удалось записать ${NETGUARD_MPTCP_SYSCTL_FILE}" >&2
+    return 1
+  }
+  chmod 644 "$NETGUARD_MPTCP_SYSCTL_FILE" 2>/dev/null || true
+  if ! _netguard_mptcp_supported; then
+    # Ключа нет — поверхность отсутствует. Файл остаётся: ядро подхватит его
+    # после обновления, где MPTCP уже есть.
+    echo "  MPTCP в этом ядре отсутствует — выключать нечего" >&2
+    return 0
+  fi
+  "$(_netguard_sysctl_bin)" -w "${NETGUARD_MPTCP_KEY}=0" >/dev/null 2>&1 || {
+    echo "  sysctl -w ${NETGUARD_MPTCP_KEY}=0 не сработал" >&2
+    return 1
+  }
+  [[ "$(_netguard_mptcp_value)" == "0" ]] || {
+    echo "  MPTCP остался включён после sysctl -w" >&2
+    return 1
+  }
+  return 0
+}
+
+_netguard_enable_mptcp() {
+  rm -f "$NETGUARD_MPTCP_SYSCTL_FILE" 2>/dev/null
+  if _netguard_mptcp_supported; then
+    "$(_netguard_sysctl_bin)" -w "${NETGUARD_MPTCP_KEY}=1" >/dev/null 2>&1 || true
+  fi
+  return 0
+}
+
+_netguard_apply_nft() {
+  local bin
+  if ! bin=$(_netguard_nft_bin 2>/dev/null) || [[ -z "$bin" ]] || [[ ! -x "$bin" ]]; then
+    echo "  nft не найден (пакет nftables) — дроп IPv4-опций не включить" >&2
+    return 1
+  fi
+  mkdir -p "$(dirname "$NETGUARD_NFT_FILE")" 2>/dev/null || true
+  _netguard_nft_ruleset_pure > "$NETGUARD_NFT_FILE" 2>/dev/null || {
+    echo "  не удалось записать ${NETGUARD_NFT_FILE}" >&2
+    return 1
+  }
+  chmod 644 "$NETGUARD_NFT_FILE" 2>/dev/null || true
+  # Сначала `-c` (проверка синтаксиса без применения), потом применение: битое
+  # правило не должно остаться в файле, который грузится при каждой загрузке.
+  if ! "$bin" -c -f "$NETGUARD_NFT_FILE" >/dev/null 2>&1; then
+    echo "  nft отверг правила (${NETGUARD_NFT_FILE})" >&2
+    return 1
+  fi
+  # Таблица могла остаться от прошлой попытки — иначе nft ответит «File exists».
+  if _netguard_nft_table_present; then
+    "$bin" delete table inet "$NETGUARD_NFT_TABLE" >/dev/null 2>&1 || true
+  fi
+  if ! "$bin" -f "$NETGUARD_NFT_FILE" >/dev/null 2>&1; then
+    echo "  nft не применил правила" >&2
+    return 1
+  fi
+  if ! _netguard_nft_table_present; then
+    echo "  таблица ${NETGUARD_NFT_TABLE} не появилась после nft -f" >&2
+    return 1
+  fi
+
+  _netguard_unit_pure "$bin" > "$NETGUARD_UNIT_FILE" 2>/dev/null || {
+    echo "  не удалось записать ${NETGUARD_UNIT_FILE}" >&2
+    return 1
+  }
+  chmod 644 "$NETGUARD_UNIT_FILE" 2>/dev/null || true
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    systemctl enable --now "$NETGUARD_UNIT_NAME" >/dev/null 2>&1 || true
+  fi
+  return 0
+}
+
+_netguard_remove_nft() {
+  local bin=""
+  bin=$(_netguard_nft_bin 2>/dev/null || true)
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl disable --now "$NETGUARD_UNIT_NAME" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$bin" && -x "$bin" ]] && _netguard_nft_table_present; then
+    "$bin" delete table inet "$NETGUARD_NFT_TABLE" >/dev/null 2>&1 || true
+  fi
+  rm -f "$NETGUARD_UNIT_FILE" "$NETGUARD_NFT_FILE" 2>/dev/null
+  rmdir "$NETGUARD_NFT_DIR" 2>/dev/null || true
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+  fi
+  return 0
+}
+
+# Включить оба слоя. Коды: 0 — оба включены, 2 — MPTCP выключен, а дроп IPv4-
+# опций нет (нет nft или ядро его не приняло), 1 — MPTCP выключить не удалось.
+_netguard_enable() {
+  local mptcp_rc=0 nft_rc=0
+  _netguard_disable_mptcp || mptcp_rc=1
+  _netguard_apply_nft || nft_rc=1
+  if [[ $mptcp_rc -eq 0 && $nft_rc -eq 0 ]]; then
+    return 0
+  fi
+  [[ $mptcp_rc -ne 0 ]] && return 1
+  return 2
+}
+
+_netguard_disable() {
+  _netguard_enable_mptcp
+  _netguard_remove_nft
+  return 0
+}
+
+# Миграция: выключить MPTCP на уже развёрнутых серверах.
+# Конфиг Xray не меняется, поэтому rc=1 («no-op»): run_migration не станет
+# перезапускать ядро Xray из-за правки sysctl.
+_migrate_netguard_mptcp_2026() {
+  if ! _netguard_mptcp_supported; then
+    echo -e "${CYAN}  MPTCP в этом ядре нет — защита не требуется${NC}"
+    return 1
+  fi
+  if [[ "$(_netguard_mptcp_value)" == "0" && -f "$NETGUARD_MPTCP_SYSCTL_FILE" ]]; then
+    return 1
+  fi
+  _netguard_disable_mptcp || return 2
+  echo -e "${GREEN}  ✓ MPTCP выключен в ядре (защита от ${NETGUARD_CVE})${NC}"
+  echo -e "${CYAN}    Дроп входящих IPv4-пакетов с IP-опциями — по решению оператора:${NC}"
+  echo -e "${CYAN}    sudo xrayebator kernel-guard --enable${NC}"
+  return 1
+}
+
+kernel_guard_command() {
+  local action="status" quiet=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --status) action="status" ;;
+      --enable) action="enable" ;;
+      --disable) action="disable" ;;
+      --quiet) quiet=1 ;;
+      -h|--help) action="help" ;;
+      *) echo "kernel-guard: неизвестный аргумент: $1" >&2; return 2 ;;
+    esac
+    shift
+  done
+
+  if [[ "$action" == "help" ]]; then
+    echo "sudo xrayebator kernel-guard [--status|--enable|--disable] [--quiet]"
+    echo "  --status   состояние защиты от ${NETGUARD_CVE} (JSON)"
+    echo "  --enable   выключить MPTCP в ядре и дропать входящие IPv4-пакеты с IP-опциями"
+    echo "  --disable  снять оба изменения (правило и sysctl)"
+    return 0
+  fi
+
+  # Stdout занят JSON: весь прогресс уводим в stderr (как в остальных CLI).
+  exec 3>&1
+  exec 1>&2
+
+  local rc=0 payload='{"ok":false,"error":"неизвестное состояние"}'
+  case "$action" in
+    status)
+      payload=$(_netguard_status_json) || rc=1
+      ;;
+    enable)
+      _netguard_enable
+      rc=$?
+      if [[ $rc -eq 0 ]]; then
+        payload=$(_netguard_status_json | jq -c '. + {changed:true}')
+      elif [[ $rc -eq 2 ]]; then
+        rc=0
+        payload=$(_netguard_status_json | jq -c '. + {changed:true, partial:true,
+          warning:"MPTCP выключен, дроп IPv4-опций не включён (нет nft или ядро его не приняло)"}')
+      else
+        rc=1
+        payload='{"ok":false,"error":"не удалось выключить MPTCP в ядре"}'
+      fi
+      ;;
+    disable)
+      _netguard_disable
+      payload=$(_netguard_status_json | jq -c '. + {changed:true}')
+      ;;
+  esac
+
+  if [[ $quiet -eq 0 ]]; then
+    printf '%s\n' "$payload" >&3
+  fi
+  exec 1>&3
+  return $rc
+}
+
+# Меню «Защита ядра» (главное меню, пункт 16): состояние обоих слоёв и
+# включение/выключение. Обновление ядра здесь не делается — показываем факты
+# (какое ядро запущено, есть ли новее на диске, нужна ли перезагрузка).
+kernel_guard_menu() {
+  local choice status kernel mptcp mptcp_value drop xray_ver xray_safe reboot newer
+  while true; do
+    status=$(_netguard_status_json 2>/dev/null)
+    kernel=$(jq -r '.kernel // "?"' <<< "$status" 2>/dev/null)
+    mptcp=$(jq -r '.mptcp_supported' <<< "$status" 2>/dev/null)
+    mptcp_value=$(jq -r '.mptcp_value // ""' <<< "$status" 2>/dev/null)
+    drop=$(jq -r '.ipv4_options_drop' <<< "$status" 2>/dev/null)
+    xray_ver=$(jq -r '.xray_version // ""' <<< "$status" 2>/dev/null)
+    xray_safe=$(jq -r '.xray_mptcp_safe' <<< "$status" 2>/dev/null)
+    reboot=$(jq -r '.reboot_required' <<< "$status" 2>/dev/null)
+    newer=$(jq -r '.newer_kernel_installed' <<< "$status" 2>/dev/null)
+
+    show_ascii
+    echo -e "${BLUE}═══════════════════════════════════════════════${NC}"
+    echo -e "${BLUE}     ЗАЩИТА ЯДРА (${NETGUARD_CVE})             ${NC}"
+    echo -e "${BLUE}═══════════════════════════════════════════════${NC}\n"
+    echo -e "  Ядро:          ${CYAN}${kernel}${NC}"
+    if [[ "$mptcp" == "true" ]]; then
+      if [[ "$mptcp_value" == "0" ]]; then
+        echo -e "  MPTCP:         ${GREEN}выключен${NC}"
+      else
+        echo -e "  MPTCP:         ${RED}включён${NC}  ← самый простой путь эксплуатации"
+      fi
+    else
+      echo -e "  MPTCP:         ${GREEN}отсутствует в ядре${NC}"
+    fi
+    if [[ "$drop" == "true" ]]; then
+      echo -e "  IPv4-опции:    ${GREEN}дропаются на входе${NC}"
+    else
+      echo -e "  IPv4-опции:    ${YELLOW}принимаются${NC}"
+    fi
+    if [[ -n "$xray_ver" ]]; then
+      if [[ "$xray_safe" == "true" ]]; then
+        echo -e "  Xray-core:     ${CYAN}${xray_ver}${NC} (MPTCP в листенере выключен)"
+      else
+        echo -e "  Xray-core:     ${YELLOW}${xray_ver}${NC} (< ${NETGUARD_XRAY_MPTCP_SAFE_VERSION}: MPTCP-листенер включён)"
+      fi
+    else
+      echo -e "  Xray-core:     ${YELLOW}не найден${NC}"
+    fi
+    if [[ "$reboot" == "true" ]]; then
+      if [[ "$newer" == "true" ]]; then
+        echo -e "  Перезагрузка:  ${YELLOW}нужна — на диске есть ядро новее запущенного${NC}"
+      else
+        echo -e "  Перезагрузка:  ${YELLOW}нужна (флаг reboot-required)${NC}"
+      fi
+    fi
+    echo ""
+    echo -e "${CYAN}  1)${NC} Включить защиту (MPTCP off + дроп IPv4-опций)"
+    echo -e "${CYAN}  2)${NC} Выключить защиту"
+    echo -e "${CYAN}  3)${NC} Обновить статус"
+    echo -e "${GREEN}  0)${NC} Назад"
+    echo ""
+    echo -e "${YELLOW}  Обновление ядра эта защита не заменяет: пакет ядра ставится штатно"
+    echo -e "  (apt), после установки нужна перезагрузка.${NC}"
+    echo ""
+    echo -n -e "${YELLOW}Выберите действие: ${NC}"
+    read -r choice || return 0
+    case "$choice" in
+      1)
+        _netguard_enable
+        case $? in
+          0) echo -e "${GREEN}✓ MPTCP выключен, IPv4-пакеты с опциями дропаются${NC}" ;;
+          2) echo -e "${YELLOW}⚠ MPTCP выключен, но дроп IPv4-опций не включён (нет nft)${NC}" ;;
+          *) echo -e "${RED}✗ Не удалось выключить MPTCP в ядре${NC}" ;;
+        esac
+        sleep 2
+        ;;
+      2)
+        _netguard_disable
+        echo -e "${YELLOW}ℹ Защита снята: MPTCP включён, правило удалено${NC}"
+        sleep 2
+        ;;
+      3) ;;
+      0) return ;;
+      *) echo -e "${RED}Неверный выбор${NC}"; sleep 1 ;;
+    esac
+  done
+}
+
 # Без аргументов → interactive main_menu (legacy behaviour).
 # При source-режиме (Phase 7, REQ-C10) dispatch пропускается — sourcing-скрипт сам решает,
 # что делать с определёнными функциями.
@@ -19394,6 +19973,10 @@ if [[ "$XRAYEBATOR_SOURCED" -eq 0 ]]; then
     ssh-protect)
       shift
       ssh_protect_command "$@"
+      ;;
+    kernel-guard)
+      shift
+      kernel_guard_command "$@"
       ;;
     alerts-setup)
       shift
