@@ -105,6 +105,7 @@ Xrayebator 同时解决这两个问题：
 | 流量统计与限额 | 按配置档统计 Stats API 用量：`xrayebator-traffic.timer` 累计流量，限额耗尽时移除客户端、提高或重置后恢复；订阅返回真实的 `subscription-userinfo` | `profile-limit`、`traffic-check` |
 | 监控与 Telegram 告警 | 每 15 分钟检查服务、后端（Hysteria 2、AWG）、有效期与限额、订阅存活及其 TLS 模式、服务器重启；每天一次检查配置档实际使用的 SNI 可达性；只把状态变化写入 Telegram | 菜单 `14`、`xrayebator-monitor.timer` |
 | SSH 防爆破保护 | `xrayebator ssh-protect` 安装 `fail2ban` 并启用 `sshd` 规则（10 分钟内 4 次失败 → 封禁 30 分钟，屡犯最长一天），同时写入 `sshd_config.d` 限制（`MaxAuthTries 3`、`LoginGraceTime 30`）。密码登录保持启用，GUI 才能继续管理服务器；安装与部署时自动启用，可在**安全与 TLS**选项卡中开关。实测：启用前 24 小时 9 953 次失败（115 个地址），启用后约 72 次/小时 | `ssh-protect`、`fail2ban` |
+| 内核加固（CVE-2026-98432） | `xrayebator kernel-guard` 在内核中关闭 MPTCP（`net.mptcp.enabled = 0`，迁移 `netguard_mptcp_2026`），并按 Ubuntu 的规则在带独立开机单元的 nftables 表中丢弃带 IP 选项的入站 IPv4 报文。它缩小攻击面，而不是内核更新：所有 IPv4 TCP 监听器都受影响，真正的修复来自内核包 | `kernel-guard`、`nftables` |
 | 通道检查 | `xrayebator channel-test` 为配置档的每条线路启动本地 Xray 客户端，并通过隧道发出真实请求：JSON 含 `working`/`checked`、延迟与原因。不需要 Let's Encrypt（Reality 和 PQ 自成一体），PQ 线路也会检查；实机运行——8/8 条线路，152–252 ms | `channel-test` |
 | 可达的默认 SNI | 为新配置档选择 SNI 时，管理器会从 VPS 本机检查可达性并取第一个可用的：不可达的 dest 会卡住 Reality 握手（在实机服务器上这导致 7 条通道中有 5 条不可用） | `_default_sni_for_transport`、`probe-test` |
 | 分流路由 | 八组域名可经 `freedom` 直连，绕过 VPN | 菜单 `7` |

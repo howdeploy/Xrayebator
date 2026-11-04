@@ -365,6 +365,33 @@ dig +short TXT _acme-challenge.sub.example.com   # 签发期间应出现 TXT 记
 - **续期** —— 由标准的 `certbot.timer` 完成；renewal 配置中保留 `systemctl reload nginx` 的
   deploy-hook，因此订阅会自动采用新证书，无需人工操作（`dns01-status` 会显示 `deploy_hook: true`）。
 
+## 证书能正常续期，但 `--dry-run` 和 `dns01-test` 失败
+
+**现象。** `certbot renew --dry-run`、`xrayebator dns01-test` 与 `dns01-setup --staging` 超时或返回
+`Connection reset by peer`，而正常签发与续期都能成功。
+
+**原因。** 这三者都走 **staging** 端点 `acme-staging-v02.api.letsencrypt.org`。在某些网络（尤其是被
+DPI 处理的网络）里，这个 SNI 在 TLS 层被切断：TCP 能连上，但握手永远完不成。生产端点仍然可达，
+不带 `--dry-run` 的 `certbot renew` 会正常工作。
+
+```bash
+curl -s -o /dev/null -w 'staging %{http_code} %{time_total}s\n' --max-time 10 \
+     https://acme-staging-v02.api.letsencrypt.org/directory
+curl -s -o /dev/null -w 'prod    %{http_code} %{time_total}s\n' --max-time 10 \
+     https://acme-v02.api.letsencrypt.org/directory
+```
+
+`staging 000` 而 `prod 200` 就说明是这种情况。续期在这种网络下是可用的：请用真实的
+`certbot renew --force-renewal --cert-name <域名>` 验证（Let's Encrypt 对同一组标识符每 168 小时最多
+5 张证书，因此一天不要超过一次），并查看 `xrayebator dns01-status` 里的到期时间。staging 只用于
+调试，不影响订阅。
+
+**IP 证书只有约 6 天有效期。** 对 IP 标识符，Let's Encrypt 签发的是 `shortlived` 配置档证书（约六天），
+因此每隔几天就会续期，`dns01-status` 里的 `days_left: 6` 是正常状态而不是故障。续期由
+`snap.certbot.renew.timer` 驱动；如果 certbot 来自 snap（`quickstart` 就是这么装的），系统里可能没有
+单独的 `certbot.timer`。续期后 deploy-hook `xrayebator-hysteria.sh` 会把证书复制到 Hysteria 2 目录并
+重启它，`systemctl reload nginx` 则让订阅采用新证书。
+
 ## 安装或使用过程中出现报错
 
 ### `Сгенерированный config.json не прошёл валидацию — live-конфиг не изменён`

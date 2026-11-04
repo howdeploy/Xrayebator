@@ -887,8 +887,15 @@ if _should_run 6; then
 # [6/9] Создание базовой конфигурации
 echo -e "${BLUE}[6/9]${NC} ${YELLOW}Создание конфигурации Xray...${NC}"
 
-# IPv6-only детекция: на VPS без публичного IPv4 указываем queryStrategy/domainStrategy
-# как UseIP (иначе Xray не сможет резолвить AAAA и клиентский трафик встанет).
+# IPv6-only детекция: на VPS без публичного IPv4 указываем queryStrategy и
+# sockopt.domainStrategy как UseIP (иначе Xray не сможет резолвить AAAA и
+# клиентский трафик встанет).
+#
+# domainStrategy живёт в streamSettings.sockopt, а НЕ в settings freedom-а:
+# с 26.10.31 ядро печатает «The "freedom.domainStrategy" setting is deprecated
+# and will be removed» и переносит значение само. На prepatch-версиях (26.3.27
+# на продакшене) sockopt.domainStrategy тоже поддерживается, поэтому пишем
+# только новую форму — конфиг остаётся валидным на обеих.
 QUERY_STRATEGY=$(_ipv6_query_strategy)
 FREEDOM_STRATEGY=$(_ipv6_query_strategy)
 if _detect_ipv6_only; then
@@ -994,8 +1001,11 @@ if ! cat > "$config_tmp" << EOF
   "outbounds": [
     {
       "protocol": "freedom",
-      "settings": {
-        "domainStrategy": "${FREEDOM_STRATEGY}"
+      "settings": {},
+      "streamSettings": {
+        "sockopt": {
+          "domainStrategy": "${FREEDOM_STRATEGY}"
+        }
       },
       "tag": "direct"
     },
