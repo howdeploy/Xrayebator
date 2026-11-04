@@ -513,6 +513,35 @@ profile certificate (roughly six days), so renewal happens every few days and `d
 renewal the deploy hook `xrayebator-hysteria.sh` copies the certificate into the Hysteria 2 directory
 and restarts it, and `systemctl reload nginx` picks up the new certificate for the subscription.
 
+## Installing on a minimal Debian 13
+
+**`curl: command not found` on the very first command.** A minimal Debian 13 (trixie) image ships
+neither `curl` nor `jq` nor `nginx` — only `wget`. The documented one-liner starts with `curl`, so
+install it first or fetch the script with `wget` (which is present):
+
+```bash
+apt-get update && apt-get install -y curl
+# or without curl:
+wget -qO ./xrayebator-install.sh \
+  https://raw.githubusercontent.com/howdeploy/Xrayebator/main/install.sh
+```
+
+`install.sh` does the rest: it installs `curl wget jq qrencode uuid-runtime ufw unzip openssl socat`,
+downloads Xray-core, verifies SHA-256 and brings the service up.
+
+**`certbot` and `snap` appear only after `quickstart`.** Debian 13 has `certbot` 4.0.0 in apt, but
+`quickstart` takes the snap path: it installs `snapd` plus certbot 5.x from snap, and renewal is
+driven by `snap.certbot.renew.timer`. In a non-interactive SSH session `/snap/bin` may be missing from
+`PATH`, so `certbot` looks absent — the manager resolves `/snap/bin/certbot` itself, and manually you
+should use the full path: `sudo /snap/bin/certbot renew --dry-run`.
+
+**On Debian, AmneziaWG is built from the Ubuntu PPA.** There is no `amnezia/ppa` build for Debian, so
+apt pulls the Ubuntu `focal` packages (they install and work) and DKMS builds the module for whichever
+kernel has headers. If the running kernel is older than the repository (live case 2026-11-04:
+Debian 13, running `6.12.85`, repository `6.12.115`), the command answers `reboot_required: true` with
+the name of the new kernel — reboot and repeat `sudo xrayebator awg-install`. After the reboot the
+module is loaded through `/etc/modules-load.d/xrayebator-awg.conf` and `awg0` comes up via its unit.
+
 ## An error appeared during installation or use
 
 ### `Сгенерированный config.json не прошёл валидацию — live-конфиг не изменён`

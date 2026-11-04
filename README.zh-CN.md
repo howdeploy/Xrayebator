@@ -48,6 +48,10 @@ sudo bash ./xrayebator-install.sh
 #   --fresh   清除标记并从头开始
 ```
 
+> **精简版 Debian 13 镜像没有 `curl`**（只有 `wget`）：先执行
+> `apt-get update && apt-get install -y curl`，或用 `wget -qO ./xrayebator-install.sh <同一链接>`
+> 下载脚本。其余依赖由 `install.sh` 自行安装。
+
 <div align="center">
 
 <p>
