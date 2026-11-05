@@ -1553,6 +1553,23 @@ channel_test_command() {
     esac
   done
 
+  # Без --name берём единственный профиль: HAPP_DEFAULT_PROFILE выставляется только
+  # внутри _happ_ensure_default_multiroute_profile, то есть в свежем процессе пуст, и
+  # документированный вызов `xrayebator channel-test` сразу после развёртывания
+  # отвечал «Укажите --name» при единственном профиле в системе. При нескольких
+  # профилях выбор неоднозначен — просим --name, чтобы не проверять чужой.
+  if [[ -z "$name" ]]; then
+    local _only="" _cnt=0 _pf
+    for _pf in "$PROFILES_DIR"/*.json; do
+      [[ -f "$_pf" ]] || continue
+      _cnt=$((_cnt + 1))
+      _only="$_pf"
+    done
+    if (( _cnt == 1 )); then
+      name=$(basename "$_only" .json)
+    fi
+  fi
+
   if [[ -z "$name" || ! "$name" =~ ^[a-zA-Z0-9_-]{1,48}$ ]]; then
     echo '{"ok":false,"error":"Укажите --name профиля"}'
     return 1
@@ -2617,15 +2634,17 @@ _add_owned_firewall_rule() {
 }
 
 # Open port in UFW firewall (idempotent and ownership-safe).
+# Статусы — в stderr: stdout у CLI-команд обязан оставаться чистым JSON (иначе
+# `xrayebator quickstart | jq .ok` падал на цветной строке перед объектом).
 open_firewall_port() {
   local port="$1" protocol="${2:-tcp}"
   if _ufw_rule_exists "$port" "$protocol" 2>/dev/null; then
-    echo -e "${CYAN}  → Порт ${port}/${protocol} уже открыт; ownership не присваивается${NC}"
+    echo -e "${CYAN}  → Порт ${port}/${protocol} уже открыт; ownership не присваивается${NC}" >&2
     return 0
   fi
-  echo -e "${CYAN}  → Открываю порт ${port}/${protocol}...${NC}"
+  echo -e "${CYAN}  → Открываю порт ${port}/${protocol}...${NC}" >&2
   if _add_owned_firewall_rule "$port" "$protocol" allow; then
-    echo -e "${GREEN}  ✓ Порт ${port}/${protocol} открыт${NC}"
+    echo -e "${GREEN}  ✓ Порт ${port}/${protocol} открыт${NC}" >&2
     return 0
   fi
   echo -e "${RED}  ✗ Ошибка открытия порта ${port}/${protocol}${NC}" >&2
