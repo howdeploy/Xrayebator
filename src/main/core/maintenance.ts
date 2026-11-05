@@ -2,7 +2,7 @@ import { SshClient, SshCredentials } from './ssh-client'
 import { shellCommand } from './shell-command'
 import { describeFailure, isUnknownCommandFailure, unknownCommandHint } from './cli-failure'
 import { extractJson } from './profiles'
-import { dns01CliArgs, isDns01Ready, isValidDns01Domain, type Dns01Input } from '@shared/dns01'
+import { dns01CliArgs, dns01SecretFlag, dns01SecretPayload, isDns01Ready, isValidDns01Domain, type Dns01Input } from '@shared/dns01'
 import type {
   Dns01RepairResult,
   Dns01StatusResult,
@@ -63,38 +63,78 @@ export class MaintenanceManager {
     const client = new SshClient(this.creds)
     try {
       await client.connect()
-      const res = await client.exec(shellCommand('xrayebator', args), { elevated: true })
-      if (res.code !== 0) {
-        const reason = describeFailure(res)
-        const hint = isUnknownCommandFailure(res) ? ` ${unknownCommandHint()}` : ''
-        throw new Error(
-          `xrayebator ${args[0] ?? ''} → код ${res.code}${reason ? `: ${reason}` : ''}.${hint}`
-        )
-      }
-      return res.stdout
+      return await this.execOn(client, args)
     } finally {
       client.close()
     }
   }
 
-  private async dns01(args: readonly string[]): Promise<Dns01RepairResult> {
+  /** Один вызов `xrayebator …` с разбором неуспешного кода (общий для путей). */
+  private async execOn(client: SshClient, args: readonly string[]): Promise<string> {
+    const res = await client.exec(shellCommand('xrayebator', args), { elevated: true })
+    if (res.code !== 0) {
+      const reason = describeFailure(res)
+      const hint = isUnknownCommandFailure(res) ? ` ${unknownCommandHint()}` : ''
+      throw new Error(
+        `xrayebator ${args[0] ?? ''} → код ${res.code}${reason ? `: ${reason}` : ''}.${hint}`
+      )
+    }
+    return res.stdout
+  }
+
+  /**
+   * Команда, которой нужен секрет (DNS-токен / ключи AWS), получает его файлом
+   * 0600 и флагом `--secret-file`, а не аргументом: `/proc/<pid>/cmdline` читают
+   * все локальные пользователи, и токен был бы виден всё время выпуска
+   * сертификата. Файл лежит в /tmp под случайным именем и удаляется сразу после
+   * чтения на сервере; `finally` — страховка на случай, если команда до разбора
+   * не дошла.
+   */
+  private async runWithSecret(
+    args: readonly string[],
+    secretPayload: string,
+    flag: string
+  ): Promise<string> {
+    const client = new SshClient(this.creds)
     try {
-      const payload = extractJson(await this.run(args)) as Dns01RepairResult & {
-        ok?: boolean
-        error?: string
+      await client.connect()
+      const remotePath = `/tmp/.xrayebator-secret-${SshClient.randomToken()}`
+      await client.upload(Buffer.from(secretPayload, 'utf8'), remotePath, { mode: 0o600 })
+      try {
+        return await this.execOn(client, [...args, flag, remotePath])
+      } finally {
+        await client.exec(shellCommand('rm', ['-f', remotePath])).catch(() => undefined)
       }
-      return {
-        ok: payload.ok === true,
-        repaired: payload.repaired,
-        skipped: payload.skipped,
-        domain: payload.domain,
-        provider: payload.provider,
-        port: payload.port,
-        tls_mode: payload.tls_mode,
-        subscription_url: payload.subscription_url,
-        note: payload.note,
-        error: payload.error
-      }
+    } finally {
+      client.close()
+    }
+  }
+
+  /** Разбор JSON-ответа DNS-01 (общий для пути с токеном и с repair). */
+  private parseDns01(stdout: string): Dns01RepairResult {
+    const payload = extractJson(stdout) as Dns01RepairResult & {
+      ok?: boolean
+      error?: string
+    }
+    return {
+      ok: payload.ok === true,
+      repaired: payload.repaired,
+      skipped: payload.skipped,
+      domain: payload.domain,
+      provider: payload.provider,
+      port: payload.port,
+      tls_mode: payload.tls_mode,
+      subscription_url: payload.subscription_url,
+      note: payload.note,
+      error: payload.error
+    }
+  }
+
+  private async dns01(args: readonly string[], secretPayload: string): Promise<Dns01RepairResult> {
+    try {
+      return this.parseDns01(
+        await this.runWithSecret(args, secretPayload, dns01SecretFlag())
+      )
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
     }
@@ -135,7 +175,7 @@ export class MaintenanceManager {
   async dns01Setup(input: Dns01Input): Promise<Dns01RepairResult> {
     const problem = dns01Problem(input)
     if (problem) return { ok: false, error: problem }
-    return this.dns01(['dns01-setup', ...dns01CliArgs(input)])
+    return this.dns01(['dns01-setup', ...dns01CliArgs(input)], dns01SecretPayload(input))
   }
 
   /**
@@ -145,7 +185,7 @@ export class MaintenanceManager {
   async repairDns01(input: Dns01Input): Promise<Dns01RepairResult> {
     const problem = dns01Problem(input)
     if (problem) return { ok: false, error: problem }
-    return this.dns01(['repair-dns01', ...dns01CliArgs(input)])
+    return this.dns01(['repair-dns01', ...dns01CliArgs(input)], dns01SecretPayload(input))
   }
 
   /**

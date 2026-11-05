@@ -5,7 +5,7 @@ import { SshClient, SshCredentials } from './ssh-client'
 import { shellCommand, shellQuote } from './shell-command'
 import { fetchSubscription, parseSubscription } from './subscription'
 import { maskSubscriptionUrl } from './server-inspector'
-import { dns01CliArgs, isDns01Ready, type Dns01Input } from '@shared/dns01'
+import { dns01CliArgs, dns01SecretFlag, dns01SecretPayload, isDns01Ready, type Dns01Input } from '@shared/dns01'
 import type { DeployStep, EmailMode, VlessLink } from '@shared/types'
 
 export type DeployStepListener = (step: DeployStep, message: string) => void
@@ -199,10 +199,32 @@ export class Deployer {
       this.onLog('xrayebator установлен в /usr/local/bin/xrayebator')
 
       this.onStep('quickstart', 'Запускаю quickstart...')
-      const quick = await client.exec(
-        shellCommand('xrayebator', quickstartArgs),
-        { elevated: true }
-      )
+      // DNS-01-креды уходят файлом 0600, а не аргументом: /proc/<pid>/cmdline
+      // читается всеми локальными пользователями, а quickstart держит свою
+      // командную строку всё время выпуска сертификата.
+      let secretPath: string | null = null
+      if (input.dns01) {
+        secretPath = `/tmp/.xrayebator-secret-${SshClient.randomToken()}`
+        await client.upload(
+          Buffer.from(dns01SecretPayload(input.dns01), 'utf8'),
+          secretPath,
+          { mode: 0o600 }
+        )
+      }
+      let quick: Awaited<ReturnType<typeof client.exec>>
+      try {
+        quick = await client.exec(
+          shellCommand('xrayebator', [
+            ...quickstartArgs,
+            ...(secretPath ? [dns01SecretFlag('--dns01-'), secretPath] : [])
+          ]),
+          { elevated: true }
+        )
+      } finally {
+        if (secretPath) {
+          await client.exec(shellCommand('rm', ['-f', secretPath])).catch(() => undefined)
+        }
+      }
       if (quick.code !== 0) {
         // Серверный quickstart печатает статус в stderr, а JSON с причиной
         // ({ok:false,error:...}) — в stdout. Извлекаем причину из JSON в первую

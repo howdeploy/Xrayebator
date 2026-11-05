@@ -57,23 +57,39 @@ export function isDns01Ready(input: Dns01Input): boolean {
 
 /**
  * Аргументы CLI для `dns01-setup`/`repair-dns01`/`quickstart`. `prefix` — префикс
- * длинных опций: `--` для CLI-команд, `--dns01-` для quickstart. Креденшелы уходят
- * только те, что нужны выбранному провайдеру: лишний `--token` для route53 сервер
- * проигнорирует, но и хранить его в payload незачем.
+ * длинных опций: `--` для CLI-команд, `--dns01-` для quickstart.
+ *
+ * Креденшелов здесь НЕТ намеренно: аргументы процесса видны любому локальному
+ * пользователю хоста через `/proc/<pid>/cmdline`, а `xrayebator dns01-setup`
+ * держит их в своей командной строке всё время выпуска сертификата (ожидание
+ * DNS-распространения 30 с плюс работа certbot). Токен передаётся файлом 0600
+ * через `dns01SecretFlag()` — см. `dns01SecretPayload()`.
  */
 export function dns01CliArgs(input: Dns01Input, prefix = '--'): string[] {
-  const args = [`${prefix}domain`, input.domain.trim(), `${prefix}provider`, input.provider]
-  if (input.provider === 'cloudflare') {
-    args.push(`${prefix}token`, (input.token ?? '').trim())
-  } else if (input.provider === 'route53') {
-    args.push(
-      `${prefix}aws-access-key-id`,
-      (input.awsKeyId ?? '').trim(),
-      `${prefix}aws-secret-access-key`,
-      (input.awsSecret ?? '').trim()
+  return [`${prefix}domain`, input.domain.trim(), `${prefix}provider`, input.provider]
+}
+
+/** Флаг серверной команды, которым передаётся путь к файлу секрета. */
+export function dns01SecretFlag(prefix = '--'): string {
+  return `${prefix}secret-file`
+}
+
+/**
+ * Пейлоад секрета для серверного `--secret-file`: строки «key=value». Формат
+ * серверный (`_secret_payload_apply`): `token=…` для Cloudflare,
+ * `aws_access_key_id=…`/`aws_secret_access_key=…` для Route53. Креды уходят
+ * только те, что нужны выбранному провайдеру.
+ */
+export function dns01SecretPayload(input: Dns01Input): string {
+  const line = (key: string, value: string): string => `${key}=${value.trim()}\n`
+  if (input.provider === 'cloudflare') return line('token', input.token ?? '')
+  if (input.provider === 'route53') {
+    return (
+      line('aws_access_key_id', input.awsKeyId ?? '') +
+      line('aws_secret_access_key', input.awsSecret ?? '')
     )
   }
-  return args
+  return ''
 }
 
 /** Маскировка секрета для консоли/логов: показываем только длину и края. */
