@@ -83,6 +83,22 @@ QS_VHOST_BACKUP="$NGINX_SITES_AVAILABLE/xrayebator-sub.xrayebator.bak"
 QS_DEFAULT_REMOVED=false
 QS_DEFAULT_BACKUP_CREATED=false
 
+# --- Секреты и /proc -------------------------------------------------------
+# /proc/<pid>/cmdline читается ЛЮБЫМ пользователем хоста (права 0444), а
+# /proc/<pid>/environ — только владельцем процесса и root (0400). Поэтому всё, что
+# является секретом (токен бота, DNS-токен, sub_token, ключи бэкендов), передаётся
+# не аргументом, а потоком: argv `curl` с токеном в URL видел бы, например,
+# непривилегированный пользователь `xray`, под которым работает сам Xray.
+# `curl -K -` читает конфиг из stdin; строка `url = "…"` кладёт адрес туда же,
+# где он и был нужен, не оставляя его в командной строке.
+_curl_secret_url() {
+  local url="$1"; shift
+  # Конфиг-парсер curl: экранируются обратный слэш и двойная кавычка.
+  url="${url//\\/\\\\}"
+  url="${url//\"/\\\"}"
+  printf 'url = "%s"\n' "$url" | curl "$@" -K -
+}
+
 _qs_backup_path() {
   local source_path="$1" backup_path="$2"
   [[ -e "$source_path" || -L "$source_path" ]] || return 1
@@ -9112,8 +9128,8 @@ _subscription_local_self_test() {
   }
 
   local http_status curl_rc=0
-  http_status=$(curl -sS --connect-timeout 2 --max-time 30 \
-      "http://127.0.0.1:8080/sub/${token}" \
+  http_status=$(_curl_secret_url "http://127.0.0.1:8080/sub/${token}" \
+      -sS --connect-timeout 2 --max-time 30 \
       -o "$body_tmp" -w '%{http_code}' 2>"$err_tmp") || curl_rc=$?
   SUBSCRIPTION_SELFTEST_HTTP_STATUS="$http_status"
   SUBSCRIPTION_SELFTEST_ERROR=$(head -c 240 "$err_tmp" 2>/dev/null | tr '\n\r' '  ')
@@ -17311,8 +17327,8 @@ _monitor_sub_probe() {
   local token="$1" body code
   MONITOR_SUB_CODE="000"
   body=$(mktemp) || return 1
-  code=$(curl -sS --connect-timeout 3 --max-time 15 -o "$body" -w '%{http_code}' \
-    "$(_monitor_sub_local_base)/sub/${token}" 2>/dev/null) || code="000"
+  code=$(_curl_secret_url "$(_monitor_sub_local_base)/sub/${token}" \
+    -sS --connect-timeout 3 --max-time 15 -o "$body" -w '%{http_code}' 2>/dev/null) || code="000"
   MONITOR_SUB_CODE="${code:-000}"
   if [[ "$MONITOR_SUB_CODE" == "200" ]] && grep -qE '(vless|hysteria2)://' "$body" 2>/dev/null; then
     rm -f "$body"
@@ -17342,8 +17358,8 @@ _monitor_sni_state_write() {
 # Отправка произвольного сообщения с явными токеном/чатом (setup-проверка).
 _telegram_send_raw() {
   local token="$1" chat="$2" text="$3" resp
-  resp=$(curl -sS --max-time 20 -X POST \
-    "$TELEGRAM_API_BASE/bot$token/sendMessage" \
+  resp=$(_curl_secret_url "$TELEGRAM_API_BASE/bot$token/sendMessage" \
+    -sS --max-time 20 -X POST \
     --data-urlencode "chat_id=$chat" \
     --data-urlencode "text=$text" \
     --data-urlencode "disable_web_page_preview=true" 2>/dev/null) || return 1
@@ -17362,7 +17378,7 @@ _telegram_send() {
 # Валидация токена через getMe: печатает username бота; 1 — токен/сеть не приняты.
 _telegram_get_me() {
   local token="$1" resp
-  resp=$(curl -sS --max-time 20 "$TELEGRAM_API_BASE/bot$token/getMe" 2>/dev/null) || return 1
+  resp=$(_curl_secret_url "$TELEGRAM_API_BASE/bot$token/getMe" -sS --max-time 20 2>/dev/null) || return 1
   [[ "$(jq -r '.ok // false' <<<"$resp" 2>/dev/null)" == "true" ]] || return 1
   jq -r '.result.username // "bot"' <<<"$resp"
 }
