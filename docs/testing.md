@@ -93,6 +93,12 @@ Static tests do not replace a disposable VPS run: profile creation and deletion,
 service restarts, rollback, firewall behavior and a real client connection still need live-server
 verification.
 
+The suite itself is not hermetic, so run it on a disposable host or in a container. Two examples found
+by running it on a live server: `test-ssh-protect.sh` walks the real `--disable` path, which stops and
+disables `fail2ban` (re-enable it afterwards), and `test-hysteria2-lifecycle.sh` expects a host without
+a subscription Let's Encrypt certificate — with a real one present `_hysteria2_tls_mode_detect`
+correctly answers `le <domain>` while the test expects `selfsigned`.
+
 ## Lifecycle and HAPP endpoint checks
 
 For a new deployment, exercise the broad `quickstart --email <address>` path and confirm that it

@@ -69,6 +69,11 @@ for test_file in validation/*.sh; do bash "$test_file" || exit; done
 | `test-sni-reachability.sh` | 默认 SNI 的选择：不可达的默认值（或 `sni_list.txt` 首行）被第一个可达候选替换、全部不可达时回退到原默认值（不让探测破坏隔离主机上的部署）、结果按 SNI 缓存；同时覆盖探针判据（完整 TLS 1.3 + 已验证证书 + HTTP 应答）与候选顺序的上限 |
 
 > 静态测试不能替代一次性 VPS 上的实测：创建与删除配置档、校验配置、重启服务、回滚以及真实客户端连接。
+>
+> 该测试集并非自封闭的——请在一次性主机或容器中运行。以下两点来自在真实服务器上的运行：
+> `test-ssh-protect.sh` 会走真实的 `--disable` 路径，即停止并禁用 `fail2ban`（跑完请重新启用）；
+> `test-hysteria2-lifecycle.sh` 期望主机上不存在订阅用的 Let's Encrypt 证书——当证书真实存在时，
+> `_hysteria2_tls_mode_detect` 会正确返回 `le <domain>`，而测试期望 `selfsigned`。
 
 ## 生命周期与 HAPP endpoint 检查
 
