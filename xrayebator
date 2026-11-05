@@ -99,6 +99,87 @@ _curl_secret_url() {
   printf 'url = "%s"\n' "$url" | curl "$@" -K -
 }
 
+# Секрет, который нужен самой команде (DNS-токен, ключи AWS, токен бота), тоже не
+# идёт в argv: `xrayebator dns01-setup --token T` живёт в /proc все 30+ секунд
+# ожидания DNS-распространения, пока certbot выпускает сертификат. Вместо аргумента
+# креды читаются из stdin (`--secret-stdin`) или из файла 0600 (`--secret-file`),
+# который удаляется сразу после чтения.
+#
+# Формат пейлоада — строки «key=value»: token=…, aws_access_key_id=…,
+# aws_secret_access_key=…; одиночная строка без «=» считается токеном.
+SECRET_ERROR=""
+# Чистая часть: раскладывает пейлоад по переменным вызывающего (имена строками).
+# Заполняются только ПУСТЫЕ переменные — явный флаг сильнее файла. Возврат 1 —
+# в пейлоаде нет ни одного известного ключа.
+_secret_payload_apply() {
+  local payload="$1" tvar="${2:-}" kvar="${3:-}" svar="${4:-}" line k v got=1
+  while IFS= read -r line; do
+    line="${line%$'\r'}"
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    if [[ "$line" == *=* ]]; then
+      k="${line%%=*}"; v="${line#*=}"
+      k="${k,,}"; k="${k//[[:space:]]/}"; k="${k//-/_}"
+    else
+      k="token"; v="$line"
+    fi
+    case "$k" in
+      token|api_token|dns_cloudflare_api_token|bot_token|telegram_bot_token)
+        got=0
+        if [[ -n "$tvar" && -z "${!tvar}" ]]; then printf -v "$tvar" '%s' "$v"; fi ;;
+      aws_access_key_id|access_key_id)
+        got=0
+        if [[ -n "$kvar" && -z "${!kvar}" ]]; then printf -v "$kvar" '%s' "$v"; fi ;;
+      aws_secret_access_key|secret_access_key)
+        got=0
+        if [[ -n "$svar" && -z "${!svar}" ]]; then printf -v "$svar" '%s' "$v"; fi ;;
+    esac
+  done <<< "$payload"
+  return $got
+}
+
+# Читает источник секрета и раскладывает его по переменным вызывающего.
+# Печатает JSON-ошибку и возвращает 1, если источник задан, но не разобран;
+# 0 — источника не было или он применён (пустой src — no-op).
+_secret_source_apply() {  # <src: путь|-> <token_var> <key_var> <secret_var>
+  local src="" tvar="${2:-}" kvar="${3:-}" svar="${4:-}" payload="" mode=""
+  src="${1:-}"
+  [[ -n "$src" ]] || return 0
+  if [[ "$src" == "-" ]]; then
+    payload=$(cat)
+  else
+    if [[ ! -f "$src" || ! -r "$src" ]]; then
+      printf '{"ok":false,"error":"Секрет-файл не найден или не читается: %s"}\n' "$src"
+      return 1
+    fi
+    # Файл секрета не должен быть доступен группе/другим: иначе фикс бессмысленен.
+    # MSYS/MinGW (Git Bash на рабочей машине) отдают фиктивные права — всегда 644,
+    # поэтому там проверка режима бессмысленна; на Linux она обязательна.
+    if [[ "${OSTYPE:-}" != msys* && "${OSTYPE:-}" != cygwin* ]]; then
+      mode=$(stat -c '%a' -- "$src" 2>/dev/null || true)
+      if [[ -n "$mode" ]] && (( 8#$mode & 8#077 )); then
+        printf '{"ok":false,"error":"Секрет-файл доступен другим пользователям (нужен chmod 600): %s"}\n' "$src"
+        return 1
+      fi
+    fi
+    payload=$(cat -- "$src") || payload=""
+    rm -f -- "$src" 2>/dev/null || true
+  fi
+  if [[ -z "$payload" ]]; then
+    printf '{"ok":false,"error":"Пустой источник секрета: %s"}\n' "$src"
+    return 1
+  fi
+  if ! _secret_payload_apply "$payload" "$tvar" "$kvar" "$svar"; then
+    printf '{"ok":false,"error":"Секрет не распознан: ожидаются строки token=… / aws_access_key_id=… / aws_secret_access_key=…"}\n'
+    return 1
+  fi
+  return 0
+}
+
+# Предупреждение оператору: креды, переданные аргументом, видны в /proc.
+_secret_argv_warning() {
+  echo "внимание: секрет передан аргументом и виден в /proc/<pid>/cmdline любому пользователю хоста; используйте --secret-stdin/--secret-file" >&2
+}
+
 _qs_backup_path() {
   local source_path="$1" backup_path="$2"
   [[ -e "$source_path" || -L "$source_path" ]] || return 1
@@ -10087,21 +10168,30 @@ dns01_setup_command() {
   export XRAYEBATOR_NONINTERACTIVE=1
 
   local domain="" provider="" email="" token="" aws_key="" aws_secret="" port="" without_email=false
-  local staging_flag=false
+  local staging_flag=false secret_src="" secret_argv=false
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --domain) domain="${2:-}"; shift 2 ;;
       --provider) provider="${2:-}"; shift 2 ;;
       --email) email="${2:-}"; shift 2 ;;
       --without-email) without_email=true; shift ;;
-      --token) token="${2:-}"; shift 2 ;;
+      --token) token="${2:-}"; secret_argv=true; shift 2 ;;
       --aws-access-key-id) aws_key="${2:-}"; shift 2 ;;
-      --aws-secret-access-key) aws_secret="${2:-}"; shift 2 ;;
+      --aws-secret-access-key) aws_secret="${2:-}"; secret_argv=true; shift 2 ;;
+      --secret-file) secret_src="${2:-}"; shift 2 ;;
+      --secret-stdin) secret_src="-"; shift ;;
       --port) port="${2:-}"; shift 2 ;;
       --staging) staging_flag=true; shift ;;
       *) shift ;;
     esac
   done
+
+  if ! _secret_source_apply "$secret_src" token aws_key aws_secret; then
+    return 1
+  fi
+  if [[ "$secret_argv" == "true" ]]; then
+    _secret_argv_warning
+  fi
 
   if ! _dns01_validate_domain "$domain"; then
     echo '{"ok":false,"error":"Укажите --domain example.com (A/AAAA домена должна указывать на этот VPS)"}'
@@ -10225,20 +10315,29 @@ repair_dns01_command() {
   export XRAYEBATOR_NONINTERACTIVE=1
 
   local domain="" provider="" token="" aws_key="" aws_secret="" port="" email=""
-  local staging_flag=false
+  local staging_flag=false secret_src="" secret_argv=false
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --domain) domain="${2:-}"; shift 2 ;;
       --provider) provider="${2:-}"; shift 2 ;;
-      --token) token="${2:-}"; shift 2 ;;
+      --token) token="${2:-}"; secret_argv=true; shift 2 ;;
       --aws-access-key-id) aws_key="${2:-}"; shift 2 ;;
-      --aws-secret-access-key) aws_secret="${2:-}"; shift 2 ;;
+      --aws-secret-access-key) aws_secret="${2:-}"; secret_argv=true; shift 2 ;;
+      --secret-file) secret_src="${2:-}"; shift 2 ;;
+      --secret-stdin) secret_src="-"; shift ;;
       --email) email="${2:-}"; shift 2 ;;
       --port) port="${2:-}"; shift 2 ;;
       --staging) staging_flag=true; shift ;;
       *) shift ;;
     esac
   done
+
+  if ! _secret_source_apply "$secret_src" token aws_key aws_secret; then
+    return 1
+  fi
+  if [[ "$secret_argv" == "true" ]]; then
+    _secret_argv_warning
+  fi
 
   if ! _dns01_validate_domain "$domain"; then
     echo '{"ok":false,"error":"Укажите --domain sub.example.com (A/AAAA домена должна указывать на этот VPS)"}'
@@ -10372,18 +10471,28 @@ dns01_test_command() {
   export XRAYEBATOR_NONINTERACTIVE=1
 
   local domain="" provider="" email="" token="" aws_key="" aws_secret="" without_email=false
+  local secret_src="" secret_argv=false
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --domain) domain="${2:-}"; shift 2 ;;
       --provider) provider="${2:-}"; shift 2 ;;
       --email) email="${2:-}"; shift 2 ;;
       --without-email) without_email=true; shift ;;
-      --token) token="${2:-}"; shift 2 ;;
+      --token) token="${2:-}"; secret_argv=true; shift 2 ;;
       --aws-access-key-id) aws_key="${2:-}"; shift 2 ;;
-      --aws-secret-access-key) aws_secret="${2:-}"; shift 2 ;;
+      --aws-secret-access-key) aws_secret="${2:-}"; secret_argv=true; shift 2 ;;
+      --secret-file) secret_src="${2:-}"; shift 2 ;;
+      --secret-stdin) secret_src="-"; shift ;;
       *) shift ;;
     esac
   done
+
+  if ! _secret_source_apply "$secret_src" token aws_key aws_secret; then
+    return 1
+  fi
+  if [[ "$secret_argv" == "true" ]]; then
+    _secret_argv_warning
+  fi
 
   # Валидация до системных вызовов — тем же набором сообщений, что у боевого пути.
   if ! _dns01_validate_domain "$domain"; then
@@ -15011,6 +15120,7 @@ inspect_command() {
 
 quickstart_command() {
   local email="" email_mode="provided" deploy_pq=false staging_flag=false
+  local secret_src="" secret_argv=false
   local dns01_domain="" dns01_provider="" dns01_token="" dns01_aws_key="" dns01_aws_secret=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -15029,9 +15139,11 @@ quickstart_command() {
       # http_tls-деградации выпускаем серт по TXT-записи (домен + провайдер + токен).
       --dns01-domain) dns01_domain="${2:-}"; shift 2 ;;
       --dns01-provider) dns01_provider="${2:-}"; shift 2 ;;
-      --dns01-token) dns01_token="${2:-}"; shift 2 ;;
+      --dns01-token) dns01_token="${2:-}"; secret_argv=true; shift 2 ;;
       --dns01-aws-access-key-id) dns01_aws_key="${2:-}"; shift 2 ;;
-      --dns01-aws-secret-access-key) dns01_aws_secret="${2:-}"; shift 2 ;;
+      --dns01-aws-secret-access-key) dns01_aws_secret="${2:-}"; secret_argv=true; shift 2 ;;
+      --dns01-secret-file) secret_src="${2:-}"; shift 2 ;;
+      --dns01-secret-stdin) secret_src="-"; shift ;;
       *) shift ;;
     esac
   done
@@ -15054,6 +15166,12 @@ quickstart_command() {
   # их ДО системных изменений: молча проигнорированный DNS-01 выглядел бы как успешный
   # деплой, а подписка осталась бы в http_tls — то есть ровно та деградация, от которой
   # этот фолбэк и спасает.
+  if ! _secret_source_apply "$secret_src" dns01_token dns01_aws_key dns01_aws_secret; then
+    return 1
+  fi
+  if [[ "$secret_argv" == "true" ]]; then
+    _secret_argv_warning
+  fi
   local dns01_requested=false
   if [[ -n "$dns01_domain" || -n "$dns01_provider" || -n "$dns01_token" ]]; then
     dns01_requested=true
@@ -17735,13 +17853,23 @@ alerts_setup_command() {
   export XRAYEBATOR_NONINTERACTIVE=1
 
   local token="" chat=""
+  local secret_src="" secret_argv=false
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --token) token="$2"; shift 2 ;;
+      --token) token="$2"; secret_argv=true; shift 2 ;;
       --chat-id) chat="$2"; shift 2 ;;
+      --secret-file) secret_src="${2:-}"; shift 2 ;;
+      --secret-stdin) secret_src="-"; shift ;;
       *) shift ;;
     esac
   done
+  # Токен бота — тот же класс секрета: аргумент виден в /proc любому пользователю.
+  if ! _secret_source_apply "$secret_src" token "" ""; then
+    return 1
+  fi
+  if [[ "$secret_argv" == "true" ]]; then
+    _secret_argv_warning
+  fi
   if [[ -z "$token" || -z "$chat" ]]; then
     echo '{"ok":false,"error":"Укажите --token TELEGRAM_BOT_TOKEN и --chat-id CHAT_ID"}'
     return 1
@@ -20126,6 +20254,7 @@ if [[ "$XRAYEBATOR_SOURCED" -eq 0 ]]; then
       echo -e "  ${CYAN}sudo xrayebator profile-limit --name N --limit 100GB|none [--reset]${NC} — лимит трафика профиля (JSON)"
       echo -e "  ${CYAN}sudo xrayebator traffic-check${NC} — учесть трафик и применить лимиты (для systemd-таймера) (JSON)"
       echo -e "  ${CYAN}sudo xrayebator alerts-setup --token T --chat-id C${NC} — подключить Telegram-алерты мониторинга (JSON)"
+      echo -e "  ${CYAN}printf 'token=%s\\n' \"\$T\" | sudo xrayebator alerts-setup --secret-stdin --chat-id C${NC} — то же, но токен не попадает в argv"
       echo -e "  ${CYAN}sudo xrayebator alerts-status${NC} — состояние алертов и таймера мониторинга (JSON; токен не показывается)"
       echo -e "  ${CYAN}sudo xrayebator alerts-test${NC} — тестовое сообщение в Telegram (JSON)"
       echo -e "  ${CYAN}sudo xrayebator alerts-enable|alerts-disable${NC} — включить/выключить алерты (JSON)"
