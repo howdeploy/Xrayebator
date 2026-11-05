@@ -1833,10 +1833,11 @@ _happ_default_routing_json() {
   [[ "$token" =~ ^[a-f0-9]{32}$ ]] || return 1
   [[ "$last_updated" =~ ^[0-9]+$ ]] || return 1
 
-  jq -cn \
-    --arg geoip_url "${base_url}/sub/${token}/geoip.dat" \
-    --arg geosite_url "${base_url}/sub/${token}/geosite.dat" \
+  XRAYEBATOR_JQ_SECRET="$token" jq -cn \
+    --arg base_url "$base_url" \
     --arg last_updated "$last_updated" '
+      ("\($base_url)/sub/\($ENV.XRAYEBATOR_JQ_SECRET)/geoip.dat") as $geoip_url |
+      ("\($base_url)/sub/\($ENV.XRAYEBATOR_JQ_SECRET)/geosite.dat") as $geosite_url |
       {
         Name: "xrayebator-default",
         GlobalProxy: "true",
@@ -2196,6 +2197,14 @@ confirm_vision_443_risk() {
 # Или для записи в тот же файл: safe_jq_write "выражение_jq" [аргументы_jq...] "$файл"
 # Последний аргумент — целевой файл (куда записать), предпоследний — исходный
 # Если целевой == исходный, делает mktemp+mv
+# СЕКРЕТЫ В jq. Значение, которое нельзя показывать в `ps`, передаётся не через
+# `--arg`, а окружением: `/proc/<pid>/cmdline` читают все пользователи хоста (0444),
+# а `/proc/<pid>/environ` — только владелец процесса и root (0400). Значение
+# читается в фильтре как $ENV.XRAYEBATOR_JQ_SECRET (и $ENV.XRAYEBATOR_JQ_PSK,
+# когда секретов два), а присваивание ставится перед вызовом:
+#   XRAYEBATOR_JQ_SECRET="$password" safe_jq_write '...' "$profile_file"
+# Это касается паролей Hysteria, ключей AmneziaWG, sub_token, VLESS-decryption
+# ключа и токена Telegram-бота. Не секреты (имена, домены, порты) — обычным --arg.
 safe_jq_write() {
   local args=("$@")
   local nargs=${#args[@]}
@@ -3088,7 +3097,7 @@ _hysteria2_regen_config() {
     # Пустая userpass-карта невалидна для Hysteria — placeholder-пользователь.
     local placeholder_pass
     placeholder_pass=$(_hysteria2_ensure_placeholder) || return 1
-    users=$(jq -cn --arg p "$placeholder_pass" '{_xrayebator_placeholder: $p}')
+    users=$(XRAYEBATOR_JQ_SECRET="$placeholder_pass" jq -cn '{_xrayebator_placeholder: $ENV.XRAYEBATOR_JQ_SECRET}')
   fi
   local tmp="$HYSTERIA2_DIR/.server.yaml.new"
   _hysteria2_render_server_yaml "$tmp" "$port" \
@@ -3111,9 +3120,9 @@ _hysteria2_grant_profile() {
   [[ -n "$existing" ]] && return 0
   local password
   password=$(openssl rand -hex 16) || return 1
-  safe_jq_write --arg u "$name" --arg p "$password" \
+  XRAYEBATOR_JQ_SECRET="$password" safe_jq_write --arg u "$name" \
     --arg c "$(date +%Y-%m-%d\ %H:%M:%S)" \
-    '.backends = ((.backends // {}) + {hysteria2: {username: $u, password: $p, created: $c}})' \
+    '.backends = ((.backends // {}) + {hysteria2: {username: $u, password: $ENV.XRAYEBATOR_JQ_SECRET, created: $c}})' \
     "$profile_file" || return 1
   [[ "${2:-}" == "no_regen" ]] && return 0
   _hysteria2_regen_config
@@ -3158,8 +3167,8 @@ _hysteria2_on_profile_event() {
       jq -e '.backends.hysteria2.password' "$profile_file" >/dev/null 2>&1 || return 0
       local password
       password=$(openssl rand -hex 16) || return 1
-      safe_jq_write --arg p "$password" \
-        '.backends.hysteria2.password = $p' "$profile_file" || return 1
+      XRAYEBATOR_JQ_SECRET="$password" safe_jq_write \
+        '.backends.hysteria2.password = $ENV.XRAYEBATOR_JQ_SECRET' "$profile_file" || return 1
       _hysteria2_regen_config || return 1
       ;;
     deleted)
@@ -3432,7 +3441,7 @@ EOF
   }
   _hysteria2_render_server_yaml "$HYSTERIA2_DIR/server.yaml" "$port" \
     "$HYSTERIA2_DIR/cert.pem" "$HYSTERIA2_DIR/key.pem" \
-    "$(jq -cn --arg p "$placeholder_pass" '{_xrayebator_placeholder: $p}')"
+    "$(XRAYEBATOR_JQ_SECRET="$placeholder_pass" jq -cn '{_xrayebator_placeholder: $ENV.XRAYEBATOR_JQ_SECRET}')"
   _hysteria2_apply_sysctl
 
   echo -e "${CYAN}  → Устанавливаю бинарник и юнит...${NC}"
@@ -4271,10 +4280,10 @@ _awg_install() {
 
   mkdir -p "$AWG_DIR"
   chmod 700 "$AWG_DIR" 2>/dev/null
-  jq -n --arg priv "$priv" --arg pub "$pub" \
+  XRAYEBATOR_JQ_SECRET="$priv" jq -n --arg pub "$pub" \
     --argjson port "$port" --arg iface "$iface" --argjson junk "$junk" \
     --arg subnet "$AWG_SUBNET" --argjson mtu "$AWG_MTU" \
-    '{private_key: $priv, public_key: $pub, port: $port, iface: $iface,
+    '{private_key: $ENV.XRAYEBATOR_JQ_SECRET, public_key: $pub, port: $port, iface: $iface,
       junk: $junk, subnet: $subnet, mtu: $mtu}' > "$AWG_PARAMS_FILE" || {
     echo -e "${RED}✗ Не удалось записать server-params.json${NC}"
     return 1
@@ -4648,10 +4657,11 @@ _awg_grant_profile() {
   addr=$(_awg_next_address) || { echo -e "${RED}✗ Подсеть ${AWG_SUBNET} заполнена${NC}" >&2; return 1; }
   keys=$(_awg_gen_keys) || { echo -e "${RED}✗ awg genkey не сработал${NC}" >&2; return 1; }
   read -r cpriv cpub psk <<< "$keys"
-  safe_jq_write --arg a "$addr" --arg cp "$cpriv" --arg cb "$cpub" --arg ps "$psk" \
+  XRAYEBATOR_JQ_SECRET="$cpriv" XRAYEBATOR_JQ_PSK="$psk" \
+    safe_jq_write --arg a "$addr" --arg cb "$cpub" \
     --arg c "$(date +%Y-%m-%d\ %H:%M:%S)" \
-    '.backends = ((.backends // {}) + {awg: {client_private_key: $cp, client_public_key: $cb,
-      preshared_key: $ps, address: $a, created: $c}})' \
+    '.backends = ((.backends // {}) + {awg: {client_private_key: $ENV.XRAYEBATOR_JQ_SECRET, client_public_key: $cb,
+      preshared_key: $ENV.XRAYEBATOR_JQ_PSK, address: $a, created: $c}})' \
     "$profile_file" || return 1
   [[ "${2:-}" == "no_regen" ]] && return 0
   _awg_regen_config
@@ -4695,9 +4705,10 @@ _awg_on_profile_event() {
       local keys cpriv cpub psk
       keys=$(_awg_gen_keys) || return 1
       read -r cpriv cpub psk <<< "$keys"
-      safe_jq_write --arg cp "$cpriv" --arg cb "$cpub" --arg ps "$psk" \
-        '.backends.awg = (.backends.awg + {client_private_key: $cp,
-          client_public_key: $cb, preshared_key: $ps})' "$profile_file" || return 1
+      XRAYEBATOR_JQ_SECRET="$cpriv" XRAYEBATOR_JQ_PSK="$psk" \
+        safe_jq_write --arg cb "$cpub" \
+        '.backends.awg = (.backends.awg + {client_private_key: $ENV.XRAYEBATOR_JQ_SECRET,
+          client_public_key: $cb, preshared_key: $ENV.XRAYEBATOR_JQ_PSK})' "$profile_file" || return 1
       _awg_regen_config || return 1
       ;;
     deleted)
@@ -6281,7 +6292,7 @@ _migrate_subscription_tokens_2026() {
       echo -e "${RED}  ✗ openssl rand вернул некорректный токен для $(basename "$profile_file")${NC}"
       return 2
     fi
-    if ! safe_jq_write --arg t "$new_token" '.sub_token = $t' "$profile_file"; then
+    if ! XRAYEBATOR_JQ_SECRET="$new_token" safe_jq_write '.sub_token = $ENV.XRAYEBATOR_JQ_SECRET' "$profile_file"; then
       echo -e "${RED}  ✗ safe_jq_write failed для $profile_file${NC}"
       return 2
     fi
@@ -10815,7 +10826,7 @@ manage_subscription_menu() {
           sleep 2
           continue
         fi
-        if ! safe_jq_write --arg t "$new_token" '.sub_token = $t' "$pfile"; then
+        if ! XRAYEBATOR_JQ_SECRET="$new_token" safe_jq_write '.sub_token = $ENV.XRAYEBATOR_JQ_SECRET' "$pfile"; then
           echo -e "${RED}✗ Запись в profile JSON не удалась${NC}"
           sleep 2
           continue
@@ -11330,8 +11341,8 @@ _pq_add_route_for_profile() {
   # Инбаунд этого транспорта становится PQ: клиенты без ML-KEM к порту не подключатся.
   # Для xhttp decryption уже прописал add_inbound, для остальных транспортов — здесь
   # (VLESS decryption живёт на уровне инбаунда, а не маршрута).
-  if ! safe_jq_write --argjson p "$port" --arg d "$decryption" '
-    .inbounds |= map(if .port == $p then .settings.decryption = $d else . end)
+  if ! XRAYEBATOR_JQ_SECRET="$decryption" safe_jq_write --argjson p "$port" '
+    .inbounds |= map(if .port == $p then .settings.decryption = $ENV.XRAYEBATOR_JQ_SECRET else . end)
   ' "$CONFIG_FILE"; then
     return 1
   fi
@@ -16414,8 +16425,8 @@ profile_revoke_command() {
   # Профиль-JSON: новый токен всегда; при --full ещё и uuid (top-level + routes).
   # Порядок при full: сначала конфиг+рестарт, потом профиль; сбой записи профиля
   # при full откатывает конфиг — иначе uuid разедутся.
-  local jq_args=(--arg t "$new_token")
-  local jq_expr='.sub_token = $t'
+  local jq_args=()
+  local jq_expr='.sub_token = $ENV.XRAYEBATOR_JQ_SECRET'
   if [[ "$full" == "true" ]]; then
     jq_args+=(--arg old "$old_uuid" --arg new "$new_uuid")
     # ВАЖНО: (.routes // []) |= map(...) — невалидный path в jq («Invalid path
@@ -16435,7 +16446,7 @@ profile_revoke_command() {
     fi
   fi
 
-  if ! safe_jq_write "${jq_args[@]}" "$jq_expr" "$profile_file"; then
+  if ! XRAYEBATOR_JQ_SECRET="$new_token" safe_jq_write "${jq_args[@]}" "$jq_expr" "$profile_file"; then
     if [[ "$full" == "true" ]]; then
       # Полусостояние недопустимо: конфиг уже с новым uuid, профиль — со старым.
       # Откатываем config.json из бэкапа транзакции.
@@ -16460,10 +16471,10 @@ profile_revoke_command() {
   if [[ -n "$base" ]] && _profile_cli_subscription_url "$new_token" >/dev/null 2>&1; then
     sub_url="${base}/sub/${new_token}"
   fi
-  jq -n \
-    --arg name "$name" --arg token "$new_token" --arg url "$sub_url" \
+  XRAYEBATOR_JQ_SECRET="$new_token" jq -n \
+    --arg name "$name" --arg url "$sub_url" \
     --argjson full "$full" --arg uuid "$new_uuid" \
-    '{ok: true, name: $name, full: $full, sub_token: $token,
+    '{ok: true, name: $name, full: $full, sub_token: $ENV.XRAYEBATOR_JQ_SECRET,
       subscription_url: $url}
      + (if $full then {uuid: $uuid} else {} end)'
   return 0
@@ -17901,8 +17912,8 @@ alerts_setup_command() {
   local now tmp
   now=$(date +%s)
   tmp=$(mktemp) || { echo '{"ok":false,"error":"mktemp недоступен"}'; return 1; }
-  if ! jq -n --arg t "$token" --arg c "$chat" --arg u "$bot_username" --argjson cr "$now" \
-       '{enabled: true, token: $t, chat_id: $c, bot_username: $u, created: $cr}' > "$tmp"; then
+  if ! XRAYEBATOR_JQ_SECRET="$token" jq -n --arg c "$chat" --arg u "$bot_username" --argjson cr "$now" \
+       '{enabled: true, token: $ENV.XRAYEBATOR_JQ_SECRET, chat_id: $c, bot_username: $u, created: $cr}' > "$tmp"; then
     rm -f "$tmp"
     echo '{"ok":false,"error":"Не удалось записать конфиг алертов"}'
     return 1
