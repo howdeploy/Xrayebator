@@ -15,7 +15,7 @@ for test_file in validation/*.sh; do bash "$test_file" || exit; done
 
 ## 测试覆盖范围
 
-`validation/` 中有 47 个静态与本地回归测试：
+`validation/` 中有 48 个静态与本地回归测试：
 
 | 测试 | 检查内容 |
 |---|---|
@@ -45,6 +45,7 @@ for test_file in validation/*.sh; do bash "$test_file" || exit; done
 | `test-kernel-guard.sh` | 针对 CVE-2026-98432 的内核加固：关闭 MPTCP 的 sysctl 文件、丢弃带 IP 选项的入站 IPv4 包的 nft 规则（`input` 钩子、优先级 `-310`、Ubuntu 原样规则）、**不做** `flush ruleset` 的开机单元（否则开机时会把 UFW 规则清空）、「已安装更新的内核但未启动」的判定（不硬编码版本表）、Xray-core 版本比较（前导零按十进制）、在桩 `nft`/`sysctl` 上的启用/关闭、CLI 的 JSON 契约，以及菜单/分发器/迁移/uninstall 的接线 |
 | `test-freedom-sockopt.sh` | `freedom.domainStrategy` → `streamSettings.sockopt.domainStrategy`（26.10.31 将旧字段标记为 deprecated 且「will be removed」）：值被迁移、旧键被删除、显式设置的 sockopt 优先、第二次运行无操作（不会白白重启 Xray），且 `install.sh` 模板只写新形式 |
 | `test-awg-ppa-repo.sh` | `amnezia/ppa` 必须与签名密钥一起添加：`signed-by` 仓库行、先取密钥再写仓库、无密钥不写仓库、修复已损坏的未签名仓库、按标记幂等，以及在 `main_menu`/`quickstart`/`happ-setup` 中的接线 |
+| `test-secret-argv.sh` | 密钥不进入进程参数（`/proc/<pid>/cmdline` 对所有用户可读，`/proc/<pid>/environ` 不可读）：桩 `curl` 证明机器人令牌与 `sub_token` 通过 stdin 配置（`-K -`）传入且不出现在 `argv`；`--secret-file`/`--secret-stdin` 载荷解析（单行令牌、AWS 对、显式标志优先、垃圾输入）、拒绝宽于 `0600` 的文件、读取后删除、`--token` 在 stderr 打印警告而 stdout 仍是纯 JSON、jq 读取 `$ENV.XRAYEBATOR_JQ_SECRET` |
 | `test-awg-lifecycle.sh` | AmneziaWG 后端：Amnezia 默认 junk 方言（Jc=5、Jmin=10、Jmax=50、H1–H4=1..4、S1–S4 互不相同）、密钥生成、服务端配置渲染（PostUp MASQUERADE、安装时无 peer）、peer 地址分配、客户端 `.conf` 内容、revoke/expire/restore 事件、预删除配置档后的 deleted 重生成、created 为无操作（不自动签发）、CLI 分发、`/etc/modules-load.d` 的开机模块登记（仅在模块可用时写入）、`backend-start`（「已安装」≠「正在运行」）、以及安装成功判定：内核模块必须针对**当前**内核（`AWG_MODULES_ROOT` 为测试接缝） |
 | `test-main-readiness-regressions.sh` | 审计后的 readiness 回归：certbot manifest、UFW manifest、nginx 回滚、权限与 SSH 端口 |
 | `test-sni-change-cli.sh` | `sni-change` CLI：JSON 输出、Reality、XHTTP host、配置档同步与回滚 |
@@ -170,7 +171,7 @@ npm test              # Vitest 单元测试
 
 三个独立 workflow：
 
-- **ci-linux.yml** — Bash validation：在 ubuntu-24.04 上对所有脚本执行 `bash -n`，并运行全部 47 个
+- **ci-linux.yml** — Bash validation：在 ubuntu-24.04 上对所有脚本执行 `bash -n`，并运行全部 48 个
   `validation/test-*.sh`；在 push 到 `main`、`dev`、`experimental` 以及 pull request 时运行。
 - **release.yml** — Electron 构建（Windows/macOS/Linux）。只在 `v*` tag 和手动触发时运行；先由
   `preflight` 检查发布说明 `docs/releases/<tag>.en.md` 是否存在，以及仓库密钥 `AP3X0`（若已设置）

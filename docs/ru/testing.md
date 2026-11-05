@@ -36,7 +36,7 @@ Linux-машину. Проверки lifecycle должны также убеж�
 
 ## Что покрывают тесты
 
-В `validation/` ровно 47 скриптов. Запускайте каждый `validation/test-*.sh`; текущий набор:
+В `validation/` ровно 48 скриптов. Запускайте каждый `validation/test-*.sh`; текущий набор:
 
 | Тест | Что проверяет |
 |---|---|
@@ -69,6 +69,7 @@ Linux-машину. Проверки lifecycle должны также убеж�
 | `test-kernel-guard.sh` | Защита ядра от CVE-2026-98432: sysctl-файл, выключающий MPTCP, nft-правило дропа входящих IPv4-пакетов с IP-опциями (хук `input`, приоритет `-310`, дословно правило Ubuntu), юнит автозагрузки, который **не** делает `flush ruleset` (иначе при загрузке снесло бы правила UFW), определение «ядро новее уже установлено, но не загружено» без захардкоженных таблиц версий, сравнение версий Xray-core (ведущий ноль читается как десятичный), включение/выключение на подставных `nft`/`sysctl`, JSON-контракт CLI и проводка в меню/диспетчер/миграцию/uninstall |
 | `test-freedom-sockopt.sh` | `freedom.domainStrategy` → `streamSettings.sockopt.domainStrategy` (26.10.31 помечает старое поле deprecated и «will be removed»): значение переносится, legacy-ключ удаляется, уже заданный sockopt побеждает, второй прогон — no-op (Xray не перезапускается зря), а шаблон `install.sh` пишет только новую форму |
 | `test-awg-ppa-repo.sh` | PPA `amnezia/ppa` ставится только вместе с ключом подписи: строка `signed-by`, порядок «ключ до репозитория», отсутствие репозитория без ключа, ремонт уже испорченного неподписанного репозитория, идемпотентность по маркеру и проводка ремонта в `main_menu`/`quickstart`/`happ-setup` |
+| `test-secret-argv.sh` | Секреты не попадают в аргументы процессов (`/proc/<pid>/cmdline` читают все пользователи хоста, `/proc/<pid>/environ` — только владелец и root): подставной `curl` доказывает, что токен бота и `sub_token` приходят stdin-конфигом (`-K -`) и отсутствуют в `argv`; разбор пейлоада `--secret-file`/`--secret-stdin` (одиночный токен, AWS-пара, приоритет явного флага, мусор), отказ файлу шире `0600`, удаление файла после чтения, предупреждение `--token` в stderr при чистом stdout-JSON и чтение `$ENV.XRAYEBATOR_JQ_SECRET` в jq |
 | `test-awg-lifecycle.sh` | Бэкенд AmneziaWG: junk-диалект по умолчанию Amnezia (Jc=5, Jmin=10, Jmax=50, H1–H4=1..4, S1–S4 уникальные), генерация ключей, рендер серверного конфига (PostUp MASQUERADE, без peer-ов при установке), аллокация адресов, содержимое клиентского `.conf`, события revoke/expire/restore, реген deleted при заранее удалённом файле профиля, created = no-op (без авто-выдачи), диспетчер CLI |
 | `test-main-readiness-regressions.sh` | Регрессии readyness после аудита: certbot-manifest, UFW manifest, nginx rollback, привилегии, SSH-порт |
 | `test-multiroute-argument-preservation.sh` | Сохранение transport-аргументов multiroute-профиля |

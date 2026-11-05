@@ -116,7 +116,7 @@ is a client-side profile/route setting; changing it does not restart Xray or alt
 | `sudo xrayebator update <branch>` | Self-update the manager from the canonical raw repository branch, continue with the new script, then update Xray-core; the branch is pinned in `.current_branch` for later GUI updates |
 | `sudo xrayebator probe-test` | Check SNI reachability from the VPS before switching |
 | `sudo xrayebator channel-test [--name NAME] [--url URL] [--timeout S] [--transport T]` | Verify that the profile's channels **actually work**: for every route a local Xray client (SOCKS5 on loopback) is started with the parameters from the subscription link, and a real internet request goes out through it; the JSON carries `working`/`checked` and, per route, `ok`, `http`, `ms`, `pq` plus the client log tail. **No Let's Encrypt involvement** — Reality and VLESS Encryption are self-contained, so the check works on an `http_tls` subscription and before any certificate is issued; PQ routes are covered too. Live run: 8/8 routes, 152–252 ms |
-| `sudo xrayebator quickstart --email <address>` | One-shot deploy path used by the desktop GUI: runs the broad setup/migration path, provisions the current IP-TLS endpoint on `8443`, and creates a standard HAPP profile with `schema_version: 3` and 7 routes; emits JSON with `subscription_url`. Optional flags: `--pq` — add a PQ route on tcp to the profile (OFF by default: a client without ML-KEM cannot connect to the PQ port; the result lands in the JSON as `pq_route`), `--without-pq` — disable it explicitly, `--dns01-domain D --dns01-provider cloudflare\|route53 (--dns01-token T \| --dns01-aws-access-key-id K --dns01-aws-secret-access-key S)` — deploy-time DNS-01 fallback. DNS-01 parameters are validated **before** any system change: an incomplete set returns `{"ok":false,…}` and touches nothing |
+| `sudo xrayebator quickstart --email <address>` | One-shot deploy path used by the desktop GUI: runs the broad setup/migration path, provisions the current IP-TLS endpoint on `8443`, and creates a standard HAPP profile with `schema_version: 3` and 7 routes; emits JSON with `subscription_url`. Optional flags: `--pq` — add a PQ route on tcp to the profile (OFF by default: a client without ML-KEM cannot connect to the PQ port; the result lands in the JSON as `pq_route`), `--without-pq` — disable it explicitly, `--dns01-domain D --dns01-provider cloudflare\|route53 (--dns01-secret-file F \| --dns01-secret-stdin)` — credentials in a `0600` file or on stdin (invisible in `/proc`), `--dns01-token T \| --dns01-aws-access-key-id K --dns01-aws-secret-access-key S` — the compatible-but-visible-in-`ps` variant — deploy-time DNS-01 fallback. DNS-01 parameters are validated **before** any system change: an incomplete set returns `{"ok":false,…}` and touches nothing |
 | `sudo xrayebator quickstart --without-email` | Same new-server path without an ACME contact email; Certbot uses `--register-unsafely-without-email`, so no renewal notices or email-based account recovery are available |
 | `sudo xrayebator inspect --json` | Read-only GUI import probe: reports manager, Xray, profile and subscription markers without installing, migrating or changing services/configuration |
 | `sudo xrayebator happ-setup` | Reduced existing-install HAPP path: ensures the subscription service and a usable multi-route profile, but does not replace the endpoint prerequisite; when `.subscription_domain` or `.subscription_port` is missing, it verifies a real public TLS endpoint before writing markers and otherwise fails |
@@ -155,11 +155,11 @@ is a client-side profile/route setting; changing it does not restart Xray or alt
 | `sudo xrayebator awg-grant --name N` | Issue a per-profile peer (keypair + preshared key + `10.8.1.x` address in the profile's `.backends.awg`); `awg0.conf` is regenerated; prints JSON |
 | `sudo xrayebator awg-conf --name N` | Print the client `.conf` for a profile peer as JSON `{ok, name, conf}` — full-tunnel AllowedIPs, server junk parameters, endpoint; import into the AmneziaWG/AmneziaVPN client |
 | `sudo xrayebator awg-31 --on\|--off` | Toggle the AWG 3.1 config format (`HeaderProtectionKey`, `RandomTrailers`, `S3`/`S4`); 3.1 is on by default for new installs, the toggle upgrades legacy server params in place, warns that every issued client `.conf` must be re-downloaded (AmneziaVPN ≥ 5.0.1.5) and regenerates the interface with rollback |
-| `sudo xrayebator dns01-setup --domain sub.example.com --provider cloudflare\|route53 [--port P] [--staging]` | HTTPS subscription by domain through DNS-01: port 80 is not needed, ownership is proven by a TXT record. Writes `0600` credentials, issues the certbot certificate with a deploy-hook, brings up an nginx vhost without `listen 80` and switches the markers to `domain_tls`; prints JSON. The port defaults to the current subscription port (otherwise `443`) so the published URL keeps its port; `--staging` issues from the Let's Encrypt staging environment (`--test-cert`, no production quota spent) and reports `staging:true` — clients do not trust such a certificate |
-| `sudo xrayebator dns01-test --domain sub.example.com --provider cloudflare\|route53 [--token T \| --aws-*] [--email E\|--without-email]` | Verify a domain and a DNS-provider token **without touching the subscription and without spending production quota**: a staging-only issuance into its own certificate lineage, no deploy hook, no nginx/markers/firewall changes. Prints JSON with the issuer, the certificate end date, the `_acme-challenge.<domain>` TXT record to check, and the parsed certbot reason on failure |
+| `sudo xrayebator dns01-setup --domain sub.example.com --provider cloudflare\|route53 [--port P] [--staging] [--secret-file F \| --secret-stdin]` | HTTPS subscription by domain through DNS-01: port 80 is not needed, ownership is proven by a TXT record. Writes `0600` credentials, issues the certbot certificate with a deploy-hook, brings up an nginx vhost without `listen 80` and switches the markers to `domain_tls`; prints JSON. The port defaults to the current subscription port (otherwise `443`) so the published URL keeps its port; `--staging` issues from the Let's Encrypt staging environment (`--test-cert`, no production quota spent) and reports `staging:true` — clients do not trust such a certificate |
+| `sudo xrayebator dns01-test --domain sub.example.com --provider cloudflare\|route53 [--secret-file F \| --secret-stdin \| --token T \| --aws-*] [--email E\|--without-email]` | Verify a domain and a DNS-provider token **without touching the subscription and without spending production quota**: a staging-only issuance into its own certificate lineage, no deploy hook, no nginx/markers/firewall changes. Prints JSON with the issuer, the certificate end date, the `_acme-challenge.<domain>` TXT record to check, and the parsed certbot reason on failure |
 | `sudo xrayebator dns01-status` | DNS-01 state: provider, mode, domain, port, presence of credentials, certificate lifetime in days, whether the deploy-hook is present (certbot stores it as `renew_hook`) and whether the subscription sits on a staging certificate; prints JSON |
-| `sudo xrayebator repair-dns01 --domain sub.example.com --provider cloudflare\|route53 [--token T \| --aws-*] [--email E] [--port P]` | Replace a degraded (`http_tls`) subscription with DNS-01: the same TXT-record issuance, the vhost is re-rendered with a TLS server only, and the markers become `domain_tls`. Idempotent: if the subscription is already on HTTPS (`ip_tls`/`domain_tls`) it returns `{"ok":true,"skipped":true}` and does nothing; prints JSON |
-| `sudo xrayebator alerts-setup --token T --chat-id C` | Connect Telegram notifications: validates the token through `getMe`, sends a test message and **only after successful delivery** saves `alerts.json` (0600) and enables `xrayebator-monitor.timer`; prints JSON |
+| `sudo xrayebator repair-dns01 --domain sub.example.com --provider cloudflare\|route53 [--secret-file F \| --secret-stdin \| --token T \| --aws-*] [--email E] [--port P]` | Replace a degraded (`http_tls`) subscription with DNS-01: the same TXT-record issuance, the vhost is re-rendered with a TLS server only, and the markers become `domain_tls`. Idempotent: if the subscription is already on HTTPS (`ip_tls`/`domain_tls`) it returns `{"ok":true,"skipped":true}` and does nothing; prints JSON |
+| `sudo xrayebator alerts-setup [--token T \| --secret-file F \| --secret-stdin] --chat-id C` | Connect Telegram notifications: validates the token through `getMe`, sends a test message and **only after successful delivery** saves `alerts.json` (0600) and enables `xrayebator-monitor.timer`; prints JSON |
 | `sudo xrayebator alerts-status` | Monitoring state: config, timer, last check time, events and the result of the last SNI probe (the bot token is never shown); prints JSON |
 | `sudo xrayebator alerts-test` | Send a test message to the configured chat (delivery check); prints JSON |
 | `sudo xrayebator alerts-enable\|alerts-disable` | Turn delivery on or off without deleting the settings (a kill switch that keeps the token); prints JSON |
@@ -549,6 +549,10 @@ Setup happens from the menu (`14`) or the CLI. The bot token is issued by `@BotF
 `chat_id` by `@userinfobot` (for groups it is negative):
 
 ```bash
+# The token stays out of the command line (any local user can read it in /proc):
+printf 'token=%s\n' "$TG_TOKEN" | sudo xrayebator alerts-setup --secret-stdin \
+  --chat-id -1001234567890
+# Compatible, but visible in ps:
 sudo xrayebator alerts-setup --token 123456:AA... --chat-id -1001234567890
 sudo xrayebator alerts-status                # timer, last check, events, SNI
 sudo xrayebator alerts-test                  # test message
@@ -608,13 +612,18 @@ record, so port 80 is not needed at all, and the subscription lives on its own d
 `https://sub.example.com/sub/<token>`.
 
 ```bash
-# Cloudflare: an API token with the DNS:Edit right on the zone
+# Cloudflare: an API token with the DNS:Edit right on the zone. The token travels in a
+# 0600 file (or on stdin), not as an argument: issuance takes tens of seconds and the
+# process arguments are readable by every local user (see security.md).
+sudo install -m 600 /dev/null /root/.cf
+printf 'token=%s\n' "$CF_TOKEN" | sudo tee /root/.cf >/dev/null
 sudo xrayebator dns01-setup --domain sub.example.com --provider cloudflare \
-  --token CF_API_TOKEN --email admin@example.com
+  --secret-file /root/.cf --email admin@example.com
 
 # Route53: keys with the Route53:ChangeResourceRecordSets right
-sudo xrayebator dns01-setup --domain sub.example.com --provider route53 \
-  --aws-access-key-id AKIA... --aws-secret-access-key ... --without-email
+printf 'aws_access_key_id=%s\naws_secret_access_key=%s\n' "$AWS_KEY" "$AWS_SECRET" \
+  | sudo xrayebator dns01-setup --domain sub.example.com --provider route53 \
+      --secret-stdin --without-email
 
 sudo xrayebator dns01-status   # provider, domain, port, certificate lifetime, deploy-hook
 ```
