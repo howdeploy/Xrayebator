@@ -2018,6 +2018,23 @@ _certbot_failure_reason() {
   return 0
 }
 
+# Ждёт готовности snapd. На свежем Ubuntu 24.04 демон доигрывает seed/refresh и
+# перезапускается сам («Waiting for automatic snapd restart…»), а `snap install` в
+# этот момент обрывается мгновенно — из-за этого quickstart получал «certbot не
+# найден» при полностью работоспособном snap. Возврат 0 — демон отвечает.
+_wait_snapd_ready() {
+  local i
+  systemctl start snapd.socket >/dev/null 2>&1 || true
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    if snap wait system seed.loaded >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 3
+  done
+  # Совсем старые snapd могут не знать подкоманду `wait` — тогда достаточно ответа.
+  snap version >/dev/null 2>&1
+}
+
 _ensure_certbot_ip_tls() {
   CERTBOT_IP_BIN=""
 
@@ -2030,35 +2047,52 @@ _ensure_certbot_ip_tls() {
     fi
   done
 
-  echo -e "${YELLOW}  → Системный certbot не поддерживает IP certificates; ставлю актуальный certbot через snap...${NC}"
+  # Прогресс — в stderr: у CLI-команд stdout обязан оставаться чистым JSON
+  # (snap пишет свои «core … installed» в stdout, и они ломали разбор ответа).
+  echo -e "${YELLOW}  → Системный certbot не поддерживает IP certificates; ставлю актуальный certbot через snap...${NC}" >&2
+  _apt_wait_lock 300 || true
   if ! apt-get "${APT_LOCK_OPTS[@]}" install -y snapd >/dev/null 2>&1; then
-    echo -e "${RED}✗ Не удалось установить snapd для Certbot 5.4+${NC}"
+    echo -e "${RED}✗ Не удалось установить snapd для Certbot 5.4+${NC}" >&2
     return 1
   fi
 
   systemctl enable --now snapd.socket >/dev/null 2>&1 || true
   export PATH="/snap/bin:$PATH"
 
-  if command -v snap >/dev/null 2>&1; then
-    if snap list core >/dev/null 2>&1; then
-      snap refresh core >/tmp/snap-core.log 2>&1 || true
-    elif ! snap install core >/tmp/snap-core.log 2>&1; then
-      echo -e "${RED}✗ snap install core не удался. Лог: /tmp/snap-core.log${NC}"
-      tail -20 /tmp/snap-core.log
-      return 1
-    fi
-
-    if snap list certbot >/dev/null 2>&1; then
-      snap refresh certbot >/tmp/snap-certbot.log 2>&1 || true
-    elif ! snap install --classic certbot >/tmp/snap-certbot.log 2>&1; then
-      echo -e "${RED}✗ snap install certbot не удался. Лог: /tmp/snap-certbot.log${NC}"
-      tail -20 /tmp/snap-certbot.log
-      return 1
-    fi
-  else
-    echo -e "${RED}✗ snap command не найден после установки snapd${NC}"
+  if ! command -v snap >/dev/null 2>&1; then
+    echo -e "${RED}✗ snap command не найден после установки snapd${NC}" >&2
     return 1
   fi
+
+  local attempt
+  _wait_snapd_ready
+  for attempt in 1 2 3; do
+    if snap list core >/dev/null 2>&1; then
+      snap refresh core >/tmp/snap-core.log 2>&1 || true
+    else
+      snap install core >/tmp/snap-core.log 2>&1 || true
+    fi
+    if snap list certbot >/dev/null 2>&1; then
+      snap refresh certbot >/tmp/snap-certbot.log 2>&1 || true
+    else
+      snap install --classic certbot >/tmp/snap-certbot.log 2>&1 || true
+    fi
+
+    # Проверяем результат по факту, а не по коду возврата: `snap install` умеет
+    # отвечать нулём после «Waiting for automatic snapd restart…» и не поставить пакет.
+    for candidate in /snap/bin/certbot; do
+      [[ -x "$candidate" ]] || continue
+      if _certbot_supports_ip_address "$candidate"; then
+        CERTBOT_IP_BIN="$candidate"
+        return 0
+      fi
+    done
+
+    [[ "$attempt" -lt 3 ]] || break
+    echo -e "${YELLOW}  → snapd перезапускался во время установки, повтор (${attempt}/3)...${NC}" >&2
+    _wait_snapd_ready
+    sleep 3
+  done
 
   for candidate in /snap/bin/certbot "$(command -v certbot 2>/dev/null || true)"; do
     [[ -n "$candidate" && -x "$candidate" ]] || continue
@@ -2068,7 +2102,9 @@ _ensure_certbot_ip_tls() {
     fi
   done
 
-  echo -e "${RED}✗ Не найден Certbot 5.4+ с поддержкой --ip-address${NC}"
+  echo -e "${RED}✗ snap install certbot не удался (snapd не доиграл seed/refresh?). Лог:${NC}" >&2
+  tail -6 /tmp/snap-certbot.log >&2 2>/dev/null || true
+  echo -e "${RED}✗ Не найден Certbot 5.4+ с поддержкой --ip-address${NC}" >&2
   return 1
 }
 
@@ -15359,18 +15395,15 @@ quickstart_command() {
     certbot_bin="$(command -v certbot)"
   fi
   if [[ -z "$certbot_bin" ]]; then
-    echo "  -> Установка certbot через snap..." >&2
-    _apt_wait_lock 300 || true
-    timeout 240 apt-get "${APT_LOCK_OPTS[@]}" install -y snapd >/dev/null 2>&1 || true
-    systemctl enable --now snapd.socket >/dev/null 2>&1 || true
-    export PATH="/snap/bin:$PATH"
-    if command -v snap &>/dev/null; then
-      timeout 300 snap install core 2>/dev/null || true
-      timeout 300 snap install --classic certbot 2>/dev/null || true
-      if command -v /snap/bin/certbot &>/dev/null && _certbot_supports_ip_address /snap/bin/certbot; then
-        certbot_bin="/snap/bin/certbot"
-      fi
+    # Один источник истины с интерактивным путём (_ensure_certbot_ip_tls): та версия
+    # писала логи и честно сообщала причину, а здешний дубль глотал ошибку через
+    # `2>/dev/null || true` — на Ubuntu 24.04 это дало «certbot не найден» при живом
+    # snap (демон в тот момент перезапускался) и заодно засоряло stdout прогрессом snap.
+    if ! _ensure_certbot_ip_tls; then
+      echo '{"ok":false,"error":"Certbot с --ip-address и --preferred-profile не найден: snap не установил certbot (см. stderr)"}'
+      return 1
     fi
+    certbot_bin="$CERTBOT_IP_BIN"
   fi
   if [[ -z "$certbot_bin" ]]; then
     echo '{"ok":false,"error":"Certbot с --ip-address и --preferred-profile не найден"}'
