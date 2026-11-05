@@ -197,6 +197,52 @@ unattended-upgrades 已经装上。`kernel-guard --status` 会报告运行中的
 为公平起见还有一点：MPTCP 维护者反对在代理里关闭 MPTCP，因为这会牺牲能从 MPTCP 获益的客户端。
 我们跟随 Xray 的决定，把它作为纵深防御的一层，而不是内核更新的替代品。
 
+## 密钥与进程参数
+
+进程的命令行对**本机所有用户**可读：`/proc/<pid>/cmdline` 的权限是 `0444`（所有人可读），
+而 `/proc/<pid>/environ` 只有进程所有者和 root 可读（`0400`）。在 VPN 服务器上这意味着任何
+非特权账户——包括代理本身运行所用的 `xray` 服务账户——都能读到任意 root 进程的参数。作为参数
+传递的密钥，等于交给了每一个在该主机上取得代码执行的人，也等于交给了相邻账户的一条
+`ps aux`。
+
+在 0.7.2 之前，有三类凭据是这样传递的：
+
+* **Telegram 机器人令牌**出现在 `curl` 进程的 URL 里（`…/bot<TOKEN>/sendMessage`）。这并非
+  一次性泄露：监控定时器每 15 分钟执行一次检查，因此每个周期和每次告警发送时都存在一个命令行
+  里带着令牌的进程；
+* 订阅 **`sub_token`** 出现在 loopback 订阅检查的 URL 里；
+* **Cloudflare API 令牌 / AWS 密钥**出现在 `xrayebator dns01-setup`、`dns01-test`、
+  `repair-dns01` 和 `quickstart` 的命令行里，而且会一直保留到证书签发完成——30 秒的 DNS
+  传播等待加上 certbot 自身的工作。certbot 本身从不通过参数接收这些值（Cloudflare 用 ini
+  文件，Route53 用 `AWS_SHARED_CREDENTIALS_FILE`，权限都是 `0600`），所以唯一的暴露点就是
+  管理器自己的命令行。
+
+现在这些值都绕开了参数列表：
+
+* HTTP 客户端（`curl`）通过 stdin 配置（`-K -`）接收 URL，令牌不出现在它的参数里；
+* `jq` 通过环境变量接收值并以 `$ENV.XRAYEBATOR_JQ_SECRET` 读取——覆盖 Hysteria 2 密码、
+  AmneziaWG 私钥与 PresharedKey、`sub_token`、VLESS Encryption 密钥以及写入 JSON 时的
+  机器人令牌；
+* CLI 从 stdin 或文件接收密钥本身：
+
+  ```bash
+  # 令牌既不进入 argv，也不进入 shell history
+  printf 'token=%s\n' "$CF_TOKEN" | sudo xrayebator dns01-setup \
+    --domain sub.example.com --provider cloudflare --secret-stdin --without-email
+  sudo install -m 600 /dev/null /root/.cf && printf 'token=%s\n' "$CF_TOKEN" | sudo tee /root/.cf
+  sudo xrayebator dns01-setup --domain sub.example.com --provider cloudflare --secret-file /root/.cf
+  ```
+
+  载荷是 `key=value` 行（`token=…`、`aws_access_key_id=…`、`aws_secret_access_key=…`）；
+  没有 `=` 的单行会被当作令牌。`--secret-file` 会拒绝组或其他用户可读的文件，并在读取后立即
+  删除，因此密钥在磁盘上只存在毫秒级。桌面 GUI 通过 SFTP 以 `0600` 上传文件并传递路径——
+  DNS-01 向导不再把令牌放进任何命令行。
+
+`--token` 和 `--aws-secret-access-key` 为兼容性继续可用，但会向 stderr 打印一条关于可见性的
+警告。还有两点需要诚实说明：直接敲在交互式命令行里的密钥在该命令运行期间仍然可见（请改用
+`--secret-stdin`）；通过环境变量传递只能防止**其他用户**读取，防不住 root——以 root 运行的
+任何东西都能读到主机上的任何密钥。
+
 ## 桌面 GUI 凭据
 
 活跃的 Electron GUI 支持 SSH 密码和私钥，并可选择直接 root 或 sudo。通过 Electron 原生文件对话框选择的私钥由 main process 读取，并通过 `keytar` 保存到操作系统钥匙串（Windows Credential Manager、macOS Keychain 或 Linux Secret Service），因此后续 SSH 操作和应用重启后都可以复用。Renderer 只收到非敏感 credential id 和显示文件名；私钥字节不会跨越 preload boundary。
