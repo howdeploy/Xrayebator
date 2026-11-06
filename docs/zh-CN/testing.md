@@ -15,7 +15,7 @@ for test_file in validation/*.sh; do bash "$test_file" || exit; done
 
 ## 测试覆盖范围
 
-`validation/` 中有 48 个静态与本地回归测试：
+`validation/` 中有 49 个静态与本地回归测试：
 
 | 测试 | 检查内容 |
 |---|---|
@@ -37,6 +37,7 @@ for test_file in validation/*.sh; do bash "$test_file" || exit; done
 | `test-config-temp-json-suffix.sh` | 安装与更新时的配置校验：交给 `xray run -test` 的临时配置必须以 `.json` 结尾（Xray ≥ 26.10 按扩展名判断格式并忽略 `-format json`），失败时打印内核输出，并功能性验证 `mktemp --suffix=.json` |
 | `test-installer-network-fallbacks.sh` | 安装脚本网络回退 |
 | `test-bbr-removal-migration.sh` | 已删除 BBR/TCP 调优在所有路径上的安全清理 |
+| `test-certbot-snap-ip.sh` | IP 证书用的 certbot：唯一的 `_ensure_certbot_ip_tls` 实现（quickstart 不再自己 `snap install`）、等待 snapd 就绪（`snap wait system seed.loaded`）、安装重试、按二进制实际具备的旗标校验结果、snap 输出进日志而非 stdout；并功能性验证 `_certbot_supports_ip_address` 能区分 certbot 5.4+、apt 版本与缺少 `--preferred-profile` 的二进制 |
 | `test-legacy-udp443-migration.sh` | 一次性清理旧版 UDP/443 阻断规则 |
 | `test-main-menu-numbering.sh` | 主菜单条目编号连续并与处理函数一致（含后端条目与监控的 1..14） |
 | `test-backend-registry.sh` | 后端注册表（多协议阶段）：source-mode 下的注册表 CRUD（经 `safe_jq_write`）、installed/field 读取、生命周期入口的安全 no-op、`backend-status` JSON 结构 |
@@ -176,7 +177,7 @@ npm test              # Vitest 单元测试
 
 三个独立 workflow：
 
-- **ci-linux.yml** — Bash validation：在 ubuntu-24.04 上对所有脚本执行 `bash -n`，并运行全部 48 个
+- **ci-linux.yml** — Bash validation：在 ubuntu-24.04 上对所有脚本执行 `bash -n`，并运行全部 49 个
   `validation/test-*.sh`；在 push 到 `main`、`dev`、`experimental` 以及 pull request 时运行。
 - **release.yml** — Electron 构建（Windows/macOS/Linux）。只在 `v*` tag 和手动触发时运行；先由
   `preflight` 检查发布说明 `docs/releases/<tag>.en.md` 是否存在，以及仓库密钥 `AP3X0`（若已设置）

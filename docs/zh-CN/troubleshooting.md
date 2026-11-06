@@ -418,6 +418,38 @@ wget -qO ./xrayebator-install.sh \
 并给出新内核名——重启后再执行一次 `sudo xrayebator awg-install`。重启后模块通过
 `/etc/modules-load.d/xrayebator-awg.conf` 加载，`awg0` 由其单元拉起。
 
+## Ubuntu 24.04：`quickstart` 找不到可用于 IP 证书的 certbot
+
+**现象。** 在全新安装的 Ubuntu 24.04 上，`quickstart`（以及 GUI 部署）以如下响应结束：
+
+```json
+{"ok":false,"error":"Certbot с --ip-address и --preferred-profile не найден"}
+```
+
+而在同一时刻手动执行 `snap install --classic certbot` 却能顺利装上 certbot 5.x。
+
+**原因。** Ubuntu 24.04 自带已就绪的 `snapd`，首次启动后（以及首次刷新后）它还在完成 seed 并会
+自行重启——日志里表现为 `Waiting for automatic snapd restart...`。此刻安装软件包会立即中断。
+而 IP 证书只有 snap 版 certbot 支持（`--ip-address` 加 `--preferred-profile`）：24.04 里 apt 版本
+两个参数都不认识。
+
+**怎么做。** 当前版本会等待 snapd 就绪（`snap wait system seed.loaded`）、重试安装，并按二进制
+实际具备的能力校验结果，所以直接重复命令即可（幂等）：
+
+```bash
+sudo xrayebator quickstart --without-email   # 或 GUI 中的部署按钮
+```
+
+手动确认：
+
+```bash
+sudo snap wait system seed.loaded
+sudo snap install --classic certbot
+/snap/bin/certbot --help all | grep -c -- '--ip-address'     # 输出 1 表示可用
+```
+
+snap 安装失败的日志在 `/tmp/snap-certbot.log`。Ubuntu 24.04 的 `/tmp` 是 tmpfs，重启后不会保留。
+
 ## 安装或使用过程中出现报错
 
 ### `Сгенерированный config.json не прошёл валидацию — live-конфиг не изменён`
