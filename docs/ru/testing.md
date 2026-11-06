@@ -36,7 +36,7 @@ Linux-машину. Проверки lifecycle должны также убеж�
 
 ## Что покрывают тесты
 
-В `validation/` ровно 48 скриптов. Запускайте каждый `validation/test-*.sh`; текущий набор:
+В `validation/` ровно 49 скриптов. Запускайте каждый `validation/test-*.sh`; текущий набор:
 
 | Тест | Что проверяет |
 |---|---|
@@ -51,6 +51,7 @@ Linux-машину. Проверки lifecycle должны также убеж�
 | `test-sni-reachability.sh` | Выбор дефолтного SNI: недоступный кандидат заменяется доступным, полная недоступность оставляет прежний дефолт, одна проба на SNI за запуск, строгий критерий TLS 1.3 + HTTP проверяется на реальном выводе `openssl`, порядок кандидатов (голова списка, затем глобальные фолбэки) и обязательный второй замер |
 | `test-dns01-certbot.sh` | DNS-01 (Cloudflare/Route53): валидацию домена (IP и локальные имена отклоняются) и провайдера, сборку аргументов certbot (плагин, credentials, propagation, deploy-hook, `-m` или регистрация без email), запись credentials `0600` с содержимым по провайдеру, nginx-vhost **без** `listen 80` и ACME-location, CLI-ошибки без записи на диск и проводку (диспатчер, пункт меню, пакеты плагинов, UFW-порт, маркеры `domain_tls`, manifest certbot, cleanup в uninstall) |
 | `test-bbr-removal-migration.sh` | Безопасное удаление удалённого BBR/TCP tuning на всех путях |
+| `test-certbot-snap-ip.sh` | Certbot для IP-сертификатов: единственная реализация `_ensure_certbot_ip_tls` (в quickstart нет своего `snap install`), ожидание готовности snapd (`snap wait system seed.loaded`), повтор установки, проверка результата по фактическим флагам бинарника, вывод snap в лог вместо stdout; функционально — `_certbot_supports_ip_address` отличает certbot 5.4+ от apt-версии и от бинарника без `--preferred-profile` |
 | `test-profile-revoke-expire-cli.sh` | CLI `profile-revoke` (только токен / ротация uuid с сохранением чужих клиентов на общем порту) и сроки профилей (отключение, возврат из снимка, rebuild без снимка, идемпотентный `expire-check`) |
 | `test-cascade-routing.sh` | Cascade routing |
 | `test-cascade-upstream-import.sh` | Импорт upstream каскада из ссылки VLESS |
@@ -217,7 +218,7 @@ npm run build
 
 - `.github/workflows/ci-linux.yml` — гейт Bash-ядра на `ubuntu-24.04`: ставит `jq`, `uuid-runtime`
   и `ripgrep`, прогоняет все четыре проверки синтаксиса Bash, затем запускает каждый
-  `validation/test-*.sh` (на момент написания — 45).
+  `validation/test-*.sh` (на момент написания — 49).
 - `.github/workflows/release.yml` — активный путь релиза Electron для тегов `v*` и ручных запусков.
   Сначала job `preflight` проверяет, что файл релизных заметок `docs/releases/<tag>.en.md` существует
   и что секрет репозитория `AP3X0` (если задан) действительно может создавать релизы — проверка идёт

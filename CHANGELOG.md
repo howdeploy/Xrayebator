@@ -31,6 +31,23 @@ key, the bot token) had the same problem with a millisecond window.
 - New `validation/test-secret-argv.sh` locks the contract in place: a stub `curl` asserts that the
   secret is absent from `argv` and present on stdin.
 
+### Fixed
+
+- `quickstart` on a fresh Ubuntu 24.04 no longer answers "Certbot с --ip-address и
+  --preferred-profile не найден" while a manual `snap install --classic certbot` works: `snapd` on
+  that image finishes seeding and restarts itself right after boot, so the inline install aborted
+  instantly and the error was swallowed by `2>/dev/null || true`. The IP-certbot path is now the
+  single `_ensure_certbot_ip_tls` helper, which waits for `snap wait system seed.loaded`, retries the
+  install, verifies the result by the binary's actual flags, and logs to `/tmp/snap-*.log`.
+  Guarded by `validation/test-certbot-snap-ip.sh` (49th script).
+- `quickstart` and `open_firewall_port` no longer write progress lines to stdout: snap output and
+  firewall statuses go to stderr, so `xrayebator quickstart --without-email | jq .ok` parses.
+- `channel-test` without `--name` uses the only profile in the system instead of answering
+  "Укажите --name профиля" (`HAPP_DEFAULT_PROFILE` is set only inside a quickstart process).
+- `validation/test-channel-test-cli.sh` anchored its helper block on an ASCII line: the previous
+  pattern used the box-drawing character `─`, which neither `mawk` (the Debian/Ubuntu default) nor
+  byte-oriented `gawk` matches, so the test failed from the locale rather than from the code.
+
 ## [0.7.2] - 2026-11-04
 
 The `0.7.2` security patch: Xray-core moved to `26.10.31` (the urgent release that stops
