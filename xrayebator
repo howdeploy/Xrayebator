@@ -2942,13 +2942,16 @@ _backend_apply_profile_lifecycle() {
 # + certbot deploy-hook) или self-signed. masquerade 404 — до живой
 # проверки proxy-маскарада в срезе 3. Гранты per-profile — срез 3.
 
-HYSTERIA2_BIN="/usr/local/bin/hysteria"
+HYSTERIA2_BIN="${HYSTERIA2_BIN:-/usr/local/bin/hysteria}"
 HYSTERIA2_DIR="$BACKENDS_DIR/hysteria"
 HYSTERIA2_UNIT="hysteria-server.service"
-HYSTERIA2_UNIT_FILE="/etc/systemd/system/hysteria-server.service"
+# Системные пути переопределяемы (тот же root-override приём, что CONFIG_FILE):
+# без этого тест видел реальный юнит/хук с живого сервера, и его no-op проверки
+# («бэкенд не установлен» → rc=2) краснели от состояния машины, а не от кода.
+HYSTERIA2_UNIT_FILE="${HYSTERIA2_UNIT_FILE:-/etc/systemd/system/hysteria-server.service}"
 HYSTERIA2_USER="hysteria"
-HYSTERIA2_SYSCTL_FILE="/etc/sysctl.d/99-xrayebator-hysteria.conf"
-HYSTERIA2_CERTBOT_HOOK="/etc/letsencrypt/renewal-hooks/deploy/xrayebator-hysteria.sh"
+HYSTERIA2_SYSCTL_FILE="${HYSTERIA2_SYSCTL_FILE:-/etc/sysctl.d/99-xrayebator-hysteria.conf}"
+HYSTERIA2_CERTBOT_HOOK="${HYSTERIA2_CERTBOT_HOOK:-/etc/letsencrypt/renewal-hooks/deploy/xrayebator-hysteria.sh}"
 HYSTERIA2_REPO="HyNetworks/hysteria"
 
 # Актив Hysteria для архитектуры текущего ядра.
@@ -3041,11 +3044,17 @@ EOF
 }
 
 # TLS-режим: "le <domain>" при живом LE-серте подписки, иначе "selfsigned".
+# TLS-режим: "le <domain>" при живом LE-серте подписки, иначе "selfsigned".
+# Пути переопределяемы (root override, как CONFIG_FILE/PROFILES_DIR): без этого тест
+# зависел от хоста — на сервере с живым сертификатом детектор честно отвечает
+# "le <ip>", а тест ждал "selfsigned" и краснел от состояния машины, не от кода.
+HYSTERIA2_SUBSCRIPTION_DOMAIN_FILE="${HYSTERIA2_SUBSCRIPTION_DOMAIN_FILE:-/usr/local/etc/xray/.subscription_domain}"
+HYSTERIA2_LETSENCRYPT_LIVE_DIR="${HYSTERIA2_LETSENCRYPT_LIVE_DIR:-/etc/letsencrypt/live}"
 _hysteria2_tls_mode_detect() {
   local domain=""
-  [[ -f /usr/local/etc/xray/.subscription_domain ]] && \
-    domain=$(tr -d '\r\n' < /usr/local/etc/xray/.subscription_domain 2>/dev/null)
-  if [[ -n "$domain" && -d "/etc/letsencrypt/live/$domain" ]]; then
+  [[ -f "$HYSTERIA2_SUBSCRIPTION_DOMAIN_FILE" ]] && \
+    domain=$(tr -d '\r\n' < "$HYSTERIA2_SUBSCRIPTION_DOMAIN_FILE" 2>/dev/null)
+  if [[ -n "$domain" && -d "$HYSTERIA2_LETSENCRYPT_LIVE_DIR/$domain" ]]; then
     echo "le ${domain}"
   else
     echo "selfsigned"
@@ -3380,10 +3389,34 @@ _hysteria2_install() {
     echo -e "${RED}✗ Некорректный порт: ${port}${NC}"
     return 1
   }
+  # Повреждённое состояние: реестр может ЛИБО утверждать installed (бинарник уже
+  # удалён), ЛИБО быть уже снятым, но осиротевший юнит продолжает жить и держать
+  # UDP-порт. Оба случая надо чинить, а не отвечать «already» или «порт занят»:
+  # на живом прогоне 2026-11-07 `hysteria2-install` в таком состоянии не
+  # восстанавливал ничего, а status честно писал binary=absent.
+  local _broken=""
+  [[ -x "$HYSTERIA2_BIN" ]] || _broken="бинарник"
+  [[ -f "$HYSTERIA2_UNIT_FILE" ]] || _broken="${_broken:+$_broken, }юнит"
+  [[ -s "$HYSTERIA2_DIR/server.yaml" ]] || _broken="${_broken:+$_broken, }конфиг"
   if _backend_installed hysteria2; then
-    echo -e "${YELLOW}ℹ Hysteria 2 уже установлена (версия $(_backend_field hysteria2 version)).${NC}"
-    echo -e "${YELLOW}  Для переустановки: сначала 'hysteria2-uninstall'.${NC}"
-    return 2
+    if [[ -z "$_broken" ]]; then
+      echo -e "${YELLOW}ℹ Hysteria 2 уже установлена (версия $(_backend_field hysteria2 version)).${NC}"
+      echo -e "${YELLOW}  Для переустановки: сначала 'hysteria2-uninstall'.${NC}"
+      return 2
+    fi
+    echo -e "${YELLOW}  ⚠ Реестр содержит Hysteria 2, но на диске нет: ${_broken}.${NC}" >&2
+    echo -e "${YELLOW}  → Восстанавливаю установку...${NC}" >&2
+    safe_jq_write --arg t hysteria2 'del(.[$t])' "$BACKENDS_REGISTRY_FILE" 2>/dev/null || true
+  fi
+  if [[ -n "$_broken" ]] || systemctl is-active --quiet "$HYSTERIA2_UNIT" 2>/dev/null; then
+    # Юнит живёт, пока жив процесс, даже если бинарник с диска удалён, и держит
+    # UDP-порт. Снимаем только СВОЙ юнит — иначе восстановление упирается в
+    # «UDP-порт 443 уже занят» (проверено на живом сервере).
+    if systemctl is-active --quiet "$HYSTERIA2_UNIT" 2>/dev/null; then
+      echo -e "${YELLOW}  → Останавливаю осиротевший ${HYSTERIA2_UNIT}...${NC}" >&2
+      systemctl stop "$HYSTERIA2_UNIT" >/dev/null 2>&1 || true
+      sleep 1
+    fi
   fi
   if _backend_port_busy_udp "$port"; then
     echo -e "${RED}✗ UDP-порт ${port} уже занят другим слушателем.${NC}"
@@ -3870,12 +3903,12 @@ AWG_USER_NAME="hysteria"          # отдельного пользовател�
 AWG_SUBNET_PREFIX="10.8.1"
 AWG_SUBNET="${AWG_SUBNET_PREFIX}.0/24"
 AWG_MTU=1280
-AWG_SYSCTL_FILE="/etc/sysctl.d/99-xrayebator-awg.conf"
+AWG_SYSCTL_FILE="${AWG_SYSCTL_FILE:-/etc/sysctl.d/99-xrayebator-awg.conf}"
 # Модуль amneziawg существует только в загруженном ядре. systemd-modules-load
 # читает этот файл на старте (до юнитов), поэтому он и есть условие того, что
-# после перезагрузки awg-quick@awg0 поднимется, а не упадёт с
+# после перегрузки awg-quick@awg0 поднимется, а не упадёт с
 # «Unknown device type» (живой дефект: ребут → интерфейса нет, туннель лежит).
-AWG_MODULES_LOAD_FILE="/etc/modules-load.d/xrayebator-awg.conf"
+AWG_MODULES_LOAD_FILE="${AWG_MODULES_LOAD_FILE:-/etc/modules-load.d/xrayebator-awg.conf}"
 AWG_REPO_MODULE="amnezia-vpn/amneziawg-linux-kernel-module"
 AWG_REPO_TOOLS="amnezia-vpn/amneziawg-tools"
 
@@ -3900,7 +3933,8 @@ _awg_gen_junk() {
   s4=$((RANDOM % 53 + 12))
   while (( s4 == s1 || s4 == s2 || s4 == s3 )); do s4=$((RANDOM % 53 + 12)); done
   h1=1; h2=2; h3=3; h4=4                               # WG-магия, дефолт Amnezia
-  hpk=$(openssl rand -base64 32 2>/dev/null) || return 1
+  # tr -d '\r\n': на Windows-хосте (Git Bash/MSYS) openssl печатает CRLF, а HeaderProtectionKey — base64, передаваемый клиенту как есть. Артефакт не должен просочиться в server-params.json и в клиентские .conf.
+  hpk=$(openssl rand -base64 32 2>/dev/null | tr -d '\r\n') || return 1
   jq -n --argjson jc "$jc" --argjson jmin "$jmin" --argjson jmax "$jmax" \
     --argjson s1 "$s1" --argjson s2 "$s2" --argjson s3 "$s3" --argjson s4 "$s4" \
     --argjson h1 "$h1" --argjson h2 "$h2" --argjson h3 "$h3" --argjson h4 "$h4" \
@@ -3924,7 +3958,8 @@ _awg_ensure_31_params() {
   local s1=$(jq -r '.S1 // 15' <<<"$junk") s2=$(jq -r '.S2 // 16' <<<"$junk")
   while (( s3 == s1 || s3 == s2 )); do s3=$((RANDOM % 53 + 12)); done
   while (( s4 == s1 || s4 == s2 || s4 == s3 )); do s4=$((RANDOM % 53 + 12)); done
-  hpk=$(openssl rand -base64 32 2>/dev/null) || return 1
+  # tr -d '\r\n': на Windows-хосте (Git Bash/MSYS) openssl печатает CRLF, а HeaderProtectionKey — base64, передаваемый клиенту как есть. Артефакт не должен просочиться в server-params.json и в клиентские .conf.
+  hpk=$(openssl rand -base64 32 2>/dev/null | tr -d '\r\n') || return 1
   jq -n --argjson j "$junk" --argjson s3 "$s3" --argjson s4 "$s4" --arg hpk "$hpk" \
     '$j + {S3: $s3, S4: $s4, HeaderProtectionKey: $hpk}'
 }

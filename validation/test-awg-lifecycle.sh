@@ -14,6 +14,12 @@ command -v openssl >/dev/null 2>&1 || fail "openssl required"
 
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
+# ВАЖНО про Windows-хост. MSYS (Git Bash) конвертирует аргументы, похожие на
+# POSIX-пути, в Windows-пути: base64-ключ, начинающийся с «/», приходит в jq.exe как
+# «C:/Program Files/Git/…». Продукт работает на Linux, CI — на Linux, поэтому лечить
+# это в xrayebator нечего; здесь достаточно знать, что на Git Bash часть seeded
+# прогонов может покраснеть от этой конверсии, а не от кода. Отключение конверсии
+# глобально ломает разбор реальных путей, поэтому не делаем его.
 export BACKENDS_ROOT="$TMP_ROOT/xrayebator-backends"
 export LOCK_FILE="$TMP_ROOT/xrayebator.lock"
 export PROFILES_DIR="$TMP_ROOT/profiles"
@@ -79,6 +85,10 @@ mkdir -p "$(dirname "$AWG_MODULES_LOAD_FILE")"
 for seed in {1..300}; do
   RANDOM=$seed
   junk=$(_awg_gen_junk)
+  # Спека проверяется на ЗНАЧЕНИИ, а не на байтах stdout: на Windows-хосте (Git
+  # Bash/MSYS) jq печатает CRLF, и `endswith("=")` видел «=\r» — тест краснел от
+  # платформы при корректном JSON. На Linux CRLF нет, поэтому CI это не ловил.
+  junk_canon=$(printf '%s' "$junk" | tr -d '\r')
   jq -e '
     .Jc == 5 and .Jmin == 10 and .Jmax == 50 and
     .S1 >= 12 and .S1 <= 150 and .S2 >= 12 and .S2 <= 150 and
@@ -87,7 +97,14 @@ for seed in {1..300}; do
     (.S1 + 56) != .S2 and
     .H1 == 1 and .H2 == 2 and .H3 == 3 and .H4 == 4 and
     (.HeaderProtectionKey | length == 44 and endswith("="))
-  ' <<<"$junk" >/dev/null || fail "junk/3.1 params out of spec (seed $seed): $junk"
+  ' <<<"$junk_canon" >/dev/null || fail "junk/3.1 params out of spec (seed $seed): $junk"
+  # И отдельно: значение HPK не должно содержать переводов строк/CR вовсе —
+  # иначе артефакт уедет в server-params.json и в клиентские .conf. Сам jq -r на
+  # Windows печатает CRLF, поэтому хвост снимаем перед сравнением.
+  hpk_val=$(jq -r '.HeaderProtectionKey' <<<"$junk_canon" | tr -d '\r\n')
+  [[ "$hpk_val" != *$'\n'* && "$hpk_val" != *$'\r'* ]] \
+    || fail "HPK contains line breaks (seed $seed): $hpk_val"
+  [[ "${#hpk_val}" -eq 44 ]] || fail "HPK length ${#hpk_val} != 44 (seed $seed)"
 done
 pass "junk = Amnezia defaults (Jc=5/Jmin=10/Jmax=50/H=1..4) + S1-S4 unique + HPK (300 seeded runs)"
 
@@ -96,10 +113,12 @@ old_junk=$(jq -c 'del(.S3, .S4, .HeaderProtectionKey)' <<<"$junk")
 for seed in {1..100}; do
   RANDOM=$seed
   upgraded=$(_awg_ensure_31_params "$old_junk") || fail "ensure_31_params"
+  # Тот же Windows-артефакт (jq печатает CRLF): проверяем значение, не байты.
+  upgraded_canon=$(printf '%s' "$upgraded" | tr -d '\r')
   jq -e 'has("S3") and has("S4") and (.S3 >= 12) and (.S3 <= 64) and
          (.S4 >= 12) and (.S4 <= 64) and
          ([.S1, .S2, .S3, .S4] | (length == ([unique[]] | length))) and
-         (.HeaderProtectionKey | length == 44)' <<<"$upgraded" >/dev/null \
+         (.HeaderProtectionKey | length == 44)' <<<"$upgraded_canon" >/dev/null \
     || fail "ensure_31_params did not add valid 3.1 fields (seed $seed): $upgraded"
 done
 pass "_awg_ensure_31_params upgrades legacy params with S3/S4 (12..64, unique) + HPK"
@@ -282,14 +301,18 @@ pass "modules-load.d written only with a live module (reboot-safe)"
 # ручной сборки, поэтому фолбэк-сборка не запускалась, а установка падала на
 # «модуль не загрузился» (живой случай: ядро 5.15.0-177 → -198).
 export AWG_MODULES_ROOT="$TMP_ROOT/modules"
-mkdir -p "$AWG_MODULES_ROOT/$(uname -r)/extra" "$AWG_MODULES_ROOT/5.15.0-177-generic/extra"
-touch "$AWG_MODULES_ROOT/5.15.0-177-generic/extra/amneziawg.ko"
+# «Чужое» ядро не хардкодим: на живом сервере с 5.15.0-177 тест падал, потому что
+# ровно это ядро и было текущим, и проверка «модуль для другого ядра» становилась
+# проверкой «модуль для этого же». Имя синтетическое и заведомо не совпадает с uname -r.
+FOREIGN_KERNEL="9.99.0-xrayebator-test-foreign"
+mkdir -p "$AWG_MODULES_ROOT/$(uname -r)/extra" "$AWG_MODULES_ROOT/$FOREIGN_KERNEL/extra"
+touch "$AWG_MODULES_ROOT/$FOREIGN_KERNEL/extra/amneziawg.ko"
 _awg_module_for_kernel && fail "_awg_module_for_kernel must be false for a foreign kernel"
-[[ "$(_awg_module_kernels)" == "5.15.0-177-generic " ]] \
+[[ "$(_awg_module_kernels)" == "$FOREIGN_KERNEL " ]] \
   || fail "kernel list mismatch: '$(_awg_module_kernels)'"
 export FAKE_LSMOD_WITH_MODULE=""
 diag=$(_awg_verify_module 2>&1 >/dev/null) && fail "verify must fail without a live module"
-[[ "$diag" == *"5.15.0-177-generic"* ]] || fail "kernel-mismatch diagnostic missing: $diag"
+[[ "$diag" == *"$FOREIGN_KERNEL"* ]] || fail "kernel-mismatch diagnostic missing: $diag"
 touch "$AWG_MODULES_ROOT/$(uname -r)/extra/amneziawg.ko"
 _awg_module_for_kernel || fail "_awg_module_for_kernel must see the module of the running kernel"
 export FAKE_LSMOD_WITH_MODULE=1
@@ -341,8 +364,11 @@ grep -Fq 'backend_status_menu() {' xrayebator || fail "backend_status_menu defin
 grep -Fq '_backend_apply_profile_lifecycle "$name" revoked' xrayebator || fail "revoke lifecycle wiring missing"
 grep -Fq '"$(basename "$profile_file" .json)" expired' xrayebator || fail "expire lifecycle wiring missing"
 grep -Fq '    backend-start)' xrayebator || fail "dispatch backend-start missing"
-grep -Fq 'AWG_MODULES_LOAD_FILE="/etc/modules-load.d/xrayebator-awg.conf"' xrayebator \
+grep -Fq 'AWG_MODULES_LOAD_FILE="${AWG_MODULES_LOAD_FILE:-/etc/modules-load.d/xrayebator-awg.conf}"' xrayebator \
   || fail "modules-load.d path constant missing"
+# Переопределяемый префикс не должен поменять продакшн-значение по умолчанию.
+grep -Fq '/etc/modules-load.d/xrayebator-awg.conf' xrayebator \
+  || fail "modules-load.d default path vanished"
 grep -Fq '_awg_module_for_kernel' xrayebator || fail "running-kernel module check missing"
 grep -Fq 'dkms autoinstall' xrayebator || fail "DKMS rebuild step missing in install path"
 grep -Fq '_migrate_awg_module_2026() {' xrayebator || fail "awg module migration missing"
