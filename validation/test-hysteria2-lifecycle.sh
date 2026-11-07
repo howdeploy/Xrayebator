@@ -20,6 +20,18 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 export BACKENDS_ROOT="$TMP_ROOT/xrayebator-backends"
 export LOCK_FILE="$TMP_ROOT/xrayebator.lock"
 export PROFILES_DIR="$TMP_ROOT/profiles"
+# Системные пути бэкенда — в tmp: на живом сервере реальный юнит/хук существуют, и
+# проверки «бэкенд не установлен → rc=2» краснели от состояния машины, а не от кода.
+export HYSTERIA2_UNIT_FILE="$TMP_ROOT/systemd/hysteria-server.service"
+export HYSTERIA2_SYSCTL_FILE="$TMP_ROOT/sysctl/99-xrayebator-hysteria.conf"
+export HYSTERIA2_CERTBOT_HOOK="$TMP_ROOT/renewal-hooks/deploy/xrayebator-hysteria.sh"
+# Бинарник тоже в tmp: `_hysteria2_uninstall` делает `rm -f "$HYSTERIA2_BIN"`, и без
+# этого override прогон теста на живом сервере УДАЛЯЛ настоящий /usr/local/bin/hysteria
+# (живой инцидент 2026-11-07: реестр говорил installed, бинарника не было,
+# hysteria2-install отвечал already). Тест не имеет права трогать реальный файл.
+export HYSTERIA2_BIN="$TMP_ROOT/bin/hysteria"
+mkdir -p "$(dirname "$HYSTERIA2_UNIT_FILE")" "$(dirname "$HYSTERIA2_SYSCTL_FILE")" \
+  "$(dirname "$HYSTERIA2_CERTBOT_HOOK")"
 mkdir -p "$PROFILES_DIR"
 
 # Фейковый systemctl: CI/WSL без systemd — is-active должен говорить active,
@@ -67,7 +79,21 @@ arch=$(_hysteria2_asset_arch) || fail "asset arch"
 case "$arch" in amd64|arm64|arm|386) ;; *) fail "unexpected arch: $arch" ;; esac
 pass "asset arch resolves: $arch"
 
-[[ "$(_hysteria2_tls_mode_detect)" == "selfsigned" ]] || fail "tls detect expected selfsigned"
+# Детект TLS проверяем на синтетических путях: иначе тест зависел от хоста — на
+# сервере с живым Let's Encrypt он краснел («le <ip>» вместо «selfsigned»), хотя
+# код прав. Сначала без домена вовсе, затем с доменом без сертификата, затем с
+# сертификатом — три исхода детектора.
+export HYSTERIA2_SUBSCRIPTION_DOMAIN_FILE="$TMP_ROOT/.subscription_domain"
+export HYSTERIA2_LETSENCRYPT_LIVE_DIR="$TMP_ROOT/letsencrypt"
+rm -f "$HYSTERIA2_SUBSCRIPTION_DOMAIN_FILE"
+[[ "$(_hysteria2_tls_mode_detect)" == "selfsigned" ]] \
+  || fail "tls detect without domain: $(_hysteria2_tls_mode_detect)"
+printf 'sub.example.com' > "$HYSTERIA2_SUBSCRIPTION_DOMAIN_FILE"
+[[ "$(_hysteria2_tls_mode_detect)" == "selfsigned" ]] \
+  || fail "tls detect with domain but no cert: $(_hysteria2_tls_mode_detect)"
+mkdir -p "$HYSTERIA2_LETSENCRYPT_LIVE_DIR/sub.example.com"
+[[ "$(_hysteria2_tls_mode_detect)" == "le sub.example.com" ]] \
+  || fail "tls detect with live cert: $(_hysteria2_tls_mode_detect)"
 pass "tls mode defaults to selfsigned without subscription markers"
 
 # ── Реестр + статус ──
@@ -109,9 +135,27 @@ grep -q "alice: $pw1" "$HYSTERIA2_DIR/server.yaml" 2>/dev/null \
 pass "grant_profile writes password to profile and regenerates users map"
 
 link=$(_hysteria2_profile_link_pure "$PROFILES_DIR/alice.json") || fail "link pure"
+# Метка ссылки включает страну, если на хосте есть geo-маркер (.server_country):
+# на живом сервере тест падал, потому что ожидал голое имя. Изолируем маркер и
+# проверяем ОБА варианта — без него и с ним (иначе один из путей не покрыт).
+export SERVER_COUNTRY_FILE="$TMP_ROOT/.server_country"
+rm -f "$SERVER_COUNTRY_FILE"
+link=$(_hysteria2_profile_link_pure "$PROFILES_DIR/alice.json") || fail "link pure (no country)"
 [[ "$link" == "hysteria2://alice:${pw1}@203.0.113.10:443/?insecure=1#alice" ]] \
-  || fail "link shape: $link"
-pass "pure link: selfsigned -> insecure=1, no sni param, name fragment"
+  || fail "link shape without country: $link"
+printf 'NL|Netherlands|Kerkrade' > "$SERVER_COUNTRY_FILE"
+link_geo=$(_hysteria2_profile_link_pure "$PROFILES_DIR/alice.json") || fail "link pure (country)"
+case "$link_geo" in
+  "hysteria2://alice:${pw1}@203.0.113.10:443/?insecure=1#"*"Netherlands"*"alice") ;;
+  *) fail "link shape with country: $link_geo" ;;
+esac
+# Фрагмент обязан быть URL-encoded: юникод-флаг не должен попасть сырым.
+case "$link_geo" in
+  *"%"*) ;;
+  *) fail "link fragment not URL-encoded: $link_geo" ;;
+esac
+rm -f "$SERVER_COUNTRY_FILE"
+pass "pure link: selfsigned -> insecure=1, no sni param, name fragment (with and without country)"
 
 # revoked: ротация пароля
 _hysteria2_on_profile_event alice revoked || fail "event revoked"
