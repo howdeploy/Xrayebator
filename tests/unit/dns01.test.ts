@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   DNS01_PROVIDERS,
   dns01CliArgs,
+  dns01SecretFlag,
+  dns01SecretPayload,
   isDns01Ready,
   isValidAwsKeyId,
   isValidAwsSecret,
@@ -68,24 +70,20 @@ describe('DNS-01 validation (mirrors the server)', () => {
 })
 
 describe('DNS-01 CLI arguments', () => {
-  it('passes --domain/--provider/--token for cloudflare', () => {
-    expect(
-      dns01CliArgs({
-        domain: ' sub.example.com ',
-        provider: 'cloudflare',
-        token: 'abcdefghijklmnopqrst'
-      })
-    ).toEqual([
-      '--domain',
-      'sub.example.com',
-      '--provider',
-      'cloudflare',
-      '--token',
-      'abcdefghijklmnopqrst'
-    ])
+  it('never puts the cloudflare token into argv', () => {
+    // Токен в аргументах виден в /proc/<pid>/cmdline всем локальным пользователям,
+    // а серверный выпуск сертификата идёт десятки секунд — поэтому креды уходят
+    // отдельным файлом 0600 (dns01SecretPayload + dns01SecretFlag).
+    const args = dns01CliArgs({
+      domain: ' sub.example.com ',
+      provider: 'cloudflare',
+      token: 'abcdefghijklmnopqrst'
+    })
+    expect(args).toEqual(['--domain', 'sub.example.com', '--provider', 'cloudflare'])
+    expect(args.join(' ')).not.toContain('abcdefghijklmnopqrst')
   })
 
-  it('passes AWS credentials for route53 and never a cloudflare token', () => {
+  it('passes no AWS credentials in argv either', () => {
     const args = dns01CliArgs({
       domain: 'sub.example.com',
       provider: 'route53',
@@ -93,33 +91,37 @@ describe('DNS-01 CLI arguments', () => {
       awsKeyId: 'AKIAIOSFODNN7EXAMPLE',
       awsSecret: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'
     })
-    expect(args).toEqual([
-      '--domain',
-      'sub.example.com',
-      '--provider',
-      'route53',
-      '--aws-access-key-id',
-      'AKIAIOSFODNN7EXAMPLE',
-      '--aws-secret-access-key',
-      'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'
-    ])
-    expect(args.join(' ')).not.toContain('unused-token-value')
+    expect(args).toEqual(['--domain', 'sub.example.com', '--provider', 'route53'])
+    expect(args.join(' ')).not.toContain('AKIA')
+    expect(args.join(' ')).not.toContain('wJalrXUtnFEMI')
+  })
+
+  it('builds the secret payload the server parses (key=value)', () => {
+    expect(
+      dns01SecretPayload({ domain: 'sub.example.com', provider: 'cloudflare', token: ' tok-123 ' })
+    ).toBe('token=tok-123\n')
+    expect(
+      dns01SecretPayload({
+        domain: 'sub.example.com',
+        provider: 'route53',
+        awsKeyId: 'AKIAIOSFODNN7EXAMPLE',
+        awsSecret: 'wJalrXUtnFEMI/K7MDENG'
+      })
+    ).toBe('aws_access_key_id=AKIAIOSFODNN7EXAMPLE\naws_secret_access_key=wJalrXUtnFEMI/K7MDENG\n')
+  })
+
+  it('names the server flag, including the quickstart prefix', () => {
+    expect(dns01SecretFlag()).toBe('--secret-file')
+    expect(dns01SecretFlag('--dns01-')).toBe('--dns01-secret-file')
   })
 
   it('uses the quickstart prefix for deploy-time DNS-01', () => {
-    expect(
-      dns01CliArgs(
-        { domain: 'sub.example.com', provider: 'cloudflare', token: 'abcdefghijklmnopqrst' },
-        '--dns01-'
-      )
-    ).toEqual([
-      '--dns01-domain',
-      'sub.example.com',
-      '--dns01-provider',
-      'cloudflare',
-      '--dns01-token',
-      'abcdefghijklmnopqrst'
-    ])
+    const args = dns01CliArgs(
+      { domain: 'sub.example.com', provider: 'cloudflare', token: 'abcdefghijklmnopqrst' },
+      '--dns01-'
+    )
+    expect(args).toEqual(['--dns01-domain', 'sub.example.com', '--dns01-provider', 'cloudflare'])
+    expect(args.join(' ')).not.toContain('abcdefghijklmnopqrst')
   })
 })
 

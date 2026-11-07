@@ -112,7 +112,10 @@ grep -q '_channel_probe "\$socks"' <<<"$block" || fail "channel-test не выз
 # fd 3 принадлежит channel_test_command (exec 3>&1 … exec 1>&3): ни один хелпер не
 # смеет его закрывать. Живой баг: _channel_wait_socks делала `exec 3>&-` в основном
 # шелле, последующий `exec 1>&3` не срабатывал, и итоговый JSON уезжал в stderr.
-helpers=$(awk '/^# ─+ channel-test/,/^channel_test_command\(\) \{/' xrayebator)
+# Якорь — ASCII-строка использования под рамкой, а не сама рамка: шаблон с «─»
+# не матчится ни mawk (Debian/Ubuntu по умолчанию, побайтовый regex), ни gawk в
+# байтовой локали, поэтому тест краснел от окружения, а не от кода.
+helpers=$(awk '/^# xrayebator channel-test/,/^channel_test_command\(\) \{/' xrayebator)
 [[ -n "$helpers" ]] || fail "не найден блок хелперов channel-test"
 # Комментарии не код: в них эта история описана словами.
 if grep -vE '^[[:space:]]*#' <<<"$helpers" | grep -qE 'exec 3[<>]'; then

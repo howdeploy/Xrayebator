@@ -104,7 +104,7 @@ Xrayebator 不会更改主机的 TCP 拥塞控制算法，也不会写入或应�
 | `sudo xrayebator update <branch>` | 从规范 raw 仓库分支 self-update 管理器，继续使用新脚本，然后更新 Xray-core；分支写入 `.current_branch` 固定，供后续 GUI 更新使用 |
 | `sudo xrayebator probe-test` | 更换 SNI 前，从 VPS 检查其可达性 |
 | `sudo xrayebator channel-test [--name 名称] [--url URL] [--timeout S] [--transport T]` | 检查配置档的通道**是否真的可用**：对每条线路都启动一个本地 Xray 客户端（回环地址上的 SOCKS5），使用订阅链接中的参数，并通过它发出一个真实的互联网请求；JSON 包含 `working`/`checked`，以及每条线路的 `ok`、`http`、`ms`、`pq` 和客户端日志尾部。**不涉及 Let's Encrypt**——Reality 与 VLESS Encryption 自成一体，因此在 `http_tls` 订阅上、在任何证书签发之前都能工作，PQ 线路同样会被检查。实机运行：8/8 条线路，152–252 ms |
-| `sudo xrayebator quickstart --email <邮箱>` | 桌面 GUI 使用的一次性部署路径：执行广泛设置/迁移，在 `8443` 配置 IP-TLS endpoint，创建带 `schema_version: 3` 和 7 条线路的标准 HAPP 配置档；输出带 `subscription_url` 的 JSON。非交互迁移是 best-effort，请检查最终配置档与服务。额外标志：`--pq` —— 为配置档在 tcp 上添加 PQ 线路（默认**关闭**：不具备 ML-KEM 的客户端连接不上 PQ 端口；结果见 JSON 的 `pq_route`），`--without-pq` —— 显式关闭，`--dns01-domain D --dns01-provider cloudflare\|route53 (--dns01-token T \| --dns01-aws-access-key-id K --dns01-aws-secret-access-key S)` —— 部署期的 DNS-01 回退。DNS-01 参数在任何系统改动**之前**校验：参数集合不完整会返回 `{"ok":false,…}` 且不做任何改动 |
+| `sudo xrayebator quickstart --email <邮箱>` | 桌面 GUI 使用的一次性部署路径：执行广泛设置/迁移，在 `8443` 配置 IP-TLS endpoint，创建带 `schema_version: 3` 和 7 条线路的标准 HAPP 配置档；输出带 `subscription_url` 的 JSON。非交互迁移是 best-effort，请检查最终配置档与服务。额外标志：`--pq` —— 为配置档在 tcp 上添加 PQ 线路（默认**关闭**：不具备 ML-KEM 的客户端连接不上 PQ 端口；结果见 JSON 的 `pq_route`），`--without-pq` —— 显式关闭，`--dns01-domain D --dns01-provider cloudflare\|route53 (--dns01-secret-file F \| --dns01-secret-stdin)` —— 凭据以 `0600` 文件或 stdin 传入（在 `/proc` 中不可见），`--dns01-token T \| --dns01-aws-access-key-id K --dns01-aws-secret-access-key S` —— 兼容但在 `ps` 中可见的写法 —— 部署期的 DNS-01 回退。DNS-01 参数在任何系统改动**之前**校验：参数集合不完整会返回 `{"ok":false,…}` 且不做任何改动 |
 | `sudo xrayebator quickstart --without-email` | 相同的一次性部署路径，但不提供 ACME 联系邮箱；Certbot 使用 `--register-unsafely-without-email`，因此没有续期通知或邮箱恢复。若 Let's Encrypt 无法通过 http-01 验证 IP（validation 主机被服务商在 80 端口上游拦截），部署不会失败而是降级为 `http_tls`：订阅以 HTTP 发布，JSON 携带 `degraded:true`，解除 80 端口封锁后重新部署即恢复 HTTPS |
 | `sudo xrayebator inspect --json` | GUI 导入时使用的只读安装检查：返回 Xray、配置档和订阅标记状态；不会安装、迁移或修改配置 |
 | `sudo xrayebator happ-setup` | 已有安装的精简 HAPP 路径：确保订阅服务和可用的多线路配置档；缺少订阅域或端口标记时，会先验证 `8443` 的产品 IP-TLS endpoint，否则失败 |
@@ -143,11 +143,11 @@ Xrayebator 不会更改主机的 TCP 拥塞控制算法，也不会写入或应�
 | `sudo xrayebator awg-grant --name N` | 为配置档签发 peer（密钥对 + 预共享密钥 + `10.8.1.x` 地址，存入 `.backends.awg`）；重新生成 `awg0.conf`；JSON |
 | `sudo xrayebator awg-conf --name N` | 输出配置档 peer 的客户端 `.conf`（JSON `{ok, name, conf}`）——全隧道 AllowedIPs、服务端 junk 参数、endpoint；导入 AmneziaWG/AmneziaVPN 客户端 |
 | `sudo xrayebator awg-31 --on\|--off` | 切换 AWG 3.1 配置格式（`HeaderProtectionKey`、`RandomTrailers`、`S3`/`S4`）；新安装默认开启 3.1，切换会在原地补齐缺失的服务端参数，警告所有已签发的客户端 `.conf` 必须重新下载（AmneziaVPN ≥ 5.0.1.5），并带回滚地重新生成接口 |
-| `sudo xrayebator dns01-setup --domain sub.example.com --provider cloudflare\|route53 [--port P] [--staging]` | 通过 DNS-01 实现按域名的 HTTPS 订阅：不需要 80 端口，证书由 TXT 记录验证。写入 `0600` 凭据、用带 deploy-hook 的 certbot 签发证书、生成不含 `listen 80` 的 nginx vhost，并把标记切换为 `domain_tls`；打印 JSON。端口默认沿用当前订阅端口（否则 `443`），因此订阅 URL 的端口不变；`--staging` 在 Let's Encrypt 测试环境签发（`--test-cert`，不消耗生产配额）并返回 `staging:true`——客户端不信任这种证书 |
-| `sudo xrayebator dns01-test --domain sub.example.com --provider cloudflare\|route53 [--token T \| --aws-*] [--email E\|--without-email]` | 在**不改动订阅、不消耗生产配额**的前提下验证域名与 DNS 服务商令牌：仅在测试环境签发，使用独立的证书 lineage，不带 deploy-hook，也不改 nginx/标记/防火墙。JSON 返回签发者、证书到期时间、需要核对的 `_acme-challenge.<domain>` TXT 记录，失败时返回解析后的 certbot 原因 |
+| `sudo xrayebator dns01-setup --domain sub.example.com --provider cloudflare\|route53 [--port P] [--staging] [--secret-file F \| --secret-stdin]` | 通过 DNS-01 实现按域名的 HTTPS 订阅：不需要 80 端口，证书由 TXT 记录验证。写入 `0600` 凭据、用带 deploy-hook 的 certbot 签发证书、生成不含 `listen 80` 的 nginx vhost，并把标记切换为 `domain_tls`；打印 JSON。端口默认沿用当前订阅端口（否则 `443`），因此订阅 URL 的端口不变；`--staging` 在 Let's Encrypt 测试环境签发（`--test-cert`，不消耗生产配额）并返回 `staging:true`——客户端不信任这种证书 |
+| `sudo xrayebator dns01-test --domain sub.example.com --provider cloudflare\|route53 [--secret-file F \| --secret-stdin \| --token T \| --aws-*] [--email E\|--without-email]` | 在**不改动订阅、不消耗生产配额**的前提下验证域名与 DNS 服务商令牌：仅在测试环境签发，使用独立的证书 lineage，不带 deploy-hook，也不改 nginx/标记/防火墙。JSON 返回签发者、证书到期时间、需要核对的 `_acme-challenge.<domain>` TXT 记录，失败时返回解析后的 certbot 原因 |
 | `sudo xrayebator dns01-status` | DNS-01 状态：提供商、模式、域名、端口、凭据是否存在、证书剩余天数、deploy-hook 是否存在（certbot 记录为 `renew_hook`）以及订阅是否使用测试证书；打印 JSON |
-| `sudo xrayebator repair-dns01 --domain sub.example.com --provider cloudflare\|route53 [--token T \| --aws-*] [--email E] [--port P]` | 把已降级（`http_tls`）的订阅改为 DNS-01：同样通过 TXT 记录签发证书，vhost 只按 TLS server 重新渲染，标记变为 `domain_tls`。幂等：如果订阅已在 HTTPS（`ip_tls`/`domain_tls`）上，则返回 `{"ok":true,"skipped":true}` 且不做任何事；打印 JSON |
-| `sudo xrayebator alerts-setup --token T --chat-id C` | 接入 Telegram 通知：用 `getMe` 校验令牌、发送一条测试消息，并且**只有在投递成功之后**才保存 `alerts.json`（0600）并启用 `xrayebator-monitor.timer`；打印 JSON |
+| `sudo xrayebator repair-dns01 --domain sub.example.com --provider cloudflare\|route53 [--secret-file F \| --secret-stdin \| --token T \| --aws-*] [--email E] [--port P]` | 把已降级（`http_tls`）的订阅改为 DNS-01：同样通过 TXT 记录签发证书，vhost 只按 TLS server 重新渲染，标记变为 `domain_tls`。幂等：如果订阅已在 HTTPS（`ip_tls`/`domain_tls`）上，则返回 `{"ok":true,"skipped":true}` 且不做任何事；打印 JSON |
+| `sudo xrayebator alerts-setup [--token T \| --secret-file F \| --secret-stdin] --chat-id C` | 接入 Telegram 通知：用 `getMe` 校验令牌、发送一条测试消息，并且**只有在投递成功之后**才保存 `alerts.json`（0600）并启用 `xrayebator-monitor.timer`；打印 JSON |
 | `sudo xrayebator alerts-status` | 监控状态：配置、定时器、上次检查时间、事件以及最近一次 SNI 探测结果（不显示机器人令牌）；打印 JSON |
 | `sudo xrayebator alerts-test` | 向已配置的会话发送测试消息（验证投递）；打印 JSON |
 | `sudo xrayebator alerts-enable\|alerts-disable` | 启用或停用投递而不删除配置（不丢失令牌的急停开关）；打印 JSON |
@@ -478,6 +478,10 @@ GUI 的配置档卡片上会显示「已用 / 限额」标签（达到 80% 变�
 （群组的 chat_id 为负数）：
 
 ```bash
+# 令牌不进入命令行（本机任何用户都能在 /proc 中读到）：
+printf 'token=%s\n' "$TG_TOKEN" | sudo xrayebator alerts-setup --secret-stdin \
+  --chat-id -1001234567890
+# 兼容写法，但会出现在 `ps` 中：
 sudo xrayebator alerts-setup --token 123456:AA... --chat-id -1001234567890
 sudo xrayebator alerts-status                # 定时器、上次检查、事件、SNI
 sudo xrayebator alerts-test                  # 测试消息
@@ -532,13 +536,17 @@ PQ 端口不能与普通线路共用客户端。
 `https://sub.example.com/sub/<token>`。
 
 ```bash
-# Cloudflare：具有该区域 DNS:Edit 权限的 API token
+# Cloudflare：具有该区域 DNS:Edit 权限的 API token。令牌以 0600 文件（或 stdin）
+# 传入，而不是作为参数：签发要持续数十秒，而进程参数对本机所有用户可读（见 security.md）。
+sudo install -m 600 /dev/null /root/.cf
+printf 'token=%s\n' "$CF_TOKEN" | sudo tee /root/.cf >/dev/null
 sudo xrayebator dns01-setup --domain sub.example.com --provider cloudflare \
-  --token CF_API_TOKEN --email admin@example.com
+  --secret-file /root/.cf --email admin@example.com
 
 # Route53：具有 Route53:ChangeResourceRecordSets 权限的密钥
-sudo xrayebator dns01-setup --domain sub.example.com --provider route53 \
-  --aws-access-key-id AKIA... --aws-secret-access-key ... --without-email
+printf 'aws_access_key_id=%s\naws_secret_access_key=%s\n' "$AWS_KEY" "$AWS_SECRET" \
+  | sudo xrayebator dns01-setup --domain sub.example.com --provider route53 \
+      --secret-stdin --without-email
 
 sudo xrayebator dns01-status   # 提供商、域名、端口、证书有效期、deploy-hook
 ```

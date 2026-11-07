@@ -36,7 +36,7 @@ Linux-машину. Проверки lifecycle должны также убеж�
 
 ## Что покрывают тесты
 
-В `validation/` ровно 47 скриптов. Запускайте каждый `validation/test-*.sh`; текущий набор:
+В `validation/` ровно 49 скриптов. Запускайте каждый `validation/test-*.sh`; текущий набор:
 
 | Тест | Что проверяет |
 |---|---|
@@ -51,6 +51,7 @@ Linux-машину. Проверки lifecycle должны также убеж�
 | `test-sni-reachability.sh` | Выбор дефолтного SNI: недоступный кандидат заменяется доступным, полная недоступность оставляет прежний дефолт, одна проба на SNI за запуск, строгий критерий TLS 1.3 + HTTP проверяется на реальном выводе `openssl`, порядок кандидатов (голова списка, затем глобальные фолбэки) и обязательный второй замер |
 | `test-dns01-certbot.sh` | DNS-01 (Cloudflare/Route53): валидацию домена (IP и локальные имена отклоняются) и провайдера, сборку аргументов certbot (плагин, credentials, propagation, deploy-hook, `-m` или регистрация без email), запись credentials `0600` с содержимым по провайдеру, nginx-vhost **без** `listen 80` и ACME-location, CLI-ошибки без записи на диск и проводку (диспатчер, пункт меню, пакеты плагинов, UFW-порт, маркеры `domain_tls`, manifest certbot, cleanup в uninstall) |
 | `test-bbr-removal-migration.sh` | Безопасное удаление удалённого BBR/TCP tuning на всех путях |
+| `test-certbot-snap-ip.sh` | Certbot для IP-сертификатов: единственная реализация `_ensure_certbot_ip_tls` (в quickstart нет своего `snap install`), ожидание готовности snapd (`snap wait system seed.loaded`), повтор установки, проверка результата по фактическим флагам бинарника, вывод snap в лог вместо stdout; функционально — `_certbot_supports_ip_address` отличает certbot 5.4+ от apt-версии и от бинарника без `--preferred-profile` |
 | `test-profile-revoke-expire-cli.sh` | CLI `profile-revoke` (только токен / ротация uuid с сохранением чужих клиентов на общем порту) и сроки профилей (отключение, возврат из снимка, rebuild без снимка, идемпотентный `expire-check`) |
 | `test-cascade-routing.sh` | Cascade routing |
 | `test-cascade-upstream-import.sh` | Импорт upstream каскада из ссылки VLESS |
@@ -69,6 +70,7 @@ Linux-машину. Проверки lifecycle должны также убеж�
 | `test-kernel-guard.sh` | Защита ядра от CVE-2026-98432: sysctl-файл, выключающий MPTCP, nft-правило дропа входящих IPv4-пакетов с IP-опциями (хук `input`, приоритет `-310`, дословно правило Ubuntu), юнит автозагрузки, который **не** делает `flush ruleset` (иначе при загрузке снесло бы правила UFW), определение «ядро новее уже установлено, но не загружено» без захардкоженных таблиц версий, сравнение версий Xray-core (ведущий ноль читается как десятичный), включение/выключение на подставных `nft`/`sysctl`, JSON-контракт CLI и проводка в меню/диспетчер/миграцию/uninstall |
 | `test-freedom-sockopt.sh` | `freedom.domainStrategy` → `streamSettings.sockopt.domainStrategy` (26.10.31 помечает старое поле deprecated и «will be removed»): значение переносится, legacy-ключ удаляется, уже заданный sockopt побеждает, второй прогон — no-op (Xray не перезапускается зря), а шаблон `install.sh` пишет только новую форму |
 | `test-awg-ppa-repo.sh` | PPA `amnezia/ppa` ставится только вместе с ключом подписи: строка `signed-by`, порядок «ключ до репозитория», отсутствие репозитория без ключа, ремонт уже испорченного неподписанного репозитория, идемпотентность по маркеру и проводка ремонта в `main_menu`/`quickstart`/`happ-setup` |
+| `test-secret-argv.sh` | Секреты не попадают в аргументы процессов (`/proc/<pid>/cmdline` читают все пользователи хоста, `/proc/<pid>/environ` — только владелец и root): подставной `curl` доказывает, что токен бота и `sub_token` приходят stdin-конфигом (`-K -`) и отсутствуют в `argv`; разбор пейлоада `--secret-file`/`--secret-stdin` (одиночный токен, AWS-пара, приоритет явного флага, мусор), отказ файлу шире `0600`, удаление файла после чтения, предупреждение `--token` в stderr при чистом stdout-JSON и чтение `$ENV.XRAYEBATOR_JQ_SECRET` в jq |
 | `test-awg-lifecycle.sh` | Бэкенд AmneziaWG: junk-диалект по умолчанию Amnezia (Jc=5, Jmin=10, Jmax=50, H1–H4=1..4, S1–S4 уникальные), генерация ключей, рендер серверного конфига (PostUp MASQUERADE, без peer-ов при установке), аллокация адресов, содержимое клиентского `.conf`, события revoke/expire/restore, реген deleted при заранее удалённом файле профиля, created = no-op (без авто-выдачи), диспетчер CLI |
 | `test-main-readiness-regressions.sh` | Регрессии readyness после аудита: certbot-manifest, UFW manifest, nginx rollback, привилегии, SSH-порт |
 | `test-multiroute-argument-preservation.sh` | Сохранение transport-аргументов multiroute-профиля |
@@ -90,6 +92,12 @@ Linux-машину. Проверки lifecycle должны также убеж�
 
 > Статические тесты не заменяют проверку на disposable VPS: создание и удаление профиля, валидацию
 > конфига, рестарт сервисов, rollback, поведение firewall и реальное подключение клиента.
+>
+> Сам набор не герметичен — гоняйте его на одноразовом хосте или в контейнере. Два примера с прогона
+> на живом сервере: `test-ssh-protect.sh` проходит настоящий путь `--disable`, то есть гасит и
+> отключает `fail2ban` (после прогона включите обратно), а `test-hysteria2-lifecycle.sh` ждёт хост
+> без сертификата Let's Encrypt на подписку — при живом серте `_hysteria2_tls_mode_detect` честно
+> отвечает `le <domain>`, тогда как тест ожидает `selfsigned`.
 
 ## Проверка lifecycle и HAPP-эндпоинта
 
@@ -210,7 +218,7 @@ npm run build
 
 - `.github/workflows/ci-linux.yml` — гейт Bash-ядра на `ubuntu-24.04`: ставит `jq`, `uuid-runtime`
   и `ripgrep`, прогоняет все четыре проверки синтаксиса Bash, затем запускает каждый
-  `validation/test-*.sh` (на момент написания — 45).
+  `validation/test-*.sh` (на момент написания — 49).
 - `.github/workflows/release.yml` — активный путь релиза Electron для тегов `v*` и ручных запусков.
   Сначала job `preflight` проверяет, что файл релизных заметок `docs/releases/<tag>.en.md` существует
   и что секрет репозитория `AP3X0` (если задан) действительно может создавать релизы — проверка идёт

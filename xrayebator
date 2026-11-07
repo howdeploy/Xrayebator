@@ -83,6 +83,103 @@ QS_VHOST_BACKUP="$NGINX_SITES_AVAILABLE/xrayebator-sub.xrayebator.bak"
 QS_DEFAULT_REMOVED=false
 QS_DEFAULT_BACKUP_CREATED=false
 
+# --- Секреты и /proc -------------------------------------------------------
+# /proc/<pid>/cmdline читается ЛЮБЫМ пользователем хоста (права 0444), а
+# /proc/<pid>/environ — только владельцем процесса и root (0400). Поэтому всё, что
+# является секретом (токен бота, DNS-токен, sub_token, ключи бэкендов), передаётся
+# не аргументом, а потоком: argv `curl` с токеном в URL видел бы, например,
+# непривилегированный пользователь `xray`, под которым работает сам Xray.
+# `curl -K -` читает конфиг из stdin; строка `url = "…"` кладёт адрес туда же,
+# где он и был нужен, не оставляя его в командной строке.
+_curl_secret_url() {
+  local url="$1"; shift
+  # Конфиг-парсер curl: экранируются обратный слэш и двойная кавычка.
+  url="${url//\\/\\\\}"
+  url="${url//\"/\\\"}"
+  printf 'url = "%s"\n' "$url" | curl "$@" -K -
+}
+
+# Секрет, который нужен самой команде (DNS-токен, ключи AWS, токен бота), тоже не
+# идёт в argv: `xrayebator dns01-setup --token T` живёт в /proc все 30+ секунд
+# ожидания DNS-распространения, пока certbot выпускает сертификат. Вместо аргумента
+# креды читаются из stdin (`--secret-stdin`) или из файла 0600 (`--secret-file`),
+# который удаляется сразу после чтения.
+#
+# Формат пейлоада — строки «key=value»: token=…, aws_access_key_id=…,
+# aws_secret_access_key=…; одиночная строка без «=» считается токеном.
+SECRET_ERROR=""
+# Чистая часть: раскладывает пейлоад по переменным вызывающего (имена строками).
+# Заполняются только ПУСТЫЕ переменные — явный флаг сильнее файла. Возврат 1 —
+# в пейлоаде нет ни одного известного ключа.
+_secret_payload_apply() {
+  local payload="$1" tvar="${2:-}" kvar="${3:-}" svar="${4:-}" line k v got=1
+  while IFS= read -r line; do
+    line="${line%$'\r'}"
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    if [[ "$line" == *=* ]]; then
+      k="${line%%=*}"; v="${line#*=}"
+      k="${k,,}"; k="${k//[[:space:]]/}"; k="${k//-/_}"
+    else
+      k="token"; v="$line"
+    fi
+    case "$k" in
+      token|api_token|dns_cloudflare_api_token|bot_token|telegram_bot_token)
+        got=0
+        if [[ -n "$tvar" && -z "${!tvar}" ]]; then printf -v "$tvar" '%s' "$v"; fi ;;
+      aws_access_key_id|access_key_id)
+        got=0
+        if [[ -n "$kvar" && -z "${!kvar}" ]]; then printf -v "$kvar" '%s' "$v"; fi ;;
+      aws_secret_access_key|secret_access_key)
+        got=0
+        if [[ -n "$svar" && -z "${!svar}" ]]; then printf -v "$svar" '%s' "$v"; fi ;;
+    esac
+  done <<< "$payload"
+  return $got
+}
+
+# Читает источник секрета и раскладывает его по переменным вызывающего.
+# Печатает JSON-ошибку и возвращает 1, если источник задан, но не разобран;
+# 0 — источника не было или он применён (пустой src — no-op).
+_secret_source_apply() {  # <src: путь|-> <token_var> <key_var> <secret_var>
+  local src="" tvar="${2:-}" kvar="${3:-}" svar="${4:-}" payload="" mode=""
+  src="${1:-}"
+  [[ -n "$src" ]] || return 0
+  if [[ "$src" == "-" ]]; then
+    payload=$(cat)
+  else
+    if [[ ! -f "$src" || ! -r "$src" ]]; then
+      printf '{"ok":false,"error":"Секрет-файл не найден или не читается: %s"}\n' "$src"
+      return 1
+    fi
+    # Файл секрета не должен быть доступен группе/другим: иначе фикс бессмысленен.
+    # MSYS/MinGW (Git Bash на рабочей машине) отдают фиктивные права — всегда 644,
+    # поэтому там проверка режима бессмысленна; на Linux она обязательна.
+    if [[ "${OSTYPE:-}" != msys* && "${OSTYPE:-}" != cygwin* ]]; then
+      mode=$(stat -c '%a' -- "$src" 2>/dev/null || true)
+      if [[ -n "$mode" ]] && (( 8#$mode & 8#077 )); then
+        printf '{"ok":false,"error":"Секрет-файл доступен другим пользователям (нужен chmod 600): %s"}\n' "$src"
+        return 1
+      fi
+    fi
+    payload=$(cat -- "$src") || payload=""
+    rm -f -- "$src" 2>/dev/null || true
+  fi
+  if [[ -z "$payload" ]]; then
+    printf '{"ok":false,"error":"Пустой источник секрета: %s"}\n' "$src"
+    return 1
+  fi
+  if ! _secret_payload_apply "$payload" "$tvar" "$kvar" "$svar"; then
+    printf '{"ok":false,"error":"Секрет не распознан: ожидаются строки token=… / aws_access_key_id=… / aws_secret_access_key=…"}\n'
+    return 1
+  fi
+  return 0
+}
+
+# Предупреждение оператору: креды, переданные аргументом, видны в /proc.
+_secret_argv_warning() {
+  echo "внимание: секрет передан аргументом и виден в /proc/<pid>/cmdline любому пользователю хоста; используйте --secret-stdin/--secret-file" >&2
+}
+
 _qs_backup_path() {
   local source_path="$1" backup_path="$2"
   [[ -e "$source_path" || -L "$source_path" ]] || return 1
@@ -1456,6 +1553,23 @@ channel_test_command() {
     esac
   done
 
+  # Без --name берём единственный профиль: HAPP_DEFAULT_PROFILE выставляется только
+  # внутри _happ_ensure_default_multiroute_profile, то есть в свежем процессе пуст, и
+  # документированный вызов `xrayebator channel-test` сразу после развёртывания
+  # отвечал «Укажите --name» при единственном профиле в системе. При нескольких
+  # профилях выбор неоднозначен — просим --name, чтобы не проверять чужой.
+  if [[ -z "$name" ]]; then
+    local _only="" _cnt=0 _pf
+    for _pf in "$PROFILES_DIR"/*.json; do
+      [[ -f "$_pf" ]] || continue
+      _cnt=$((_cnt + 1))
+      _only="$_pf"
+    done
+    if (( _cnt == 1 )); then
+      name=$(basename "$_only" .json)
+    fi
+  fi
+
   if [[ -z "$name" || ! "$name" =~ ^[a-zA-Z0-9_-]{1,48}$ ]]; then
     echo '{"ok":false,"error":"Укажите --name профиля"}'
     return 1
@@ -1736,10 +1850,11 @@ _happ_default_routing_json() {
   [[ "$token" =~ ^[a-f0-9]{32}$ ]] || return 1
   [[ "$last_updated" =~ ^[0-9]+$ ]] || return 1
 
-  jq -cn \
-    --arg geoip_url "${base_url}/sub/${token}/geoip.dat" \
-    --arg geosite_url "${base_url}/sub/${token}/geosite.dat" \
+  XRAYEBATOR_JQ_SECRET="$token" jq -cn \
+    --arg base_url "$base_url" \
     --arg last_updated "$last_updated" '
+      ("\($base_url)/sub/\($ENV.XRAYEBATOR_JQ_SECRET)/geoip.dat") as $geoip_url |
+      ("\($base_url)/sub/\($ENV.XRAYEBATOR_JQ_SECRET)/geosite.dat") as $geosite_url |
       {
         Name: "xrayebator-default",
         GlobalProxy: "true",
@@ -1903,6 +2018,23 @@ _certbot_failure_reason() {
   return 0
 }
 
+# Ждёт готовности snapd. На свежем Ubuntu 24.04 демон доигрывает seed/refresh и
+# перезапускается сам («Waiting for automatic snapd restart…»), а `snap install` в
+# этот момент обрывается мгновенно — из-за этого quickstart получал «certbot не
+# найден» при полностью работоспособном snap. Возврат 0 — демон отвечает.
+_wait_snapd_ready() {
+  local i
+  systemctl start snapd.socket >/dev/null 2>&1 || true
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    if snap wait system seed.loaded >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 3
+  done
+  # Совсем старые snapd могут не знать подкоманду `wait` — тогда достаточно ответа.
+  snap version >/dev/null 2>&1
+}
+
 _ensure_certbot_ip_tls() {
   CERTBOT_IP_BIN=""
 
@@ -1915,35 +2047,52 @@ _ensure_certbot_ip_tls() {
     fi
   done
 
-  echo -e "${YELLOW}  → Системный certbot не поддерживает IP certificates; ставлю актуальный certbot через snap...${NC}"
+  # Прогресс — в stderr: у CLI-команд stdout обязан оставаться чистым JSON
+  # (snap пишет свои «core … installed» в stdout, и они ломали разбор ответа).
+  echo -e "${YELLOW}  → Системный certbot не поддерживает IP certificates; ставлю актуальный certbot через snap...${NC}" >&2
+  _apt_wait_lock 300 || true
   if ! apt-get "${APT_LOCK_OPTS[@]}" install -y snapd >/dev/null 2>&1; then
-    echo -e "${RED}✗ Не удалось установить snapd для Certbot 5.4+${NC}"
+    echo -e "${RED}✗ Не удалось установить snapd для Certbot 5.4+${NC}" >&2
     return 1
   fi
 
   systemctl enable --now snapd.socket >/dev/null 2>&1 || true
   export PATH="/snap/bin:$PATH"
 
-  if command -v snap >/dev/null 2>&1; then
-    if snap list core >/dev/null 2>&1; then
-      snap refresh core >/tmp/snap-core.log 2>&1 || true
-    elif ! snap install core >/tmp/snap-core.log 2>&1; then
-      echo -e "${RED}✗ snap install core не удался. Лог: /tmp/snap-core.log${NC}"
-      tail -20 /tmp/snap-core.log
-      return 1
-    fi
-
-    if snap list certbot >/dev/null 2>&1; then
-      snap refresh certbot >/tmp/snap-certbot.log 2>&1 || true
-    elif ! snap install --classic certbot >/tmp/snap-certbot.log 2>&1; then
-      echo -e "${RED}✗ snap install certbot не удался. Лог: /tmp/snap-certbot.log${NC}"
-      tail -20 /tmp/snap-certbot.log
-      return 1
-    fi
-  else
-    echo -e "${RED}✗ snap command не найден после установки snapd${NC}"
+  if ! command -v snap >/dev/null 2>&1; then
+    echo -e "${RED}✗ snap command не найден после установки snapd${NC}" >&2
     return 1
   fi
+
+  local attempt
+  _wait_snapd_ready
+  for attempt in 1 2 3; do
+    if snap list core >/dev/null 2>&1; then
+      snap refresh core >/tmp/snap-core.log 2>&1 || true
+    else
+      snap install core >/tmp/snap-core.log 2>&1 || true
+    fi
+    if snap list certbot >/dev/null 2>&1; then
+      snap refresh certbot >/tmp/snap-certbot.log 2>&1 || true
+    else
+      snap install --classic certbot >/tmp/snap-certbot.log 2>&1 || true
+    fi
+
+    # Проверяем результат по факту, а не по коду возврата: `snap install` умеет
+    # отвечать нулём после «Waiting for automatic snapd restart…» и не поставить пакет.
+    for candidate in /snap/bin/certbot; do
+      [[ -x "$candidate" ]] || continue
+      if _certbot_supports_ip_address "$candidate"; then
+        CERTBOT_IP_BIN="$candidate"
+        return 0
+      fi
+    done
+
+    [[ "$attempt" -lt 3 ]] || break
+    echo -e "${YELLOW}  → snapd перезапускался во время установки, повтор (${attempt}/3)...${NC}" >&2
+    _wait_snapd_ready
+    sleep 3
+  done
 
   for candidate in /snap/bin/certbot "$(command -v certbot 2>/dev/null || true)"; do
     [[ -n "$candidate" && -x "$candidate" ]] || continue
@@ -1953,7 +2102,9 @@ _ensure_certbot_ip_tls() {
     fi
   done
 
-  echo -e "${RED}✗ Не найден Certbot 5.4+ с поддержкой --ip-address${NC}"
+  echo -e "${RED}✗ snap install certbot не удался (snapd не доиграл seed/refresh?). Лог:${NC}" >&2
+  tail -6 /tmp/snap-certbot.log >&2 2>/dev/null || true
+  echo -e "${RED}✗ Не найден Certbot 5.4+ с поддержкой --ip-address${NC}" >&2
   return 1
 }
 
@@ -2099,6 +2250,14 @@ confirm_vision_443_risk() {
 # Или для записи в тот же файл: safe_jq_write "выражение_jq" [аргументы_jq...] "$файл"
 # Последний аргумент — целевой файл (куда записать), предпоследний — исходный
 # Если целевой == исходный, делает mktemp+mv
+# СЕКРЕТЫ В jq. Значение, которое нельзя показывать в `ps`, передаётся не через
+# `--arg`, а окружением: `/proc/<pid>/cmdline` читают все пользователи хоста (0444),
+# а `/proc/<pid>/environ` — только владелец процесса и root (0400). Значение
+# читается в фильтре как $ENV.XRAYEBATOR_JQ_SECRET (и $ENV.XRAYEBATOR_JQ_PSK,
+# когда секретов два), а присваивание ставится перед вызовом:
+#   XRAYEBATOR_JQ_SECRET="$password" safe_jq_write '...' "$profile_file"
+# Это касается паролей Hysteria, ключей AmneziaWG, sub_token, VLESS-decryption
+# ключа и токена Telegram-бота. Не секреты (имена, домены, порты) — обычным --arg.
 safe_jq_write() {
   local args=("$@")
   local nargs=${#args[@]}
@@ -2511,15 +2670,17 @@ _add_owned_firewall_rule() {
 }
 
 # Open port in UFW firewall (idempotent and ownership-safe).
+# Статусы — в stderr: stdout у CLI-команд обязан оставаться чистым JSON (иначе
+# `xrayebator quickstart | jq .ok` падал на цветной строке перед объектом).
 open_firewall_port() {
   local port="$1" protocol="${2:-tcp}"
   if _ufw_rule_exists "$port" "$protocol" 2>/dev/null; then
-    echo -e "${CYAN}  → Порт ${port}/${protocol} уже открыт; ownership не присваивается${NC}"
+    echo -e "${CYAN}  → Порт ${port}/${protocol} уже открыт; ownership не присваивается${NC}" >&2
     return 0
   fi
-  echo -e "${CYAN}  → Открываю порт ${port}/${protocol}...${NC}"
+  echo -e "${CYAN}  → Открываю порт ${port}/${protocol}...${NC}" >&2
   if _add_owned_firewall_rule "$port" "$protocol" allow; then
-    echo -e "${GREEN}  ✓ Порт ${port}/${protocol} открыт${NC}"
+    echo -e "${GREEN}  ✓ Порт ${port}/${protocol} открыт${NC}" >&2
     return 0
   fi
   echo -e "${RED}  ✗ Ошибка открытия порта ${port}/${protocol}${NC}" >&2
@@ -2781,13 +2942,16 @@ _backend_apply_profile_lifecycle() {
 # + certbot deploy-hook) или self-signed. masquerade 404 — до живой
 # проверки proxy-маскарада в срезе 3. Гранты per-profile — срез 3.
 
-HYSTERIA2_BIN="/usr/local/bin/hysteria"
+HYSTERIA2_BIN="${HYSTERIA2_BIN:-/usr/local/bin/hysteria}"
 HYSTERIA2_DIR="$BACKENDS_DIR/hysteria"
 HYSTERIA2_UNIT="hysteria-server.service"
-HYSTERIA2_UNIT_FILE="/etc/systemd/system/hysteria-server.service"
+# Системные пути переопределяемы (тот же root-override приём, что CONFIG_FILE):
+# без этого тест видел реальный юнит/хук с живого сервера, и его no-op проверки
+# («бэкенд не установлен» → rc=2) краснели от состояния машины, а не от кода.
+HYSTERIA2_UNIT_FILE="${HYSTERIA2_UNIT_FILE:-/etc/systemd/system/hysteria-server.service}"
 HYSTERIA2_USER="hysteria"
-HYSTERIA2_SYSCTL_FILE="/etc/sysctl.d/99-xrayebator-hysteria.conf"
-HYSTERIA2_CERTBOT_HOOK="/etc/letsencrypt/renewal-hooks/deploy/xrayebator-hysteria.sh"
+HYSTERIA2_SYSCTL_FILE="${HYSTERIA2_SYSCTL_FILE:-/etc/sysctl.d/99-xrayebator-hysteria.conf}"
+HYSTERIA2_CERTBOT_HOOK="${HYSTERIA2_CERTBOT_HOOK:-/etc/letsencrypt/renewal-hooks/deploy/xrayebator-hysteria.sh}"
 HYSTERIA2_REPO="HyNetworks/hysteria"
 
 # Актив Hysteria для архитектуры текущего ядра.
@@ -2880,11 +3044,17 @@ EOF
 }
 
 # TLS-режим: "le <domain>" при живом LE-серте подписки, иначе "selfsigned".
+# TLS-режим: "le <domain>" при живом LE-серте подписки, иначе "selfsigned".
+# Пути переопределяемы (root override, как CONFIG_FILE/PROFILES_DIR): без этого тест
+# зависел от хоста — на сервере с живым сертификатом детектор честно отвечает
+# "le <ip>", а тест ждал "selfsigned" и краснел от состояния машины, не от кода.
+HYSTERIA2_SUBSCRIPTION_DOMAIN_FILE="${HYSTERIA2_SUBSCRIPTION_DOMAIN_FILE:-/usr/local/etc/xray/.subscription_domain}"
+HYSTERIA2_LETSENCRYPT_LIVE_DIR="${HYSTERIA2_LETSENCRYPT_LIVE_DIR:-/etc/letsencrypt/live}"
 _hysteria2_tls_mode_detect() {
   local domain=""
-  [[ -f /usr/local/etc/xray/.subscription_domain ]] && \
-    domain=$(tr -d '\r\n' < /usr/local/etc/xray/.subscription_domain 2>/dev/null)
-  if [[ -n "$domain" && -d "/etc/letsencrypt/live/$domain" ]]; then
+  [[ -f "$HYSTERIA2_SUBSCRIPTION_DOMAIN_FILE" ]] && \
+    domain=$(tr -d '\r\n' < "$HYSTERIA2_SUBSCRIPTION_DOMAIN_FILE" 2>/dev/null)
+  if [[ -n "$domain" && -d "$HYSTERIA2_LETSENCRYPT_LIVE_DIR/$domain" ]]; then
     echo "le ${domain}"
   else
     echo "selfsigned"
@@ -2991,7 +3161,7 @@ _hysteria2_regen_config() {
     # Пустая userpass-карта невалидна для Hysteria — placeholder-пользователь.
     local placeholder_pass
     placeholder_pass=$(_hysteria2_ensure_placeholder) || return 1
-    users=$(jq -cn --arg p "$placeholder_pass" '{_xrayebator_placeholder: $p}')
+    users=$(XRAYEBATOR_JQ_SECRET="$placeholder_pass" jq -cn '{_xrayebator_placeholder: $ENV.XRAYEBATOR_JQ_SECRET}')
   fi
   local tmp="$HYSTERIA2_DIR/.server.yaml.new"
   _hysteria2_render_server_yaml "$tmp" "$port" \
@@ -3014,9 +3184,9 @@ _hysteria2_grant_profile() {
   [[ -n "$existing" ]] && return 0
   local password
   password=$(openssl rand -hex 16) || return 1
-  safe_jq_write --arg u "$name" --arg p "$password" \
+  XRAYEBATOR_JQ_SECRET="$password" safe_jq_write --arg u "$name" \
     --arg c "$(date +%Y-%m-%d\ %H:%M:%S)" \
-    '.backends = ((.backends // {}) + {hysteria2: {username: $u, password: $p, created: $c}})' \
+    '.backends = ((.backends // {}) + {hysteria2: {username: $u, password: $ENV.XRAYEBATOR_JQ_SECRET, created: $c}})' \
     "$profile_file" || return 1
   [[ "${2:-}" == "no_regen" ]] && return 0
   _hysteria2_regen_config
@@ -3061,8 +3231,8 @@ _hysteria2_on_profile_event() {
       jq -e '.backends.hysteria2.password' "$profile_file" >/dev/null 2>&1 || return 0
       local password
       password=$(openssl rand -hex 16) || return 1
-      safe_jq_write --arg p "$password" \
-        '.backends.hysteria2.password = $p' "$profile_file" || return 1
+      XRAYEBATOR_JQ_SECRET="$password" safe_jq_write \
+        '.backends.hysteria2.password = $ENV.XRAYEBATOR_JQ_SECRET' "$profile_file" || return 1
       _hysteria2_regen_config || return 1
       ;;
     deleted)
@@ -3219,10 +3389,34 @@ _hysteria2_install() {
     echo -e "${RED}✗ Некорректный порт: ${port}${NC}"
     return 1
   }
+  # Повреждённое состояние: реестр может ЛИБО утверждать installed (бинарник уже
+  # удалён), ЛИБО быть уже снятым, но осиротевший юнит продолжает жить и держать
+  # UDP-порт. Оба случая надо чинить, а не отвечать «already» или «порт занят»:
+  # на живом прогоне 2026-11-07 `hysteria2-install` в таком состоянии не
+  # восстанавливал ничего, а status честно писал binary=absent.
+  local _broken=""
+  [[ -x "$HYSTERIA2_BIN" ]] || _broken="бинарник"
+  [[ -f "$HYSTERIA2_UNIT_FILE" ]] || _broken="${_broken:+$_broken, }юнит"
+  [[ -s "$HYSTERIA2_DIR/server.yaml" ]] || _broken="${_broken:+$_broken, }конфиг"
   if _backend_installed hysteria2; then
-    echo -e "${YELLOW}ℹ Hysteria 2 уже установлена (версия $(_backend_field hysteria2 version)).${NC}"
-    echo -e "${YELLOW}  Для переустановки: сначала 'hysteria2-uninstall'.${NC}"
-    return 2
+    if [[ -z "$_broken" ]]; then
+      echo -e "${YELLOW}ℹ Hysteria 2 уже установлена (версия $(_backend_field hysteria2 version)).${NC}"
+      echo -e "${YELLOW}  Для переустановки: сначала 'hysteria2-uninstall'.${NC}"
+      return 2
+    fi
+    echo -e "${YELLOW}  ⚠ Реестр содержит Hysteria 2, но на диске нет: ${_broken}.${NC}" >&2
+    echo -e "${YELLOW}  → Восстанавливаю установку...${NC}" >&2
+    safe_jq_write --arg t hysteria2 'del(.[$t])' "$BACKENDS_REGISTRY_FILE" 2>/dev/null || true
+  fi
+  if [[ -n "$_broken" ]] || systemctl is-active --quiet "$HYSTERIA2_UNIT" 2>/dev/null; then
+    # Юнит живёт, пока жив процесс, даже если бинарник с диска удалён, и держит
+    # UDP-порт. Снимаем только СВОЙ юнит — иначе восстановление упирается в
+    # «UDP-порт 443 уже занят» (проверено на живом сервере).
+    if systemctl is-active --quiet "$HYSTERIA2_UNIT" 2>/dev/null; then
+      echo -e "${YELLOW}  → Останавливаю осиротевший ${HYSTERIA2_UNIT}...${NC}" >&2
+      systemctl stop "$HYSTERIA2_UNIT" >/dev/null 2>&1 || true
+      sleep 1
+    fi
   fi
   if _backend_port_busy_udp "$port"; then
     echo -e "${RED}✗ UDP-порт ${port} уже занят другим слушателем.${NC}"
@@ -3335,7 +3529,7 @@ EOF
   }
   _hysteria2_render_server_yaml "$HYSTERIA2_DIR/server.yaml" "$port" \
     "$HYSTERIA2_DIR/cert.pem" "$HYSTERIA2_DIR/key.pem" \
-    "$(jq -cn --arg p "$placeholder_pass" '{_xrayebator_placeholder: $p}')"
+    "$(XRAYEBATOR_JQ_SECRET="$placeholder_pass" jq -cn '{_xrayebator_placeholder: $ENV.XRAYEBATOR_JQ_SECRET}')"
   _hysteria2_apply_sysctl
 
   echo -e "${CYAN}  → Устанавливаю бинарник и юнит...${NC}"
@@ -3709,12 +3903,12 @@ AWG_USER_NAME="hysteria"          # отдельного пользовател�
 AWG_SUBNET_PREFIX="10.8.1"
 AWG_SUBNET="${AWG_SUBNET_PREFIX}.0/24"
 AWG_MTU=1280
-AWG_SYSCTL_FILE="/etc/sysctl.d/99-xrayebator-awg.conf"
+AWG_SYSCTL_FILE="${AWG_SYSCTL_FILE:-/etc/sysctl.d/99-xrayebator-awg.conf}"
 # Модуль amneziawg существует только в загруженном ядре. systemd-modules-load
 # читает этот файл на старте (до юнитов), поэтому он и есть условие того, что
-# после перезагрузки awg-quick@awg0 поднимется, а не упадёт с
+# после перегрузки awg-quick@awg0 поднимется, а не упадёт с
 # «Unknown device type» (живой дефект: ребут → интерфейса нет, туннель лежит).
-AWG_MODULES_LOAD_FILE="/etc/modules-load.d/xrayebator-awg.conf"
+AWG_MODULES_LOAD_FILE="${AWG_MODULES_LOAD_FILE:-/etc/modules-load.d/xrayebator-awg.conf}"
 AWG_REPO_MODULE="amnezia-vpn/amneziawg-linux-kernel-module"
 AWG_REPO_TOOLS="amnezia-vpn/amneziawg-tools"
 
@@ -3739,7 +3933,8 @@ _awg_gen_junk() {
   s4=$((RANDOM % 53 + 12))
   while (( s4 == s1 || s4 == s2 || s4 == s3 )); do s4=$((RANDOM % 53 + 12)); done
   h1=1; h2=2; h3=3; h4=4                               # WG-магия, дефолт Amnezia
-  hpk=$(openssl rand -base64 32 2>/dev/null) || return 1
+  # tr -d '\r\n': на Windows-хосте (Git Bash/MSYS) openssl печатает CRLF, а HeaderProtectionKey — base64, передаваемый клиенту как есть. Артефакт не должен просочиться в server-params.json и в клиентские .conf.
+  hpk=$(openssl rand -base64 32 2>/dev/null | tr -d '\r\n') || return 1
   jq -n --argjson jc "$jc" --argjson jmin "$jmin" --argjson jmax "$jmax" \
     --argjson s1 "$s1" --argjson s2 "$s2" --argjson s3 "$s3" --argjson s4 "$s4" \
     --argjson h1 "$h1" --argjson h2 "$h2" --argjson h3 "$h3" --argjson h4 "$h4" \
@@ -3763,7 +3958,8 @@ _awg_ensure_31_params() {
   local s1=$(jq -r '.S1 // 15' <<<"$junk") s2=$(jq -r '.S2 // 16' <<<"$junk")
   while (( s3 == s1 || s3 == s2 )); do s3=$((RANDOM % 53 + 12)); done
   while (( s4 == s1 || s4 == s2 || s4 == s3 )); do s4=$((RANDOM % 53 + 12)); done
-  hpk=$(openssl rand -base64 32 2>/dev/null) || return 1
+  # tr -d '\r\n': на Windows-хосте (Git Bash/MSYS) openssl печатает CRLF, а HeaderProtectionKey — base64, передаваемый клиенту как есть. Артефакт не должен просочиться в server-params.json и в клиентские .conf.
+  hpk=$(openssl rand -base64 32 2>/dev/null | tr -d '\r\n') || return 1
   jq -n --argjson j "$junk" --argjson s3 "$s3" --argjson s4 "$s4" --arg hpk "$hpk" \
     '$j + {S3: $s3, S4: $s4, HeaderProtectionKey: $hpk}'
 }
@@ -4174,10 +4370,10 @@ _awg_install() {
 
   mkdir -p "$AWG_DIR"
   chmod 700 "$AWG_DIR" 2>/dev/null
-  jq -n --arg priv "$priv" --arg pub "$pub" \
+  XRAYEBATOR_JQ_SECRET="$priv" jq -n --arg pub "$pub" \
     --argjson port "$port" --arg iface "$iface" --argjson junk "$junk" \
     --arg subnet "$AWG_SUBNET" --argjson mtu "$AWG_MTU" \
-    '{private_key: $priv, public_key: $pub, port: $port, iface: $iface,
+    '{private_key: $ENV.XRAYEBATOR_JQ_SECRET, public_key: $pub, port: $port, iface: $iface,
       junk: $junk, subnet: $subnet, mtu: $mtu}' > "$AWG_PARAMS_FILE" || {
     echo -e "${RED}✗ Не удалось записать server-params.json${NC}"
     return 1
@@ -4551,10 +4747,11 @@ _awg_grant_profile() {
   addr=$(_awg_next_address) || { echo -e "${RED}✗ Подсеть ${AWG_SUBNET} заполнена${NC}" >&2; return 1; }
   keys=$(_awg_gen_keys) || { echo -e "${RED}✗ awg genkey не сработал${NC}" >&2; return 1; }
   read -r cpriv cpub psk <<< "$keys"
-  safe_jq_write --arg a "$addr" --arg cp "$cpriv" --arg cb "$cpub" --arg ps "$psk" \
+  XRAYEBATOR_JQ_SECRET="$cpriv" XRAYEBATOR_JQ_PSK="$psk" \
+    safe_jq_write --arg a "$addr" --arg cb "$cpub" \
     --arg c "$(date +%Y-%m-%d\ %H:%M:%S)" \
-    '.backends = ((.backends // {}) + {awg: {client_private_key: $cp, client_public_key: $cb,
-      preshared_key: $ps, address: $a, created: $c}})' \
+    '.backends = ((.backends // {}) + {awg: {client_private_key: $ENV.XRAYEBATOR_JQ_SECRET, client_public_key: $cb,
+      preshared_key: $ENV.XRAYEBATOR_JQ_PSK, address: $a, created: $c}})' \
     "$profile_file" || return 1
   [[ "${2:-}" == "no_regen" ]] && return 0
   _awg_regen_config
@@ -4598,9 +4795,10 @@ _awg_on_profile_event() {
       local keys cpriv cpub psk
       keys=$(_awg_gen_keys) || return 1
       read -r cpriv cpub psk <<< "$keys"
-      safe_jq_write --arg cp "$cpriv" --arg cb "$cpub" --arg ps "$psk" \
-        '.backends.awg = (.backends.awg + {client_private_key: $cp,
-          client_public_key: $cb, preshared_key: $ps})' "$profile_file" || return 1
+      XRAYEBATOR_JQ_SECRET="$cpriv" XRAYEBATOR_JQ_PSK="$psk" \
+        safe_jq_write --arg cb "$cpub" \
+        '.backends.awg = (.backends.awg + {client_private_key: $ENV.XRAYEBATOR_JQ_SECRET,
+          client_public_key: $cb, preshared_key: $ENV.XRAYEBATOR_JQ_PSK})' "$profile_file" || return 1
       _awg_regen_config || return 1
       ;;
     deleted)
@@ -6184,7 +6382,7 @@ _migrate_subscription_tokens_2026() {
       echo -e "${RED}  ✗ openssl rand вернул некорректный токен для $(basename "$profile_file")${NC}"
       return 2
     fi
-    if ! safe_jq_write --arg t "$new_token" '.sub_token = $t' "$profile_file"; then
+    if ! XRAYEBATOR_JQ_SECRET="$new_token" safe_jq_write '.sub_token = $ENV.XRAYEBATOR_JQ_SECRET' "$profile_file"; then
       echo -e "${RED}  ✗ safe_jq_write failed для $profile_file${NC}"
       return 2
     fi
@@ -9112,8 +9310,8 @@ _subscription_local_self_test() {
   }
 
   local http_status curl_rc=0
-  http_status=$(curl -sS --connect-timeout 2 --max-time 30 \
-      "http://127.0.0.1:8080/sub/${token}" \
+  http_status=$(_curl_secret_url "http://127.0.0.1:8080/sub/${token}" \
+      -sS --connect-timeout 2 --max-time 30 \
       -o "$body_tmp" -w '%{http_code}' 2>"$err_tmp") || curl_rc=$?
   SUBSCRIPTION_SELFTEST_HTTP_STATUS="$http_status"
   SUBSCRIPTION_SELFTEST_ERROR=$(head -c 240 "$err_tmp" 2>/dev/null | tr '\n\r' '  ')
@@ -10071,21 +10269,30 @@ dns01_setup_command() {
   export XRAYEBATOR_NONINTERACTIVE=1
 
   local domain="" provider="" email="" token="" aws_key="" aws_secret="" port="" without_email=false
-  local staging_flag=false
+  local staging_flag=false secret_src="" secret_argv=false
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --domain) domain="${2:-}"; shift 2 ;;
       --provider) provider="${2:-}"; shift 2 ;;
       --email) email="${2:-}"; shift 2 ;;
       --without-email) without_email=true; shift ;;
-      --token) token="${2:-}"; shift 2 ;;
+      --token) token="${2:-}"; secret_argv=true; shift 2 ;;
       --aws-access-key-id) aws_key="${2:-}"; shift 2 ;;
-      --aws-secret-access-key) aws_secret="${2:-}"; shift 2 ;;
+      --aws-secret-access-key) aws_secret="${2:-}"; secret_argv=true; shift 2 ;;
+      --secret-file) secret_src="${2:-}"; shift 2 ;;
+      --secret-stdin) secret_src="-"; shift ;;
       --port) port="${2:-}"; shift 2 ;;
       --staging) staging_flag=true; shift ;;
       *) shift ;;
     esac
   done
+
+  if ! _secret_source_apply "$secret_src" token aws_key aws_secret; then
+    return 1
+  fi
+  if [[ "$secret_argv" == "true" ]]; then
+    _secret_argv_warning
+  fi
 
   if ! _dns01_validate_domain "$domain"; then
     echo '{"ok":false,"error":"Укажите --domain example.com (A/AAAA домена должна указывать на этот VPS)"}'
@@ -10209,20 +10416,29 @@ repair_dns01_command() {
   export XRAYEBATOR_NONINTERACTIVE=1
 
   local domain="" provider="" token="" aws_key="" aws_secret="" port="" email=""
-  local staging_flag=false
+  local staging_flag=false secret_src="" secret_argv=false
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --domain) domain="${2:-}"; shift 2 ;;
       --provider) provider="${2:-}"; shift 2 ;;
-      --token) token="${2:-}"; shift 2 ;;
+      --token) token="${2:-}"; secret_argv=true; shift 2 ;;
       --aws-access-key-id) aws_key="${2:-}"; shift 2 ;;
-      --aws-secret-access-key) aws_secret="${2:-}"; shift 2 ;;
+      --aws-secret-access-key) aws_secret="${2:-}"; secret_argv=true; shift 2 ;;
+      --secret-file) secret_src="${2:-}"; shift 2 ;;
+      --secret-stdin) secret_src="-"; shift ;;
       --email) email="${2:-}"; shift 2 ;;
       --port) port="${2:-}"; shift 2 ;;
       --staging) staging_flag=true; shift ;;
       *) shift ;;
     esac
   done
+
+  if ! _secret_source_apply "$secret_src" token aws_key aws_secret; then
+    return 1
+  fi
+  if [[ "$secret_argv" == "true" ]]; then
+    _secret_argv_warning
+  fi
 
   if ! _dns01_validate_domain "$domain"; then
     echo '{"ok":false,"error":"Укажите --domain sub.example.com (A/AAAA домена должна указывать на этот VPS)"}'
@@ -10356,18 +10572,28 @@ dns01_test_command() {
   export XRAYEBATOR_NONINTERACTIVE=1
 
   local domain="" provider="" email="" token="" aws_key="" aws_secret="" without_email=false
+  local secret_src="" secret_argv=false
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --domain) domain="${2:-}"; shift 2 ;;
       --provider) provider="${2:-}"; shift 2 ;;
       --email) email="${2:-}"; shift 2 ;;
       --without-email) without_email=true; shift ;;
-      --token) token="${2:-}"; shift 2 ;;
+      --token) token="${2:-}"; secret_argv=true; shift 2 ;;
       --aws-access-key-id) aws_key="${2:-}"; shift 2 ;;
-      --aws-secret-access-key) aws_secret="${2:-}"; shift 2 ;;
+      --aws-secret-access-key) aws_secret="${2:-}"; secret_argv=true; shift 2 ;;
+      --secret-file) secret_src="${2:-}"; shift 2 ;;
+      --secret-stdin) secret_src="-"; shift ;;
       *) shift ;;
     esac
   done
+
+  if ! _secret_source_apply "$secret_src" token aws_key aws_secret; then
+    return 1
+  fi
+  if [[ "$secret_argv" == "true" ]]; then
+    _secret_argv_warning
+  fi
 
   # Валидация до системных вызовов — тем же набором сообщений, что у боевого пути.
   if ! _dns01_validate_domain "$domain"; then
@@ -10690,7 +10916,7 @@ manage_subscription_menu() {
           sleep 2
           continue
         fi
-        if ! safe_jq_write --arg t "$new_token" '.sub_token = $t' "$pfile"; then
+        if ! XRAYEBATOR_JQ_SECRET="$new_token" safe_jq_write '.sub_token = $ENV.XRAYEBATOR_JQ_SECRET' "$pfile"; then
           echo -e "${RED}✗ Запись в profile JSON не удалась${NC}"
           sleep 2
           continue
@@ -11205,8 +11431,8 @@ _pq_add_route_for_profile() {
   # Инбаунд этого транспорта становится PQ: клиенты без ML-KEM к порту не подключатся.
   # Для xhttp decryption уже прописал add_inbound, для остальных транспортов — здесь
   # (VLESS decryption живёт на уровне инбаунда, а не маршрута).
-  if ! safe_jq_write --argjson p "$port" --arg d "$decryption" '
-    .inbounds |= map(if .port == $p then .settings.decryption = $d else . end)
+  if ! XRAYEBATOR_JQ_SECRET="$decryption" safe_jq_write --argjson p "$port" '
+    .inbounds |= map(if .port == $p then .settings.decryption = $ENV.XRAYEBATOR_JQ_SECRET else . end)
   ' "$CONFIG_FILE"; then
     return 1
   fi
@@ -14995,6 +15221,7 @@ inspect_command() {
 
 quickstart_command() {
   local email="" email_mode="provided" deploy_pq=false staging_flag=false
+  local secret_src="" secret_argv=false
   local dns01_domain="" dns01_provider="" dns01_token="" dns01_aws_key="" dns01_aws_secret=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -15013,9 +15240,11 @@ quickstart_command() {
       # http_tls-деградации выпускаем серт по TXT-записи (домен + провайдер + токен).
       --dns01-domain) dns01_domain="${2:-}"; shift 2 ;;
       --dns01-provider) dns01_provider="${2:-}"; shift 2 ;;
-      --dns01-token) dns01_token="${2:-}"; shift 2 ;;
+      --dns01-token) dns01_token="${2:-}"; secret_argv=true; shift 2 ;;
       --dns01-aws-access-key-id) dns01_aws_key="${2:-}"; shift 2 ;;
-      --dns01-aws-secret-access-key) dns01_aws_secret="${2:-}"; shift 2 ;;
+      --dns01-aws-secret-access-key) dns01_aws_secret="${2:-}"; secret_argv=true; shift 2 ;;
+      --dns01-secret-file) secret_src="${2:-}"; shift 2 ;;
+      --dns01-secret-stdin) secret_src="-"; shift ;;
       *) shift ;;
     esac
   done
@@ -15038,6 +15267,12 @@ quickstart_command() {
   # их ДО системных изменений: молча проигнорированный DNS-01 выглядел бы как успешный
   # деплой, а подписка осталась бы в http_tls — то есть ровно та деградация, от которой
   # этот фолбэк и спасает.
+  if ! _secret_source_apply "$secret_src" dns01_token dns01_aws_key dns01_aws_secret; then
+    return 1
+  fi
+  if [[ "$secret_argv" == "true" ]]; then
+    _secret_argv_warning
+  fi
   local dns01_requested=false
   if [[ -n "$dns01_domain" || -n "$dns01_provider" || -n "$dns01_token" ]]; then
     dns01_requested=true
@@ -15195,18 +15430,15 @@ quickstart_command() {
     certbot_bin="$(command -v certbot)"
   fi
   if [[ -z "$certbot_bin" ]]; then
-    echo "  -> Установка certbot через snap..." >&2
-    _apt_wait_lock 300 || true
-    timeout 240 apt-get "${APT_LOCK_OPTS[@]}" install -y snapd >/dev/null 2>&1 || true
-    systemctl enable --now snapd.socket >/dev/null 2>&1 || true
-    export PATH="/snap/bin:$PATH"
-    if command -v snap &>/dev/null; then
-      timeout 300 snap install core 2>/dev/null || true
-      timeout 300 snap install --classic certbot 2>/dev/null || true
-      if command -v /snap/bin/certbot &>/dev/null && _certbot_supports_ip_address /snap/bin/certbot; then
-        certbot_bin="/snap/bin/certbot"
-      fi
+    # Один источник истины с интерактивным путём (_ensure_certbot_ip_tls): та версия
+    # писала логи и честно сообщала причину, а здешний дубль глотал ошибку через
+    # `2>/dev/null || true` — на Ubuntu 24.04 это дало «certbot не найден» при живом
+    # snap (демон в тот момент перезапускался) и заодно засоряло stdout прогрессом snap.
+    if ! _ensure_certbot_ip_tls; then
+      echo '{"ok":false,"error":"Certbot с --ip-address и --preferred-profile не найден: snap не установил certbot (см. stderr)"}'
+      return 1
     fi
+    certbot_bin="$CERTBOT_IP_BIN"
   fi
   if [[ -z "$certbot_bin" ]]; then
     echo '{"ok":false,"error":"Certbot с --ip-address и --preferred-profile не найден"}'
@@ -16280,8 +16512,8 @@ profile_revoke_command() {
   # Профиль-JSON: новый токен всегда; при --full ещё и uuid (top-level + routes).
   # Порядок при full: сначала конфиг+рестарт, потом профиль; сбой записи профиля
   # при full откатывает конфиг — иначе uuid разедутся.
-  local jq_args=(--arg t "$new_token")
-  local jq_expr='.sub_token = $t'
+  local jq_args=()
+  local jq_expr='.sub_token = $ENV.XRAYEBATOR_JQ_SECRET'
   if [[ "$full" == "true" ]]; then
     jq_args+=(--arg old "$old_uuid" --arg new "$new_uuid")
     # ВАЖНО: (.routes // []) |= map(...) — невалидный path в jq («Invalid path
@@ -16301,7 +16533,7 @@ profile_revoke_command() {
     fi
   fi
 
-  if ! safe_jq_write "${jq_args[@]}" "$jq_expr" "$profile_file"; then
+  if ! XRAYEBATOR_JQ_SECRET="$new_token" safe_jq_write "${jq_args[@]}" "$jq_expr" "$profile_file"; then
     if [[ "$full" == "true" ]]; then
       # Полусостояние недопустимо: конфиг уже с новым uuid, профиль — со старым.
       # Откатываем config.json из бэкапа транзакции.
@@ -16326,10 +16558,10 @@ profile_revoke_command() {
   if [[ -n "$base" ]] && _profile_cli_subscription_url "$new_token" >/dev/null 2>&1; then
     sub_url="${base}/sub/${new_token}"
   fi
-  jq -n \
-    --arg name "$name" --arg token "$new_token" --arg url "$sub_url" \
+  XRAYEBATOR_JQ_SECRET="$new_token" jq -n \
+    --arg name "$name" --arg url "$sub_url" \
     --argjson full "$full" --arg uuid "$new_uuid" \
-    '{ok: true, name: $name, full: $full, sub_token: $token,
+    '{ok: true, name: $name, full: $full, sub_token: $ENV.XRAYEBATOR_JQ_SECRET,
       subscription_url: $url}
      + (if $full then {uuid: $uuid} else {} end)'
   return 0
@@ -17311,8 +17543,8 @@ _monitor_sub_probe() {
   local token="$1" body code
   MONITOR_SUB_CODE="000"
   body=$(mktemp) || return 1
-  code=$(curl -sS --connect-timeout 3 --max-time 15 -o "$body" -w '%{http_code}' \
-    "$(_monitor_sub_local_base)/sub/${token}" 2>/dev/null) || code="000"
+  code=$(_curl_secret_url "$(_monitor_sub_local_base)/sub/${token}" \
+    -sS --connect-timeout 3 --max-time 15 -o "$body" -w '%{http_code}' 2>/dev/null) || code="000"
   MONITOR_SUB_CODE="${code:-000}"
   if [[ "$MONITOR_SUB_CODE" == "200" ]] && grep -qE '(vless|hysteria2)://' "$body" 2>/dev/null; then
     rm -f "$body"
@@ -17342,8 +17574,8 @@ _monitor_sni_state_write() {
 # Отправка произвольного сообщения с явными токеном/чатом (setup-проверка).
 _telegram_send_raw() {
   local token="$1" chat="$2" text="$3" resp
-  resp=$(curl -sS --max-time 20 -X POST \
-    "$TELEGRAM_API_BASE/bot$token/sendMessage" \
+  resp=$(_curl_secret_url "$TELEGRAM_API_BASE/bot$token/sendMessage" \
+    -sS --max-time 20 -X POST \
     --data-urlencode "chat_id=$chat" \
     --data-urlencode "text=$text" \
     --data-urlencode "disable_web_page_preview=true" 2>/dev/null) || return 1
@@ -17362,7 +17594,7 @@ _telegram_send() {
 # Валидация токена через getMe: печатает username бота; 1 — токен/сеть не приняты.
 _telegram_get_me() {
   local token="$1" resp
-  resp=$(curl -sS --max-time 20 "$TELEGRAM_API_BASE/bot$token/getMe" 2>/dev/null) || return 1
+  resp=$(_curl_secret_url "$TELEGRAM_API_BASE/bot$token/getMe" -sS --max-time 20 2>/dev/null) || return 1
   [[ "$(jq -r '.ok // false' <<<"$resp" 2>/dev/null)" == "true" ]] || return 1
   jq -r '.result.username // "bot"' <<<"$resp"
 }
@@ -17719,13 +17951,23 @@ alerts_setup_command() {
   export XRAYEBATOR_NONINTERACTIVE=1
 
   local token="" chat=""
+  local secret_src="" secret_argv=false
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --token) token="$2"; shift 2 ;;
+      --token) token="$2"; secret_argv=true; shift 2 ;;
       --chat-id) chat="$2"; shift 2 ;;
+      --secret-file) secret_src="${2:-}"; shift 2 ;;
+      --secret-stdin) secret_src="-"; shift ;;
       *) shift ;;
     esac
   done
+  # Токен бота — тот же класс секрета: аргумент виден в /proc любому пользователю.
+  if ! _secret_source_apply "$secret_src" token "" ""; then
+    return 1
+  fi
+  if [[ "$secret_argv" == "true" ]]; then
+    _secret_argv_warning
+  fi
   if [[ -z "$token" || -z "$chat" ]]; then
     echo '{"ok":false,"error":"Укажите --token TELEGRAM_BOT_TOKEN и --chat-id CHAT_ID"}'
     return 1
@@ -17757,8 +17999,8 @@ alerts_setup_command() {
   local now tmp
   now=$(date +%s)
   tmp=$(mktemp) || { echo '{"ok":false,"error":"mktemp недоступен"}'; return 1; }
-  if ! jq -n --arg t "$token" --arg c "$chat" --arg u "$bot_username" --argjson cr "$now" \
-       '{enabled: true, token: $t, chat_id: $c, bot_username: $u, created: $cr}' > "$tmp"; then
+  if ! XRAYEBATOR_JQ_SECRET="$token" jq -n --arg c "$chat" --arg u "$bot_username" --argjson cr "$now" \
+       '{enabled: true, token: $ENV.XRAYEBATOR_JQ_SECRET, chat_id: $c, bot_username: $u, created: $cr}' > "$tmp"; then
     rm -f "$tmp"
     echo '{"ok":false,"error":"Не удалось записать конфиг алертов"}'
     return 1
@@ -20110,6 +20352,7 @@ if [[ "$XRAYEBATOR_SOURCED" -eq 0 ]]; then
       echo -e "  ${CYAN}sudo xrayebator profile-limit --name N --limit 100GB|none [--reset]${NC} — лимит трафика профиля (JSON)"
       echo -e "  ${CYAN}sudo xrayebator traffic-check${NC} — учесть трафик и применить лимиты (для systemd-таймера) (JSON)"
       echo -e "  ${CYAN}sudo xrayebator alerts-setup --token T --chat-id C${NC} — подключить Telegram-алерты мониторинга (JSON)"
+      echo -e "  ${CYAN}printf 'token=%s\\n' \"\$T\" | sudo xrayebator alerts-setup --secret-stdin --chat-id C${NC} — то же, но токен не попадает в argv"
       echo -e "  ${CYAN}sudo xrayebator alerts-status${NC} — состояние алертов и таймера мониторинга (JSON; токен не показывается)"
       echo -e "  ${CYAN}sudo xrayebator alerts-test${NC} — тестовое сообщение в Telegram (JSON)"
       echo -e "  ${CYAN}sudo xrayebator alerts-enable|alerts-disable${NC} — включить/выключить алерты (JSON)"

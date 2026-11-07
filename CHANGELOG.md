@@ -2,6 +2,52 @@
 
 User-facing Xrayebator changes. The server manager and Electron application are published from the canonical `howdeploy/Xrayebator` repository.
 
+## [0.7.3] - 2026-11-07
+
+Secrets no longer travel in process arguments. `/proc/<pid>/cmdline` is readable by every local
+user (unlike `/proc/<pid>/environ`, which only the process owner and root can read), so a secret
+in an argument is visible to any neighbour account — including the `xray` service account the
+proxy runs under. Three groups were exposed: the Telegram bot token inside the `curl` URL of the
+monitor's subscription and alert checks (every 15 minutes, so not a one-off), the subscription
+`sub_token` in the subscription self-test, and the Cloudflare token / AWS key in the command line
+of `dns01-setup`/`dns01-test`/`repair-dns01`/`quickstart` for the whole certificate issuance.
+Secrets written by `jq` (Hysteria 2 password, AmneziaWG keys, `sub_token`, the VLESS Encryption
+key, the bot token) had the same problem with a millisecond window.
+
+### Security
+
+- The Telegram bot token and the subscription `sub_token` are handed to `curl` through a stdin
+  config (`-K -`) instead of the command line.
+- `jq` receives secret values through the environment (`$ENV.XRAYEBATOR_JQ_SECRET`) rather than
+  `--arg`.
+- `dns01-setup`, `dns01-test`, `repair-dns01` and `alerts-setup` accept the credential itself via
+  `--secret-stdin` or `--secret-file PATH` (payload: `token=…`, `aws_access_key_id=…`,
+  `aws_secret_access_key=…`); a `--secret-file` wider than `0600` is refused and the file is
+  deleted right after reading. `quickstart` uses `--dns01-secret-stdin`/`--dns01-secret-file`.
+  `--token` and `--aws-secret-access-key` keep working but now warn on stderr.
+- The desktop GUI uploads the DNS-01 credentials as a `0600` file over SFTP and passes
+  `--secret-file`/`--dns01-secret-file`, so the token is on neither the local nor the remote
+  command line.
+- New `validation/test-secret-argv.sh` locks the contract in place: a stub `curl` asserts that the
+  secret is absent from `argv` and present on stdin.
+
+### Fixed
+
+- `quickstart` on a fresh Ubuntu 24.04 no longer answers "Certbot с --ip-address и
+  --preferred-profile не найден" while a manual `snap install --classic certbot` works: `snapd` on
+  that image finishes seeding and restarts itself right after boot, so the inline install aborted
+  instantly and the error was swallowed by `2>/dev/null || true`. The IP-certbot path is now the
+  single `_ensure_certbot_ip_tls` helper, which waits for `snap wait system seed.loaded`, retries the
+  install, verifies the result by the binary's actual flags, and logs to `/tmp/snap-*.log`.
+  Guarded by `validation/test-certbot-snap-ip.sh` (49th script).
+- `quickstart` and `open_firewall_port` no longer write progress lines to stdout: snap output and
+  firewall statuses go to stderr, so `xrayebator quickstart --without-email | jq .ok` parses.
+- `channel-test` without `--name` uses the only profile in the system instead of answering
+  "Укажите --name профиля" (`HAPP_DEFAULT_PROFILE` is set only inside a quickstart process).
+- `validation/test-channel-test-cli.sh` anchored its helper block on an ASCII line: the previous
+  pattern used the box-drawing character `─`, which neither `mawk` (the Debian/Ubuntu default) nor
+  byte-oriented `gawk` matches, so the test failed from the locale rather than from the code.
+
 ## [0.7.2] - 2026-11-04
 
 The `0.7.2` security patch: Xray-core moved to `26.10.31` (the urgent release that stops
