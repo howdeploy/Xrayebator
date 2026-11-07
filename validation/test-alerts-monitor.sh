@@ -104,6 +104,19 @@ curl() {
       http*) url="$a" ;;
     esac
   done
+  # Регресс-гвардия: URL с секретом (bot<TOKEN>/…, /sub/<TOKEN>) обязан приходить
+  # curl'у stdin-конфигом (`-K -`), а не аргументом — argv виден в /proc всем.
+  for a in "${argv[@]}"; do
+    case "$a" in
+      *bot[0-9]*:*|*/sub/*)
+        fail "секрет в argv curl: $a" ;;
+    esac
+  done
+  if [[ "$*" == *"-K -"* ]]; then
+    local cfg
+    cfg=$(cat)
+    url=$(sed -n 's/^url = "\(.*\)"$/\1/p' <<< "$cfg" | head -n1)
+  fi
   if [[ -n "$CURL_FAIL_MATCH" && "$url" == *"$CURL_FAIL_MATCH"* ]]; then
     echo '{"ok":false,"error_code":400,"description":"stub failure"}'
     return 0

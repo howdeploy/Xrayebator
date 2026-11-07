@@ -75,10 +75,15 @@ describe('quickstart argument builder', () => {
       '--dns01-domain',
       'sub.example.com',
       '--dns01-provider',
-      'cloudflare',
-      '--dns01-token',
-      'abcdefghijklmnopqrst'
+      'cloudflare'
     ])
+    // Токен не в argv: он уходит файлом 0600 (--dns01-secret-file) — см. deploy().
+    expect(
+      buildQuickstartArgs({
+        emailMode: 'without',
+        dns01: { domain: 'sub.example.com', provider: 'cloudflare', token: 'abcdefghijklmnopqrst' }
+      }).join(' ')
+    ).not.toContain('abcdefghijklmnopqrst')
   })
 
   it('refuses an incomplete DNS-01 set before touching the server', () => {

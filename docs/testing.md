@@ -36,7 +36,7 @@ promise that installer and updater paths behave identically.
 
 ## Validation suite
 
-`validation/` contains exactly 47 scripts. Run every `validation/test-*.sh`; the current set is:
+`validation/` contains exactly 49 scripts. Run every `validation/test-*.sh`; the current set is:
 
 | Script | What it checks |
 |---|---|
@@ -51,6 +51,7 @@ promise that installer and updater paths behave identically.
 | `test-sni-reachability.sh` | Default SNI selection: an unreachable candidate is replaced by a reachable one, total unreachability keeps the previous default, one probe per SNI per run, the strict TLS 1.3 + HTTP criterion checked against real `openssl` output, candidate order (head of the list, then global fallbacks), and the required second attempt |
 | `test-dns01-certbot.sh` | DNS-01 (Cloudflare/Route53): domain/provider validation (IP addresses and single-label local names rejected), certbot argument assembly per provider (plugin, credentials, propagation, deploy-hook, `-m` vs email-less registration), `0600` credentials content per provider, an nginx vhost **without** `listen 80` and ACME location, CLI validation errors that write nothing to disk, and the static wiring (dispatcher, menu item, plugin packages, UFW port, `domain_tls` markers, the certbot manifest, uninstall cleanup) |
 | `test-bbr-removal-migration.sh` | Safe removal of the retired BBR/TCP tuning |
+| `test-certbot-snap-ip.sh` | Certbot for IP certificates: a single `_ensure_certbot_ip_tls` implementation (quickstart keeps no `snap install` of its own), waiting for snapd readiness (`snap wait system seed.loaded`), a retried install, the result verified by the binary's actual flags, snap output going to a log instead of stdout; functionally, `_certbot_supports_ip_address` tells certbot 5.4+ apart from the apt build and from a binary without `--preferred-profile` |
 | `test-profile-revoke-expire-cli.sh` | Subscription revoke (token-only and uuid rotation, foreign clients on shared ports survive) and profile expiry (disable/enable, rebuild without a snapshot, idempotent `expire-check`) |
 | `test-cascade-routing.sh` | Cascade routing configuration |
 | `test-cascade-upstream-import.sh` | Cascade upstream import from a VLESS link |
@@ -69,6 +70,7 @@ promise that installer and updater paths behave identically.
 | `test-kernel-guard.sh` | Kernel hardening against CVE-2026-98432: the sysctl file that disables MPTCP, the nft rule that drops inbound IPv4 packets carrying IP options (hook `input`, priority `-310`, the exact Ubuntu rule), a boot unit that does **not** `flush ruleset` (that would wipe the UFW ruleset at boot), "a newer kernel is installed but not booted" detection without hard-coded version tables, Xray-core version comparison (leading zeros read as decimal), enable/disable against stub `nft`/`sysctl` binaries, the CLI JSON contract and the wiring into menu/dispatcher/migration/uninstall |
 | `test-freedom-sockopt.sh` | `freedom.domainStrategy` → `streamSettings.sockopt.domainStrategy` (26.10.31 marks the old field deprecated and "will be removed"): the value moves, the legacy key is deleted, an explicit sockopt value wins, the second run is a no-op so Xray is not restarted for nothing, and the `install.sh` template writes only the new form |
 | `test-awg-ppa-repo.sh` | `amnezia/ppa` is added only together with its signing key: the `signed-by` repo line, key-before-repo ordering, no repo without a key, repair of an already broken unsigned repo, idempotency by marker, and the repair wiring in `main_menu`/`quickstart`/`happ-setup` |
+| `test-secret-argv.sh` | Secrets never reach a process command line (`/proc/<pid>/cmdline` is world-readable, `/proc/<pid>/environ` is not): a stub `curl` proves the bot token and `sub_token` arrive through the stdin config (`-K -`) and never in `argv`, the `--secret-file`/`--secret-stdin` payload parser (bare token, AWS pair, explicit flag wins, garbage), the `0600` refusal, the delete-after-read, the stderr warning `--token` now prints while stdout stays clean JSON, and `jq` reading `$ENV.XRAYEBATOR_JQ_SECRET` |
 | `test-awg-lifecycle.sh` | AmneziaWG backend: the Amnezia-default junk dialect (Jc=5, Jmin=10, Jmax=50, H1–H4=1..4, S1–S4 unique), key generation, server conf renderer (PostUp MASQUERADE, no peers at install), peer address allocation, client `.conf` contents, revoke/expire/restore events, deleted-regen with a pre-removed profile file, created-is-a-no-op (no auto-grant), CLI dispatch |
 | `test-main-readiness-regressions.sh` | Main-menu readiness and first-run regression checks |
 | `test-multiroute-argument-preservation.sh` | Preservation of multiroute transport arguments |
@@ -91,6 +93,12 @@ promise that installer and updater paths behave identically.
 Static tests do not replace a disposable VPS run: profile creation and deletion, config validation,
 service restarts, rollback, firewall behavior and a real client connection still need live-server
 verification.
+
+The suite itself is not hermetic, so run it on a disposable host or in a container. Two examples found
+by running it on a live server: `test-ssh-protect.sh` walks the real `--disable` path, which stops and
+disables `fail2ban` (re-enable it afterwards), and `test-hysteria2-lifecycle.sh` expects a host without
+a subscription Let's Encrypt certificate — with a real one present `_hysteria2_tls_mode_detect`
+correctly answers `le <domain>` while the test expects `selfsigned`.
 
 ## Lifecycle and HAPP endpoint checks
 
@@ -210,7 +218,7 @@ The workflows have separate responsibilities:
 
 - `.github/workflows/ci-linux.yml` is the Bash core gate on `ubuntu-24.04`: it installs `jq`,
   `uuid-runtime` and `ripgrep`, runs all four Bash syntax checks, then runs every
-  `validation/test-*.sh` script (45 at the time of writing).
+  `validation/test-*.sh` script (49 at the time of writing).
 - `.github/workflows/release.yml` is the active Electron release path for `v*` tags or manual runs.
   A `preflight` job first checks that the release notes file `docs/releases/<tag>.en.md` exists and
   that the `AP3X0` repository secret (if set) can actually create releases — it probes with a draft

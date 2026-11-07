@@ -119,7 +119,7 @@ legacy-файлы и блоки, ранее созданные Xrayebator, и с
 | `sudo xrayebator update <branch>` | Self-update менеджера из canonical raw-репозитория (ветка branch), продолжить новым скриптом, затем обновить Xray-core; ветка закрепляется в `.current_branch` для последующих обновлений из GUI |
 | `sudo xrayebator probe-test` | Проверить SNI reachability с VPS |
 | `sudo xrayebator channel-test [--name ИМЯ] [--url URL] [--timeout S] [--transport T]` | Проверить, что каналы профиля **реально работают**: для каждого маршрута поднимается локальный клиент Xray (SOCKS5 на loopback) с параметрами из ссылки подписки, и через него уходит настоящий запрос в интернет; JSON содержит `working`/`checked` и по маршруту `ok`, `http`, `ms`, `pq` и хвост лога клиента. **Let's Encrypt не участвует** — Reality и VLESS Encryption самодостаточны, поэтому проверка работает и на `http_tls`-подписке, и до выпуска сертификата; PQ-маршруты тоже проверяются. Живой прогон: 8/8 маршрутов, 152–252 мс |
-| `sudo xrayebator quickstart --email <адрес>` | Путь одноразового деплоя (используется GUI): broad setup/migration, IP-TLS endpoint на `8443` и стандартный schema-v3 HAPP-профиль из 7 маршрутов; выводит JSON с `subscription_url`. Migration calls best-effort, проверяйте итоговый профиль и сервисы. Дополнительные флаги: `--pq` — добавить профилю PQ-маршрут на tcp (по умолчанию **выключено**: клиент без ML-KEM к PQ-порту не подключится; результат в JSON — `pq_route`), `--without-pq` — явно выключить, `--dns01-domain D --dns01-provider cloudflare\|route53 (--dns01-token T \| --dns01-aws-access-key-id K --dns01-aws-secret-access-key S)` — DNS-01-фолбэк развёртывания. Параметры DNS-01 проверяются **до** системных изменений: неполный набор возвращает `{"ok":false,…}` и ничего не трогает |
+| `sudo xrayebator quickstart --email <адрес>` | Путь одноразового деплоя (используется GUI): broad setup/migration, IP-TLS endpoint на `8443` и стандартный schema-v3 HAPP-профиль из 7 маршрутов; выводит JSON с `subscription_url`. Migration calls best-effort, проверяйте итоговый профиль и сервисы. Дополнительные флаги: `--pq` — добавить профилю PQ-маршрут на tcp (по умолчанию **выключено**: клиент без ML-KEM к PQ-порту не подключится; результат в JSON — `pq_route`), `--without-pq` — явно выключить, `--dns01-domain D --dns01-provider cloudflare\|route53 (--dns01-secret-file F \| --dns01-secret-stdin)` — креды файлом 0600 или через stdin (не видны в `/proc`), `--dns01-token T \| --dns01-aws-access-key-id K --dns01-aws-secret-access-key S` — совместимый, но видимый в `ps` вариант — DNS-01-фолбэк развёртывания. Параметры DNS-01 проверяются **до** системных изменений: неполный набор возвращает `{"ok":false,…}` и ничего не трогает |
 | `sudo xrayebator quickstart --without-email` | Тот же путь развёртывания без ACME email; Certbot регистрирует аккаунт с `--register-unsafely-without-email`, поэтому уведомления и восстановление аккаунта по email недоступны. Если LE не может проверить http-01 (хостер фильтрует порт 80), quickstart деградирует в `http_tls`: подписка поднимается по HTTP, JSON несёт `degraded:true`, повторный деплой после разблокировки :80 возвращает HTTPS |
 | `sudo xrayebator inspect --json` | Read-only проверка установки для GUI-импорта: возвращает состояние Xray, профилей и маркеров подписки; не запускает установку, миграции или изменения конфигурации |
 | `sudo xrayebator happ-setup` | Сокращённый re-entry на существующей установке: проверяет subscription service и usable multi-route profile; при отсутствии markers проверяет IP-TLS endpoint на `8443`, но не фабрикует markers |
@@ -158,11 +158,11 @@ legacy-файлы и блоки, ранее созданные Xrayebator, и с
 | `sudo xrayebator awg-grant --name N` | Выдать per-profile peer (ключевая пара + preshared key + адрес `10.8.1.x` в `.backends.awg` профиля); `awg0.conf` регенерируется; JSON |
 | `sudo xrayebator awg-conf --name N` | Клиентский `.conf` peer-а профиля в JSON `{ok, name, conf}` — full-tunnel AllowedIPs, серверные junk-параметры, endpoint; импорт в клиент AmneziaWG/AmneziaVPN |
 | `sudo xrayebator awg-31 --on\|--off` | Переключить формат конфига AWG 3.1 (`HeaderProtectionKey`, `RandomTrailers`, `S3`/`S4`); для новых установок 3.1 включён по умолчанию, тумблер досоздаёт недостающие параметры сервера на месте, предупреждает, что все выданные клиентские `.conf` нужно скачать заново (AmneziaVPN ≥ 5.0.1.5), и регенерирует интерфейс с откатом |
-| `sudo xrayebator dns01-setup --domain sub.example.com --provider cloudflare\|route53 [--port P] [--staging]` | HTTPS-подписка по домену через DNS-01: порт 80 не нужен, сертификат проверяется TXT-записью. Пишет credentials `0600`, выпускает certbot-сертификат с deploy-hook, поднимает nginx-vhost без `listen 80` и переводит маркеры в `domain_tls`; JSON. Порт по умолчанию — текущий порт подписки (иначе `443`), поэтому URL сохраняет свой порт; `--staging` выпускает сертификат в staging-контуре Let's Encrypt (`--test-cert`, прод-квота не расходуется) и отдаёт `staging:true` — клиенты такой сертификат не принимают |
-| `sudo xrayebator dns01-test --domain sub.example.com --provider cloudflare\|route53 [--token T \| --aws-*] [--email E\|--without-email]` | Проверить домен и токен DNS-провайдера, **не трогая подписку и не расходуя прод-квоту**: выпуск только в staging-контуре, в отдельную линию сертификата, без deploy-hook и без изменений nginx/маркеров/firewall. JSON содержит издателя, срок сертификата, TXT-запись `_acme-challenge.<domain>` для проверки и разобранную причину отказа certbot |
+| `sudo xrayebator dns01-setup --domain sub.example.com --provider cloudflare\|route53 [--port P] [--staging] [--secret-file F \| --secret-stdin]` | HTTPS-подписка по домену через DNS-01: порт 80 не нужен, сертификат проверяется TXT-записью. Пишет credentials `0600`, выпускает certbot-сертификат с deploy-hook, поднимает nginx-vhost без `listen 80` и переводит маркеры в `domain_tls`; JSON. Порт по умолчанию — текущий порт подписки (иначе `443`), поэтому URL сохраняет свой порт; `--staging` выпускает сертификат в staging-контуре Let's Encrypt (`--test-cert`, прод-квота не расходуется) и отдаёт `staging:true` — клиенты такой сертификат не принимают |
+| `sudo xrayebator dns01-test --domain sub.example.com --provider cloudflare\|route53 [--secret-file F \| --secret-stdin \| --token T \| --aws-*] [--email E\|--without-email]` | Проверить домен и токен DNS-провайдера, **не трогая подписку и не расходуя прод-квоту**: выпуск только в staging-контуре, в отдельную линию сертификата, без deploy-hook и без изменений nginx/маркеров/firewall. JSON содержит издателя, срок сертификата, TXT-запись `_acme-challenge.<domain>` для проверки и разобранную причину отказа certbot |
 | `sudo xrayebator dns01-status` | Состояние DNS-01: провайдер, режим, домен, порт, наличие credentials, срок сертификата в днях, наличие deploy-hook (certbot пишет его как `renew_hook`) и признак того, что подписка на staging-сертификате; JSON |
-| `sudo xrayebator repair-dns01 --domain sub.example.com --provider cloudflare\|route53 [--token T \| --aws-*] [--email E] [--port P]` | Заменить деградированную (`http_tls`) подписку на DNS-01: тот же выпуск сертификата по TXT-записи, vhost перерисовывается только с TLS-сервером, маркеры становятся `domain_tls`. Идемпотентно: если подписка уже на HTTPS (`ip_tls`/`domain_tls`), возвращает `{"ok":true,"skipped":true}` и ничего не делает; JSON |
-| `sudo xrayebator alerts-setup --token T --chat-id C` | Подключить Telegram-уведомления: проверяет токен через `getMe`, отправляет тестовое сообщение и **только после успешной доставки** сохраняет `alerts.json` (0600) и включает `xrayebator-monitor.timer`; JSON |
+| `sudo xrayebator repair-dns01 --domain sub.example.com --provider cloudflare\|route53 [--secret-file F \| --secret-stdin \| --token T \| --aws-*] [--email E] [--port P]` | Заменить деградированную (`http_tls`) подписку на DNS-01: тот же выпуск сертификата по TXT-записи, vhost перерисовывается только с TLS-сервером, маркеры становятся `domain_tls`. Идемпотентно: если подписка уже на HTTPS (`ip_tls`/`domain_tls`), возвращает `{"ok":true,"skipped":true}` и ничего не делает; JSON |
+| `sudo xrayebator alerts-setup [--token T \| --secret-file F \| --secret-stdin] --chat-id C` | Подключить Telegram-уведомления: проверяет токен через `getMe`, отправляет тестовое сообщение и **только после успешной доставки** сохраняет `alerts.json` (0600) и включает `xrayebator-monitor.timer`; JSON |
 | `sudo xrayebator alerts-status` | Состояние мониторинга: конфиг, таймер, время последней проверки, события и результат последней SNI-пробы (токен бота не показывается); JSON |
 | `sudo xrayebator alerts-test` | Тестовое сообщение в настроенный чат (проверка доставки); JSON |
 | `sudo xrayebator alerts-enable\|alerts-disable` | Включить или выключить доставку, не удаляя настройки (килл-свитч без потери токена); JSON |
@@ -544,6 +544,10 @@ sudo xrayebator profiles | jq '.[] | {name, traffic_used, traffic_limit, traffic
 (у групп он отрицательный):
 
 ```bash
+# Токен не попадает в командную строку (её видит любой пользователь хоста через /proc):
+printf 'token=%s\n' "$CF_TOKEN" | sudo xrayebator alerts-setup --secret-stdin \
+  --chat-id -1001234567890
+# Совместимый, но видимый в `ps` вариант:
 sudo xrayebator alerts-setup --token 123456:AA... --chat-id -1001234567890
 sudo xrayebator alerts-status                # таймер, последняя проверка, события, SNI
 sudo xrayebator alerts-test                  # тестовое сообщение
@@ -600,13 +604,18 @@ sudo xrayebator profiles | jq '.[] | select(.name == "ИМЯ") | .routes'
 не нужен вовсе, а подписка живёт по своему домену: `https://sub.example.com/sub/<token>`.
 
 ```bash
-# Cloudflare: API-token с правом DNS:Edit на зону
+# Cloudflare: API-token с правом DNS:Edit на зону. Токен уходит файлом 0600 (или
+# stdin), а не аргументом: выпуск сертификата идёт десятки секунд, и всё это время
+# аргументы процесса видны любому пользователю хоста (см. security.md).
+sudo install -m 600 /dev/null /root/.cf
+printf 'token=%s\n' "$CF_TOKEN" | sudo tee /root/.cf >/dev/null
 sudo xrayebator dns01-setup --domain sub.example.com --provider cloudflare \
-  --token CF_API_TOKEN --email admin@example.com
+  --secret-file /root/.cf --email admin@example.com
 
 # Route53: ключи с правом Route53:ChangeResourceRecordSets
-sudo xrayebator dns01-setup --domain sub.example.com --provider route53 \
-  --aws-access-key-id AKIA... --aws-secret-access-key ... --without-email
+printf 'aws_access_key_id=%s\naws_secret_access_key=%s\n' "$AWS_KEY" "$AWS_SECRET" \
+  | sudo xrayebator dns01-setup --domain sub.example.com --provider route53 \
+      --secret-stdin --without-email
 
 sudo xrayebator dns01-status   # провайдер, домен, порт, срок сертификата, deploy-hook
 ```

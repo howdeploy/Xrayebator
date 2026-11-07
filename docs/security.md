@@ -228,6 +228,56 @@ One caveat in fairness to the other side: the MPTCP maintainer argued against di
 in the proxy itself, since it penalises clients that benefit from it. We follow Xray's decision
 as defence in depth, not as a replacement for the kernel update.
 
+## Secrets and process arguments
+
+A process's command line is readable by **every** local user: `/proc/<pid>/cmdline` is
+world-readable (`0444`), while `/proc/<pid>/environ` is readable only by the process owner and
+root (`0400`). On a VPN server that means an unprivileged account — including the `xray` service
+account the proxy itself runs under — can read the arguments of any root process, so a secret
+passed as an argument is a secret handed to anyone who gets code execution there, and to any
+plain `ps aux` from a neighbouring account.
+
+Until 0.7.2 three groups of credentials travelled that way:
+
+* the **Telegram bot token** in the URL of the `curl` process (`…/bot<TOKEN>/sendMessage`). Not a
+  one-off: the monitor timer runs the check every 15 minutes, so a process with the token in its
+  command line existed on every tick and for every alert;
+* the subscription **`sub_token`** in the URL of the loopback subscription check;
+* the **Cloudflare API token / AWS secret key** in the command line of `xrayebator dns01-setup`,
+  `dns01-test`, `repair-dns01` and `quickstart`, which keeps it for the whole certificate
+  issuance — 30 s of DNS propagation wait plus certbot's own work. certbot itself never received
+  them as arguments (an ini file for Cloudflare, `AWS_SHARED_CREDENTIALS_FILE` for Route53, both
+  `0600`), so the manager's own command line was the only exposure.
+
+The fix routes every one of those values around the argument list:
+
+* HTTP clients (`curl`) get the URL through a stdin config (`-K -`), so the token never appears in
+  their arguments;
+* `jq` gets the value through the environment and reads it as `$ENV.XRAYEBATOR_JQ_SECRET`, which
+  covers the Hysteria 2 password, AmneziaWG private and preshared keys, the `sub_token`, the
+  VLESS Encryption key and the bot token when they are written into JSON;
+* the CLI accepts the credential itself from stdin or from a file:
+
+  ```bash
+  # the token appears in neither argv nor the shell history
+  printf 'token=%s\n' "$CF_TOKEN" | sudo xrayebator dns01-setup \
+    --domain sub.example.com --provider cloudflare --secret-stdin --without-email
+  sudo install -m 600 /dev/null /root/.cf && printf 'token=%s\n' "$CF_TOKEN" | sudo tee /root/.cf
+  sudo xrayebator dns01-setup --domain sub.example.com --provider cloudflare --secret-file /root/.cf
+  ```
+
+  The payload is `key=value` lines (`token=…`, `aws_access_key_id=…`,
+  `aws_secret_access_key=…`); a single line without `=` is treated as the token. `--secret-file`
+  refuses a file readable by group or other and deletes it right after reading, so the window on
+  disk is milliseconds. The desktop GUI uploads the file over SFTP with mode `0600` and passes its
+  path — the DNS-01 wizard no longer puts the token on either command line.
+
+`--token` and `--aws-secret-access-key` still work for compatibility, but they now print a warning
+to stderr naming the exposure. Two honest limits remain: a secret typed directly on an interactive
+command line is still visible while that command runs (use `--secret-stdin` instead), and the
+environment route protects a value from other users, not from root — anything running as root can
+read any secret on the host.
+
 ## Desktop GUI credentials
 
 The active Electron GUI supports SSH passwords and private keys, with direct-root or sudo execution. A

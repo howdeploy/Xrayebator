@@ -168,11 +168,18 @@ export class SshClient {
     return this.sftp
   }
 
-  /** Передача файла из локального буфера в удалённый путь. */
-  async upload(buffer: Buffer, remotePath: string): Promise<void> {
+  /**
+   * Передача файла из локального буфера в удалённый путь.
+   * `mode` по умолчанию 0755 (скрипты), для секретов передаётся 0600.
+   */
+  async upload(
+    buffer: Buffer,
+    remotePath: string,
+    options: { mode?: number } = {}
+  ): Promise<void> {
     const sftp = await this.getSftp()
     await new Promise<void>((resolve, reject) => {
-      const stream = sftp.createWriteStream(remotePath, { mode: 0o755 })
+      const stream = sftp.createWriteStream(remotePath, { mode: options.mode ?? 0o755 })
       stream.on('close', () => resolve())
       stream.on('error', reject)
       stream.end(buffer)

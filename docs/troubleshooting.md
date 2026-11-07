@@ -542,6 +542,42 @@ Debian 13, running `6.12.85`, repository `6.12.115`), the command answers `reboo
 the name of the new kernel — reboot and repeat `sudo xrayebator awg-install`. After the reboot the
 module is loaded through `/etc/modules-load.d/xrayebator-awg.conf` and `awg0` comes up via its unit.
 
+## Ubuntu 24.04: `quickstart` cannot find certbot for an IP certificate
+
+**Symptom.** On a freshly installed Ubuntu 24.04 `quickstart` (and the GUI deployment) ends with:
+
+```json
+{"ok":false,"error":"Certbot с --ip-address и --preferred-profile не найден"}
+```
+
+while `snap install --classic certbot` by hand installs certbot 5.x at that very moment without a
+single error.
+
+**Cause.** Ubuntu 24.04 ships with `snapd` ready to go, and right after the first boot (and after the
+first refresh) it finishes seeding and restarts itself — the log shows
+`Waiting for automatic snapd restart...`. A package install at that moment aborts instantly. And IP
+certificates need the snap build (`--ip-address` plus `--preferred-profile`): the apt version in 24.04
+knows neither flag.
+
+**What to do.** This version waits for `snapd` (`snap wait system seed.loaded`), retries the install
+and verifies the result by what the binary can actually do, so simply repeating the command is enough —
+it is idempotent:
+
+```bash
+sudo xrayebator quickstart --without-email   # or the deploy button in the GUI
+```
+
+To check by hand:
+
+```bash
+sudo snap wait system seed.loaded
+sudo snap install --classic certbot
+/snap/bin/certbot --help all | grep -c -- '--ip-address'     # 1 means it works
+```
+
+The log of a failed snap install is `/tmp/snap-certbot.log`. On Ubuntu 24.04 `/tmp` is a tmpfs, so
+nothing survives a reboot.
+
 ## An error appeared during installation or use
 
 ### `Сгенерированный config.json не прошёл валидацию — live-конфиг не изменён`
