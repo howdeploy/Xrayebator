@@ -2,7 +2,7 @@
 
 User-facing Xrayebator changes. The server manager and Electron application are published from the canonical `howdeploy/Xrayebator` repository.
 
-## [Unreleased]
+## [0.7.3] - 2026-11-07
 
 Secrets no longer travel in process arguments. `/proc/<pid>/cmdline` is readable by every local
 user (unlike `/proc/<pid>/environ`, which only the process owner and root can read), so a secret
