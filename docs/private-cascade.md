@@ -44,7 +44,19 @@ vless://<uuid>@<egress-address>:<port>?encryption=none&security=reality&type=tcp
 
 For XHTTP, export a compatible legacy XHTTP route with `encryption=none` and keep its `path`, `host`, and `mode`. The ordinary XHTTP profile creator uses PQ by default. Verify the restricted listener from both the ingress and a source outside its allowlist. Confirm the foreign node has a working internet egress. [Standard cascade](configuration.md#cascade-and-upstream-nodes)
 
-The foreign VPS resolves forwarded names independently. Enforce the public IPv4 policy at its exit, including for each UDP packet. Use a dedicated Freedom outbound with Xray-core 26.6.27 or newer. Set `ForceIPv4` in `streamSettings.sockopt.domainStrategy` on 26.10.31 or newer, or in `settings.domainStrategy` on older supported cores. Put `{"action":"block","ip":["geoip:private","::/0"]}` in `settings.finalRules` before any allow rules. Also block any provider metadata addresses outside the private set. Verify the restriction for literal destinations and for hostnames that resolve to them. These are destination restrictions. The connection between VPSs can still use IPv6.
+The foreign VPS resolves forwarded names independently. Enforce the public IPv4 policy at its exit, including for each UDP packet. Append a dedicated Freedom outbound tagged `private-cascade-exit` to `outbounds` on Xray-core 26.6.27 or newer. Set `ForceIPv4` in `streamSettings.sockopt.domainStrategy` on 26.10.31 or newer, or in `settings.domainStrategy` on older supported cores. Put `{"action":"block","ip":["geoip:private","::/0"]}` in `settings.finalRules` before any allow rules. Also block any provider metadata addresses outside the private set. These are destination restrictions. The connection between VPSs can still use IPv6.
+
+In the foreign node's `routing.rules`, insert this rule after the existing block rules and before the first general forwarding rule that matches the cascade inbound, including the TCP/UDP catch-all. Replace `inbound-25443` with the actual inbound tag if you used a different port or profile.
+
+```json
+{
+  "type": "field",
+  "inboundTag": ["inbound-25443"],
+  "outboundTag": "private-cascade-exit"
+}
+```
+
+With the foreign hop running, confirm in the foreign Xray logs that this inbound selects `private-cascade-exit`. In a single XUDP association, send a datagram to a controlled, permitted IPv4 endpoint, then a datagram to a controlled, prohibited endpoint. Confirm that the first arrives and the second does not. Verify the restrictions for both literal addresses and names that resolve to them.
 
 ## Render and start the ingress
 
@@ -124,4 +136,4 @@ Use the template inbound's first client URI as a private reference. Replace its 
 1. From a desktop or command-line client on the intended network, verify the REALITY connection and send a few small HTTPS and DNS requests. Use controlled endpoints or destination-side logs to confirm that an explicit Russian route sees the Russian source IP and an unmatched route sees the foreign source IP. Verify that a request to a public IPv4 address from `blocked_ips` takes the foreign path even when sniffing detects a `.ru` hostname.
 2. In a maintenance window, briefly withdraw only the dedicated foreign hop and open fresh test connections. Confirm that a direct Russian TCP request and a virtual DNS query still work. Confirm that foreign TCP and application UDP fail, including when two datagrams in one XUDP association address different destinations. Use controlled endpoints to confirm they receive no traffic from the Russian VPS. Restore the hop and check recovery. Verify the private address and IPv6 restrictions with isolated probes.
 3. Compare the original Xray service, profiles and subscriptions, Hysteria 2 and AmneziaWG against the preflight baseline. The separate unit leaves their services and routing in place. After verification, enable the cascade at boot with `sudo systemctl enable xray-private-cascade.service`.
-4. To roll back, disconnect the cascade profile and run `sudo systemctl disable --now xray-private-cascade.service`. Verify that its listener is gone. Remove the dedicated unit and installed config, then run `sudo systemctl daemon-reload`. Close the dedicated ports in both firewalls. Delete `private-cascade-egress` on the foreign VPS with `sudo xrayebator profile-delete --name private-cascade-egress`. If you created `private-cascade-template` for the cascade, delete that profile by name on the Russian VPS. Recheck the baseline services.
+4. To roll back, disconnect the cascade profile and run `sudo systemctl disable --now xray-private-cascade.service`. Verify that its listener is gone. Remove the dedicated unit and installed config, then run `sudo systemctl daemon-reload`. Close the dedicated ports in both firewalls. Delete `private-cascade-egress` on the foreign VPS with `sudo xrayebator profile-delete --name private-cascade-egress`, then remove the dedicated routing rule and the `private-cascade-exit` outbound. If you created `private-cascade-template` for the cascade, delete that profile by name on the Russian VPS. Recheck the baseline services.
