@@ -696,6 +696,9 @@ Disabling the cascade removes the `cascade-upstream` outbound and returns the ca
 Item `10` configures the other side: it turns the current VPS into the foreign node that a cascade
 from another server connects to.
 
+For a separate Russian ingress that routes selected destinations locally and sends other traffic
+through a restricted foreign node, see [Private cascade deployment](private-cascade.md).
+
 ## Custom domain and self-steal stub
 
 Self-steal puts nginx with a valid certificate on `127.0.0.1:9444`, and Reality inbounds receive
