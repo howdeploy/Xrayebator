@@ -181,6 +181,8 @@ jq -e '
   .outbounds[0].protocol == "blackhole" and
   any(.outbounds[]; .tag == "direct" and .streamSettings.sockopt.domainStrategy == "ForceIPv4") and
   ([.outbounds[] | select(.tag=="cascade-upstream")][0] | .settings.vnext[0].address == "2001:db8::10"
+    and .settings.vnext[0].users[0].id == "11111111-1111-4111-8111-111111111111"
+    and .streamSettings.realitySettings.shortId == "abcd1234"
     and .streamSettings.xhttpSettings.mode == "stream-one")
 ' "$output" >/dev/null || fail "private cascade routing or ingress mismatch"
 cp "$output" "$WORKDIR/private.before"
