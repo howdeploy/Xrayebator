@@ -7049,6 +7049,13 @@ private_cascade_command() (
     printf 'Private cascade output already exists.\n' >&2
     return 1
   fi
+  local min_xray_version="26.6.27" xray_version
+  if ! xray_version=$("$XRAY_BIN" version 2>/dev/null) ||
+     ! [[ $xray_version =~ ^Xray[[:blank:]]+([0-9]+\.[0-9]+\.[0-9]+)([[:space:]]|$) ]] ||
+     ! _xray_version_at_least_pure "${BASH_REMATCH[1]}" "$min_xray_version"; then
+    printf 'Private cascade requires Xray-core %s or newer.\n' "$min_xray_version" >&2
+    return 1
+  fi
   mapfile -t links < "$upstream" || return 1
   if [[ "${#links[@]}" -ne 1 ]]; then
     printf 'The upstream file must contain exactly one VLESS link.\n' >&2
@@ -7064,6 +7071,7 @@ private_cascade_command() (
   jq -e --slurpfile policies "$policy" --slurpfile upstream "$workdir/outbound.json" \
     --slurpfile fragment "$workdir/fragment.json" '
     def selectors: type == "array" and all(.[]; type == "string" and length > 0);
+    def optional_selectors($key): (has($key) | not) or (.[$key] | selectors);
     def ipv4:
       type == "string" and (split(".") |
         length == 4 and all(.[]; test("^(0|[1-9][0-9]{0,2})$") and tonumber <= 255));
@@ -7077,11 +7085,16 @@ private_cascade_command() (
       (.port | type == "number" and floor == . and . >= 1 and . <= 65535) and
       (.blocked_domains | selectors) and (.blocked_ips | selectors) and
       ((.blocked_domains + .blocked_ips) | length > 0) and
-      ((.russia_only_domains // []) | selectors) and
-      ((.russian_domains // []) | selectors) and ((.russian_ips // []) | selectors);
+      optional_selectors("russia_only_domains") and
+      optional_selectors("russian_domains") and optional_selectors("russian_ips");
     def rule($field; $values; $target):
       if ($values | length) == 0 then empty
       else {type:"field", ($field):$values, outboundTag:$target} end;
+    def direct($tag; $final_rules):
+      # Older cores resolve Freedom destinations before applying sockopt.
+      {tag:$tag, protocol:"freedom",
+       settings:{domainStrategy:"ForceIPv4", finalRules:$final_rules},
+       streamSettings:{sockopt:{domainStrategy:"ForceIPv4"}}};
 
     if ($policies | length) != 1 or ($policies[0] | valid_policy | not)
     then error("Invalid private cascade policy") else . end |
@@ -7100,31 +7113,45 @@ private_cascade_command() (
        (($in.streamSettings.realitySettings.serverNames // []) | length) == 0
     then error("Ingress needs standard VLESS Reality TCP/XHTTP and a new private client UUID")
     else . end |
-    ["geoip:private","::/0"] as $denied_ips |
+    ["192.0.2.53"] as $dns_ips |
+    ($dns_ips + ["geoip:private","::/0"]) as $denied_ips |
+    ($denied_ips + $p.blocked_ips) as $protected_ips |
+    ($p.russia_only_domains // []) as $russia_only |
+    ($p.russian_ips // ["geoip:ru"]) as $russian_ips |
     {
       log:{loglevel:"warning", access:"none"},
       dns:{servers:["https+local://1.1.1.1/dns-query","localhost"], queryStrategy:"UseIPv4"},
       inbounds: [($in | .listen=$p.listen | .port=$p.port | .tag="private-cascade-entry" |
         .settings.clients=[($template_client | {id:$client_id} + (if .flow then {flow} else {} end))] |
         .sniffing={enabled:true, destOverride:["http","tls","quic"], routeOnly:false,
-                   ipsExcluded:($denied_ips + $p.blocked_ips)})],
+                   ipsExcluded:$protected_ips})],
       outbounds:[
         {tag:"block",protocol:"blackhole"},
         {tag:"private-cascade-dns",protocol:"dns"},
-        # Older cores resolve Freedom destinations before applying sockopt.
-        {tag:"direct",protocol:"freedom",settings:{domainStrategy:"ForceIPv4"},
-         streamSettings:{sockopt:{domainStrategy:"ForceIPv4"}}},
+        direct("direct"; [{action:"block", ip:$protected_ips}]),
+        (if ($russia_only | length) > 0
+         then direct("direct-russia-only"; [{action:"block", ip:$denied_ips}])
+         else empty end),
+        (if ($russian_ips | length) > 0
+         then direct("direct-russian-ip"; [
+           {action:"block", ip:$protected_ips},
+           {action:"allow", ip:$russian_ips},
+           {action:"block"}
+         ])
+         else empty end),
         $fragment[0], $upstream[0]
       ],
       routing:{domainStrategy:"IPOnDemand",rules:[
-        {type:"field", ip:["192.0.2.53"], port:53, network:"tcp,udp",outboundTag:"private-cascade-dns"},
+        {type:"field", ip:$dns_ips, port:53, network:"tcp,udp",outboundTag:"private-cascade-dns"},
         {type:"field", ip:$denied_ips,outboundTag:"block"},
-        rule("domain"; $p.russia_only_domains // []; "direct"),
+        # XUDP can change destinations after its first routing decision.
+        {type:"field",network:"udp",outboundTag:"cascade-upstream"},
+        rule("domain"; $russia_only; "direct-russia-only"),
         rule("domain"; $p.blocked_domains; "cascade-upstream"),
         rule("ip"; $p.blocked_ips; "cascade-upstream"),
         rule("domain"; $p.russian_domains // ["domain:ru","domain:xn--p1ai"]; "direct"),
-        rule("ip"; $p.russian_ips // ["geoip:ru"]; "direct"),
-        {type:"field",network:"tcp,udp",outboundTag:"cascade-upstream"}
+        rule("ip"; $russian_ips; "direct-russian-ip"),
+        {type:"field",network:"tcp",outboundTag:"cascade-upstream"}
       ]}
     }
   ' "$CONFIG_FILE" > "$workdir/config.json" || return 1
