@@ -38,6 +38,8 @@ On the foreign VPS, create a named TCP Vision profile on the reserved free port 
 vless://<uuid>@<egress-address>:<port>?encryption=none&security=reality&type=tcp&flow=xtls-rprx-vision&sni=<sni>&fp=<fingerprint>&pbk=<public-key>&sid=<short-id>
 ```
 
+**TCP Vision limitation.** With `flow=xtls-rprx-vision`, Xray rejects traffic to UDP port 443 on the foreign route. Browsers can retry HTTPS over TCP when HTTP/3 is unavailable. Applications that require UDP/443 need a different transport.
+
 For XHTTP, export a compatible legacy XHTTP route with `encryption=none` and keep its `path`, `host`, and `mode`. The ordinary XHTTP profile creator uses PQ by default. Verify the restricted listener from both the ingress and a source outside its allowlist. Confirm the foreign node has a working internet egress. [Standard cascade](configuration.md#cascade-and-upstream-nodes)
 
 The foreign VPS can resolve forwarded names independently. Before admitting clients, verify that its egress controls block connections to loopback, private networks and provider metadata from forwarded requests, including when a DNS name resolves there. If clients must use public IPv4 destinations only, enforce that policy on the foreign egress too. This is separate from using IPv6 for the server hop.
@@ -51,7 +53,7 @@ Generate a fresh UUID with `uuidgen` for the standalone ingress. Create two root
 ```json
 {
   "inbound_tag": "inbound-15442",
-  "client_id": "<pilot-profile-uuid>",
+  "client_id": "<cascade-client-uuid>",
   "listen": "0.0.0.0",
   "port": 15443,
   "blocked_domains": ["domain:example.net"],
@@ -61,7 +63,9 @@ Generate a fresh UUID with `uuidgen` for the standalone ingress. Create two root
 
 Choose a free TCP port and open it at both ingress firewalls for the intended client sources. Both `blocked_domains` and `blocked_ips` are required arrays, with at least one entry between them. Optional arrays `russia_only_domains`, `russian_domains`, and `russian_ips` define direct routes. The defaults for the latter two are `.ru`/`.рф` and `geoip:ru`. Use Xray selectors matching your deployed assets. `ext:` rules require their corresponding local data files. The renderer reads those assets from the host and performs no downloads.
 
-The ingress blocks private and IPv6 destinations matched by its IP rules. The explicit Russia-only domain exception takes precedence over the blocked lists. Blocked destinations go through the foreign hop ahead of the general Russian rules. The remaining TCP and UDP traffic uses the foreign hop and fails closed if it is unavailable. The ingress uses service DoH with a local resolver fallback. Configure the client to send its DNS to `192.0.2.53:53` inside VLESS. Keep pilot requests inside the tunnel and disable client-side fallback to direct or another profile.
+The ingress blocks private and IPv6 destinations matched by its IP rules. The direct outbound resolves domain names using IPv4 only. Sniffing preserves a client-supplied IP that matches these IP restrictions or `blocked_ips`. For other requests, a recognized Russia-only domain takes precedence over the blocked lists. Blocked destinations go through the foreign hop ahead of the general Russian rules. The foreign route handles the remaining supported TCP and UDP traffic and fails closed if it is unavailable.
+
+The ingress uses service DoH with a local resolver fallback. Configure the client to send its DNS to `192.0.2.53:53` inside VLESS. Disable client-side fallback to direct or another profile.
 
 ```bash
 sudo xrayebator private-cascade render \
@@ -109,9 +113,9 @@ ss -ltn 'sport = :15443'
 
 Use the template inbound's first client URI as a private reference. Replace its UUID with the new ingress UUID and set the dial address and port to the standalone listener. Keep the REALITY fields, flow, fingerprint, and transport options, including the XHTTP host, path and mode if present. Import it as a separate test profile. Rotate its UUID in the standalone config and issue a new link when needed.
 
-## Accept or roll back the pilot
+## Verify or roll back the cascade
 
-1. From a desktop or command-line client on the intended network, verify the REALITY connection and send a few small HTTPS and DNS requests. Use controlled endpoints or destination-side logs to confirm that an explicit Russian route sees the Russian source IP and an unmatched route sees the foreign source IP. Where the policies overlap, verify that a blocked destination takes the foreign path unless explicitly listed as Russia-only.
+1. From a desktop or command-line client on the intended network, verify the REALITY connection and send a few small HTTPS and DNS requests. Use controlled endpoints or destination-side logs to confirm that an explicit Russian route sees the Russian source IP and an unmatched route sees the foreign source IP. Verify that a request to a public IPv4 address from `blocked_ips` takes the foreign path even when sniffing detects a `.ru` hostname.
 2. In a maintenance window, briefly withdraw only the dedicated foreign hop and open fresh test connections. A request that requires the foreign path must fail without reaching the destination from the Russian VPS. Restore the hop and check recovery. Verify the policy for private addresses and IPv6 with isolated probes and check client DNS through the virtual resolver. These checks use a few requests and can run without mobile testing or a load test.
-3. Compare the original Xray service, profiles and subscriptions, Hysteria 2 and AmneziaWG against the preflight baseline. The separate unit leaves their services and routing in place. Enable the pilot at boot only after acceptance with `sudo systemctl enable xray-private-cascade.service`.
-4. To roll back, disconnect the pilot profile and run `sudo systemctl disable --now xray-private-cascade.service`. Verify that its listener is gone. Remove the pilot's dedicated unit and installed config, then run `sudo systemctl daemon-reload`. Close the dedicated ports in both firewalls. Delete `private-cascade-egress` on the foreign VPS with `sudo xrayebator profile-delete --name private-cascade-egress`. If you created `private-cascade-template` for the pilot, delete that profile by name on the Russian VPS. Recheck the baseline services.
+3. Compare the original Xray service, profiles and subscriptions, Hysteria 2 and AmneziaWG against the preflight baseline. The separate unit leaves their services and routing in place. After verification, enable the cascade at boot with `sudo systemctl enable xray-private-cascade.service`.
+4. To roll back, disconnect the cascade profile and run `sudo systemctl disable --now xray-private-cascade.service`. Verify that its listener is gone. Remove the dedicated unit and installed config, then run `sudo systemctl daemon-reload`. Close the dedicated ports in both firewalls. Delete `private-cascade-egress` on the foreign VPS with `sudo xrayebator profile-delete --name private-cascade-egress`. If you created `private-cascade-template` for the cascade, delete that profile by name on the Russian VPS. Recheck the baseline services.

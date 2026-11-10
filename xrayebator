@@ -7100,21 +7100,25 @@ private_cascade_command() (
        (($in.streamSettings.realitySettings.serverNames // []) | length) == 0
     then error("Ingress needs standard VLESS Reality TCP/XHTTP and a new private client UUID")
     else . end |
+    ["geoip:private","::/0"] as $denied_ips |
     {
       log:{loglevel:"warning", access:"none"},
       dns:{servers:["https+local://1.1.1.1/dns-query","localhost"], queryStrategy:"UseIPv4"},
       inbounds: [($in | .listen=$p.listen | .port=$p.port | .tag="private-cascade-entry" |
         .settings.clients=[($template_client | {id:$client_id} + (if .flow then {flow} else {} end))] |
-        .sniffing={enabled:true, destOverride:["http","tls","quic"], routeOnly:false})],
+        .sniffing={enabled:true, destOverride:["http","tls","quic"], routeOnly:false,
+                   ipsExcluded:($denied_ips + $p.blocked_ips)})],
       outbounds:[
         {tag:"block",protocol:"blackhole"},
         {tag:"private-cascade-dns",protocol:"dns"},
-        {tag:"direct",protocol:"freedom",streamSettings:{sockopt:{domainStrategy:"ForceIPv4"}}},
+        # Older cores resolve Freedom destinations before applying sockopt.
+        {tag:"direct",protocol:"freedom",settings:{domainStrategy:"ForceIPv4"},
+         streamSettings:{sockopt:{domainStrategy:"ForceIPv4"}}},
         $fragment[0], $upstream[0]
       ],
       routing:{domainStrategy:"IPOnDemand",rules:[
         {type:"field", ip:["192.0.2.53"], port:53, network:"tcp,udp",outboundTag:"private-cascade-dns"},
-        {type:"field", ip:["geoip:private","::/0"],outboundTag:"block"},
+        {type:"field", ip:$denied_ips,outboundTag:"block"},
         rule("domain"; $p.russia_only_domains // []; "direct"),
         rule("domain"; $p.blocked_domains; "cascade-upstream"),
         rule("ip"; $p.blocked_ips; "cascade-upstream"),
