@@ -179,6 +179,7 @@ jq -e '
     ["private-cascade-dns","block","direct","cascade-upstream","cascade-upstream","direct","direct","cascade-upstream"] and
   .routing.rules[0].ip == ["192.0.2.53"] and .routing.rules[1].ip == ["geoip:private","::/0"] and
   .outbounds[0].protocol == "blackhole" and
+  any(.outbounds[]; .tag == "direct" and .streamSettings.sockopt.domainStrategy == "ForceIPv4") and
   ([.outbounds[] | select(.tag=="cascade-upstream")][0] | .settings.vnext[0].address == "2001:db8::10"
     and .streamSettings.xhttpSettings.mode == "stream-one")
 ' "$output" >/dev/null || fail "private cascade routing or ingress mismatch"

@@ -7109,7 +7109,7 @@ private_cascade_command() (
       outbounds:[
         {tag:"block",protocol:"blackhole"},
         {tag:"private-cascade-dns",protocol:"dns"},
-        {tag:"direct",protocol:"freedom",settings:{domainStrategy:"ForceIPv4"}},
+        {tag:"direct",protocol:"freedom",streamSettings:{sockopt:{domainStrategy:"ForceIPv4"}}},
         $fragment[0], $upstream[0]
       ],
       routing:{domainStrategy:"IPOnDemand",rules:[
