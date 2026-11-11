@@ -36,7 +36,7 @@ promise that installer and updater paths behave identically.
 
 ## Validation suite
 
-`validation/` contains exactly 49 scripts. Run every `validation/test-*.sh`; the current set is:
+`validation/` contains exactly 50 scripts. Run every `validation/test-*.sh`; the current set is:
 
 | Script | What it checks |
 |---|---|
@@ -54,6 +54,7 @@ promise that installer and updater paths behave identically.
 | `test-certbot-snap-ip.sh` | Certbot for IP certificates: a single `_ensure_certbot_ip_tls` implementation (quickstart keeps no `snap install` of its own), waiting for snapd readiness (`snap wait system seed.loaded`), a retried install, the result verified by the binary's actual flags, snap output going to a log instead of stdout; functionally, `_certbot_supports_ip_address` tells certbot 5.4+ apart from the apt build and from a binary without `--preferred-profile` |
 | `test-profile-revoke-expire-cli.sh` | Subscription revoke (token-only and uuid rotation, foreign clients on shared ports survive) and profile expiry (disable/enable, rebuild without a snapshot, idempotent `expire-check`) |
 | `test-cascade-routing.sh` | Cascade routing configuration |
+| `test-profile-create-without-pq.sh` | Legacy XHTTP creation and URI export, unchanged PQ default, incompatible ports and backend lifecycle events |
 | `test-cascade-upstream-import.sh` | Cascade upstream import from a VLESS link |
 | `test-dead-stealth-route-pruning.sh` | Pruning dead stealth routes |
 | `test-fingerprint-subscription-sync.sh` | Fingerprint changes and subscription synchronisation |

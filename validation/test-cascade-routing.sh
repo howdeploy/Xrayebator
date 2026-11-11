@@ -192,7 +192,7 @@ jq -e '
   $rules[1] == {type:"field", ip:$denied_ips, outboundTag:"block"} and
   $rules[2] == {type:"field", network:"udp", outboundTag:"cascade-upstream"} and
   $rules[-1] == {type:"field", network:"tcp", outboundTag:"cascade-upstream"} and
-  .inbounds[0].sniffing.ipsExcluded == $protected_ips and
+  .inbounds[0].sniffing.ipsExcluded == $denied_ips and
   $rules[6].domain == ["domain:ru","domain:xn--p1ai"] and $rules[7].ip == ["geoip:ru"] and
   .outbounds[0].protocol == "blackhole" and
   all(.outbounds[] | select(.tag | startswith("direct"));
