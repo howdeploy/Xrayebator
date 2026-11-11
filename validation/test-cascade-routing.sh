@@ -179,21 +179,28 @@ jq -e '
   ["192.0.2.53","geoip:private","::/0"] as $denied_ips |
   ($denied_ips + ["198.51.100.0/24"]) as $protected_ips |
   .routing.rules as $rules |
-  (.inbounds | length) == 1 and
+  (.inbounds | length) == 2 and
   .inbounds[0].port == 15443 and .inbounds[0].sniffing.routeOnly == false and
   .inbounds[0].settings.clients == [{id:"22222222-2222-4222-8222-222222222222"}] and
   .dns.servers[-1] == "localhost" and
   .routing.domainStrategy == "IPOnDemand" and
   ($rules | map(.outboundTag)) == [
-    "private-cascade-dns", "block", "cascade-upstream", "direct-russia-only", "cascade-upstream",
+    "private-cascade-udp-relay", "block", "private-cascade-dns", "block", "direct-russia-only", "cascade-upstream",
     "cascade-upstream", "direct", "direct-russian-ip", "cascade-upstream"
   ] and
-  $rules[0] == {type:"field", ip:["192.0.2.53"], port:53, network:"tcp,udp", outboundTag:"private-cascade-dns"} and
-  $rules[1] == {type:"field", ip:$denied_ips, outboundTag:"block"} and
-  $rules[2] == {type:"field", network:"udp", outboundTag:"cascade-upstream"} and
-  $rules[-1] == {type:"field", network:"tcp", outboundTag:"cascade-upstream"} and
+  $rules[0] == {type:"field", inboundTag:["private-cascade-entry"], network:"udp", outboundTag:"private-cascade-udp-relay"} and
+  $rules[1] == {type:"field", inboundTag:["private-cascade-udp-dispatch"], network:"tcp", outboundTag:"block"} and
+  $rules[2] == {type:"field", ip:["192.0.2.53"], port:53, network:"tcp,udp", outboundTag:"private-cascade-dns"} and
+  $rules[3] == {type:"field", ip:$denied_ips, outboundTag:"block"} and
+  $rules[-1] == {type:"field", network:"tcp,udp", outboundTag:"cascade-upstream"} and
   .inbounds[0].sniffing.ipsExcluded == $denied_ips and
-  $rules[6].domain == ["domain:ru","domain:xn--p1ai"] and $rules[7].ip == ["geoip:ru"] and
+  .inbounds[1].tag == "private-cascade-udp-dispatch" and
+  .inbounds[1].listen == "127.0.0.1" and .inbounds[1].port == 15445 and
+  .inbounds[1].protocol == "vless" and .inbounds[1].settings.decryption == "none" and
+  .inbounds[1].settings.clients[0].id != .inbounds[0].settings.clients[0].id and
+  .inbounds[1].streamSettings == {network:"tcp", security:"none"} and
+  .inbounds[1].sniffing == {enabled:true, destOverride:["quic"], routeOnly:false, ipsExcluded:$denied_ips} and
+  $rules[7].domain == ["domain:ru","domain:xn--p1ai"] and $rules[8].ip == ["geoip:ru"] and
   .outbounds[0].protocol == "blackhole" and
   all(.outbounds[] | select(.tag | startswith("direct"));
     .protocol == "freedom" and .settings.domainStrategy == "ForceIPv4" and
@@ -203,6 +210,10 @@ jq -e '
   outbound("direct-russian-ip").settings.finalRules == [
     {action:"block", ip:$protected_ips}, {action:"allow", ip:["geoip:ru"]}, {action:"block"}
   ] and
+  (outbound("private-cascade-udp-relay") | .protocol == "trojan" and
+    .streamSettings == {network:"tcp",security:"none"} and
+    .settings.servers[0].address == "127.0.0.1" and .settings.servers[0].port == 15444 and
+    (.settings.servers[0].password | test("^[a-f0-9]{48}$"))) and
   (outbound("cascade-upstream") | .settings.vnext[0].address == "2001:db8::10"
     and .settings.vnext[0].users[0].id == "11111111-1111-4111-8111-111111111111"
     and .streamSettings.realitySettings.shortId == "abcd1234"
@@ -222,6 +233,19 @@ jq -e 'all(.routing.rules[]; .outboundTag | startswith("direct") | not) and
   || fail "empty optional selectors enabled direct routes"
 
 output="$WORKDIR/rejected.json"
+for field in udp_relay_port udp_dispatch_port; do
+  for value in 0 -1 1023 65536 15443 false null '"15446"'; do
+    jq --arg field "$field" --argjson value "$value" '.[$field] = $value' \
+      "$WORKDIR/policy.json" > "$WORKDIR/bad-port.json"
+    chmod 600 "$WORKDIR/bad-port.json"
+    if render "$WORKDIR/bad-port.json" >/dev/null 2>&1; then
+      fail "private cascade accepted $field=$value"
+    fi
+    [[ ! -e "$output" ]] || fail "invalid local port left a candidate"
+  done
+done
+jq '.udp_relay_port=15445' "$WORKDIR/policy.json" > "$WORKDIR/bad-port.json"
+if render "$WORKDIR/bad-port.json" >/dev/null 2>&1; then fail "private cascade accepted colliding local ports"; fi
 for field in russia_only_domains russian_domains russian_ips; do
   for value in false null; do
     jq --arg field "$field" --argjson value "$value" '.[$field] = $value' \

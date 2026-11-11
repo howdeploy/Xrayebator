@@ -7014,7 +7014,7 @@ _cascade_build_fragment_outbound_json() {
 
 private_cascade_command() (
   local usage='Usage: xrayebator private-cascade render --policy-file FILE --upstream-file FILE --output FILE'
-  local policy="" upstream="" output="" workdir
+  local policy="" upstream="" output="" workdir relay_password dispatch_id
   local -a links=()
   if [[ "$#" -eq 1 && "$1" == "--help" ]]; then
     printf '%s\n' "$usage"
@@ -7068,21 +7068,33 @@ private_cascade_command() (
   _cascade_build_outbound_json "$workdir/upstream.json" > "$workdir/outbound.json" || return 1
   _cascade_build_fragment_outbound_json > "$workdir/fragment.json" || return 1
 
+  relay_password=$(openssl rand -hex 24) || return 1
+  dispatch_id=$(uuidgen) || return 1
+  [[ "$relay_password" =~ ^[a-f0-9]{48}$ && "$dispatch_id" =~ ^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$ ]] || return 1
+
+  CASCADE_RELAY_PASSWORD="$relay_password" CASCADE_DISPATCH_ID="$dispatch_id" \
   jq -e --slurpfile policies "$policy" --slurpfile upstream "$workdir/outbound.json" \
     --slurpfile fragment "$workdir/fragment.json" '
     def selectors: type == "array" and all(.[]; type == "string" and length > 0);
     def optional_selectors($key): (has($key) | not) or (.[$key] | selectors);
+    def port_number: type == "number" and floor == . and . >= 1 and . <= 65535;
+    def optional_port($key): (has($key) | not) or (.[$key] | port_number and . >= 1024);
     def ipv4:
       type == "string" and (split(".") |
         length == 4 and all(.[]; test("^(0|[1-9][0-9]{0,2})$") and tonumber <= 255));
     def valid_policy:
       type == "object" and
       ((keys - ["inbound_tag", "client_id", "listen", "port", "russia_only_domains",
-                "blocked_domains", "blocked_ips", "russian_domains", "russian_ips"]) | length == 0) and
+                "blocked_domains", "blocked_ips", "russian_domains", "russian_ips",
+                "udp_relay_port", "udp_dispatch_port"]) | length == 0) and
       (.inbound_tag | type == "string" and length > 0) and
       (.client_id | type == "string" and test("^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$")) and
       (.listen | ipv4) and
-      (.port | type == "number" and floor == . and . >= 1 and . <= 65535) and
+      (.port | port_number) and
+      optional_port("udp_relay_port") and optional_port("udp_dispatch_port") and
+      (.udp_relay_port // 15444 | port_number) and
+      (.udp_dispatch_port // 15445 | port_number) and
+      ([.port, (.udp_relay_port // 15444), (.udp_dispatch_port // 15445)] | unique | length == 3) and
       (.blocked_domains | selectors) and (.blocked_ips | selectors) and
       ((.blocked_domains + .blocked_ips) | length > 0) and
       optional_selectors("russia_only_domains") and
@@ -7098,7 +7110,7 @@ private_cascade_command() (
 
     if ($policies | length) != 1 or ($policies[0] | valid_policy | not)
     then error("Invalid private cascade policy") else . end |
-    $policies[0] as $p |
+    ($policies[0] | .udp_relay_port //= 15444 | .udp_dispatch_port //= 15445) as $p |
     [.inbounds[]? | select(.tag == $p.inbound_tag)] as $matches |
     if ($matches | length) != 1 then error("Select one configured ingress inbound") else . end |
     $matches[0] as $in |
@@ -7124,7 +7136,12 @@ private_cascade_command() (
       inbounds: [($in | .listen=$p.listen | .port=$p.port | .tag="private-cascade-entry" |
         .settings.clients=[($template_client | {id:$client_id} + (if .flow then {flow} else {} end))] |
         .sniffing={enabled:true, destOverride:["http","tls","quic"], routeOnly:false,
-                   ipsExcluded:$denied_ips})],
+                   ipsExcluded:$denied_ips}),
+        {tag:"private-cascade-udp-dispatch", listen:"127.0.0.1", port:$p.udp_dispatch_port,
+         protocol:"vless", settings:{decryption:"none", clients:[{id:env.CASCADE_DISPATCH_ID}]},
+         streamSettings:{network:"tcp", security:"none"},
+         sniffing:{enabled:true, destOverride:["quic"], routeOnly:false, ipsExcluded:$denied_ips}}
+      ],
       outbounds:[
         {tag:"block",protocol:"blackhole"},
         {tag:"private-cascade-dns",protocol:"dns"},
@@ -7139,19 +7156,23 @@ private_cascade_command() (
            {action:"block"}
          ])
          else empty end),
+        {tag:"private-cascade-udp-relay", protocol:"trojan",
+         settings:{servers:[{address:"127.0.0.1", port:$p.udp_relay_port, password:env.CASCADE_RELAY_PASSWORD}]},
+         streamSettings:{network:"tcp", security:"none"}},
         $fragment[0], $upstream[0]
       ],
       routing:{domainStrategy:"IPOnDemand",rules:[
+        # Split mutable public XUDP before DNS or any destination-based route.
+        {type:"field", inboundTag:["private-cascade-entry"], network:"udp",outboundTag:"private-cascade-udp-relay"},
+        {type:"field", inboundTag:["private-cascade-udp-dispatch"], network:"tcp",outboundTag:"block"},
         {type:"field", ip:$dns_ips, port:53, network:"tcp,udp",outboundTag:"private-cascade-dns"},
         {type:"field", ip:$denied_ips,outboundTag:"block"},
-        # XUDP can change destinations after its first routing decision.
-        {type:"field",network:"udp",outboundTag:"cascade-upstream"},
         rule("domain"; $russia_only; "direct-russia-only"),
         rule("domain"; $p.blocked_domains; "cascade-upstream"),
         rule("ip"; $p.blocked_ips; "cascade-upstream"),
         rule("domain"; $p.russian_domains // ["domain:ru","domain:xn--p1ai"]; "direct"),
         rule("ip"; $russian_ips; "direct-russian-ip"),
-        {type:"field",network:"tcp",outboundTag:"cascade-upstream"}
+        {type:"field",network:"tcp,udp",outboundTag:"cascade-upstream"}
       ]}
     }
   ' "$CONFIG_FILE" > "$workdir/config.json" || return 1

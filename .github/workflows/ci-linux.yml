@@ -14,6 +14,7 @@ on:
       - "update.sh"
       - "uninstall.sh"
       - "validation/**"
+      - "libexec/**"
       - ".github/workflows/ci-linux.yml"
   workflow_dispatch:
 
@@ -56,3 +57,33 @@ jobs:
             exit 1
           fi
           echo "All validation tests passed"
+
+  udp-runtime:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: "26.6.27"
+            sha256: "b3e5902d06d6282fe53cfa2fc426058b9aeaa429b2c812e20887cd47f26d08bf"
+          - version: "26.10.31"
+            sha256: "e4bd9119f50ae7c41658b1abd0679ae06f98bd864a2907ff33f2f2cf7081b214"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install runtime fixture dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends jq uuid-runtime curl unzip python3
+      - name: Verify official Xray release
+        env:
+          CORE_VERSION: ${{ matrix.version }}
+          CORE_SHA256: ${{ matrix.sha256 }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/xray"
+          curl -fsSL "https://github.com/XTLS/Xray-core/releases/download/v${CORE_VERSION}/Xray-linux-64.zip" -o "$RUNNER_TEMP/xray.zip"
+          printf '%s  %s\n' "$CORE_SHA256" "$RUNNER_TEMP/xray.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/xray.zip" -d "$RUNNER_TEMP/xray"
+      - name: Verify UDP destination changes and failure isolation
+        timeout-minutes: 3
+        run: |
+          python3 validation/test-private-cascade-udp-runtime.py --repo "$GITHUB_WORKSPACE" --xray "$RUNNER_TEMP/xray/xray" --local-ip 127.0.0.2

@@ -4,7 +4,7 @@
 
 ## Topology
 
-Use two VPSs. A private client connects to the Russian ingress. The ingress sends selected Russian TCP destinations directly and forwards other TCP and supported application UDP over VLESS REALITY to the foreign egress.
+Use two VPSs. A private client connects to the Russian ingress. The ingress applies the same ordered policy to TCP and supported application UDP: selected Russian destinations exit in Russia; blocked and unmatched destinations go over VLESS REALITY to the foreign egress.
 
 | VPS | Role | Address required |
 |---|---|---|
@@ -21,9 +21,19 @@ One public IPv4 per VPS can cover these roles. The foreign listener and its publ
 4. Reserve a dedicated TCP listener on the foreign VPS. At the provider firewall, allow its port only from the Russian VPS's observed source IP (`/32` for IPv4 or `/128` for IPv6). Apply equivalent restrictions on the host and check for broader allows, including those added by Xrayebator. Preserve existing SSH, subscription, and client listener rules. Set the provider restriction before creating the foreign inbound because the manager can open the listener port in UFW.
 5. Keep SSH access, REALITY key pairs, and certificate keys separate per host. Issue a dedicated VLESS credential for the ingress-to-egress hop. Give clients only their ingress profile and keep the upstream link or UUID on the two hosts that need it. Store DNS credentials with root-only access and use the narrowest permissions available. Redact links and tokens from logs or handoffs.
 
-On fresh VPSs, install Xrayebator on both hosts. This example requires only Xray. If either host already runs optional backends, check their profile grants after creating a profile because Xrayebator applies profile lifecycle events to installed backends. [Installation](../README.md#installation)
+On fresh VPSs, install Xrayebator on both hosts. This example uses Xray and a Python 3 standard-library UDP helper on the ingress; it needs no optional VPN backend. If either host already runs optional backends, check their profile grants after creating a profile because Xrayebator applies profile lifecycle events to installed backends. [Installation](../README.md#installation)
 
-Both nodes require Xray-core 26.6.27 or newer for the destination restrictions below. Use the reviewed Xrayebator version that includes `profile-create --without-pq` and `private-cascade`. When testing a newer checkout, replace `sudo xrayebator` in the commands below with `sudo bash ./xrayebator` from that checkout on each host.
+Both nodes require Xray-core 26.6.27 or newer for the destination restrictions below. Obtain the same reviewed Xrayebator checkout on each host; it must include `profile-create --without-pq`, `private-cascade` and `libexec/private_cascade_udp.py`. The installed manager alone does not install this standalone helper or its units. Run the commands below from that checkout, replacing `sudo xrayebator` with `sudo bash ./xrayebator` if the installed manager is older. Keep the helper and generated config on matching reviewed versions when updating.
+
+In an unused directory on each host, fetch the reviewed tag or commit, not a moving `latest` file. Replace the reference value before running:
+
+```bash
+CASCADE_REVIEWED_REF='replace-with-reviewed-tag-or-commit'
+git clone --no-checkout https://github.com/howdeploy/Xrayebator.git xrayebator-cascade-src
+cd xrayebator-cascade-src
+git fetch --depth 1 origin "$CASCADE_REVIEWED_REF"
+git checkout --detach FETCH_HEAD
+```
 
 ## Hostnames, certificates, and REALITY
 
@@ -110,6 +120,8 @@ Generate a fresh UUID with `uuidgen` for the standalone ingress. Create two root
   "client_id": "<cascade-client-uuid>",
   "listen": "0.0.0.0",
   "port": 15443,
+  "udp_relay_port": 15444,
+  "udp_dispatch_port": 15445,
   "russia_only_domains": ["geosite:available-only-in-ru"],
   "blocked_domains": ["ext:refilter-geosite.dat:refilter"],
   "blocked_ips": ["ext:refilter-geoip.dat:refilter"],
@@ -122,9 +134,15 @@ Choose a free TCP port and open it at both ingress firewalls for the intended cl
 
 Use an empty array to disable an optional route list. Omitting an optional field uses its default.
 
+`udp_relay_port` and `udp_dispatch_port` default to `15444` and `15445`. Reserve two free unprivileged TCP ports for them on the Russian VPS. All three ports must differ. The local ports bind only to `127.0.0.1`; do not open them in either firewall. The renderer generates a separate helper password and classifier UUID in the protected config. Do not export these internal credentials to clients.
+
 The ingress blocks private and IPv6 destinations matched by its IP rules. Sniffing preserves a client-supplied address in those denied sets. For other TCP connections, a sniffed name becomes the destination that Xray actually connects to. A recognized Russia-only name takes precedence over the blocked lists, whether the client originally sent that name or its public IP. The blocked lists take precedence over the general Russian rules. The direct outbounds resolve names using IPv4 only and recheck destination IPs at dial time. A route selected by `russian_ips` can only connect to those IPs. If a later DNS lookup conflicts with the selected direct route, the connection fails.
 
-After DNS interception and the destination blocks, all application UDP takes the foreign route. XUDP can change destinations within one association, so direct access is limited to TCP. If the foreign hop fails, the foreign-routed traffic stops. Direct Russian TCP and the ingress DNS remain available.
+For UDP, the public inbound first sends every datagram to the authenticated loopback helper, including virtual DNS and denied-address attempts. XUDP can change destinations within one association. The helper therefore opens a separate fixed-destination VLESS UDP stream for each destination in that association; Xray then applies DNS interception, destination blocks and the five ordered rules to that stream. The helper does not duplicate the domain/IP lists or connect directly to internet destinations. Its local Trojan framing does not change the client-facing VLESS REALITY transport or require another domain or certificate.
+
+Recognized Russian UDP can exit directly in Russia. Foreign-hop failure stops foreign TCP and UDP without a direct fallback; direct Russian TCP/UDP and ingress DNS remain available. Helper failure stops application UDP, including virtual UDP DNS, while TCP keeps its routes. The helper rejects payloads above 8190 bytes rather than splitting them; Xray's 8 KiB framing buffers can lower the usable size further depending on address/header overhead. Check applications that need large datagrams separately. Fixed connection, flow, queue and idle-time limits bound the helper's resource use; reaching them drops or closes the affected traffic instead of choosing another exit.
+
+The split key is the destination address and port within the original association. Sniffing runs at the start of that fixed-destination stream; different QUIC connections sharing the same endpoint are not separately reclassified by every SNI. This is destination routing, not inspection of every application message.
 
 The ingress uses service DoH with a local resolver fallback. Configure the client to send its DNS to `192.0.2.53:53` inside VLESS. The virtual address is reserved for DNS on port 53. Disable client-side fallback to direct or another profile.
 
@@ -137,21 +155,42 @@ sudo xrayebator private-cascade render \
 
 To try a reviewed checkout whose renderer is newer than the installed manager, use `sudo bash ./xrayebator private-cascade render` with the same arguments from that checkout.
 
-The renderer creates a single client with the new UUID and takes the flow from the template inbound's first client. It preserves the inbound's transport and REALITY settings, validates with `xray run -test` and writes a new root-owned `0600` file. Choose an unused service directory for first installation.
+The renderer creates a public client with the new UUID and takes its flow from the template inbound's first client. It also creates the internal loopback classifier and helper credentials. It preserves the public transport and REALITY settings, validates with `xray run -test` and writes a new root-owned `0600` file. This validates Xray's config, not the helper's service availability. Choose an unused service directory for first installation.
 
 ```bash
 sudo install -d -o root -g xray -m 0750 /etc/xray-private-cascade
 sudo install -o root -g xray -m 0640 /root/xrayebator-private-cascade/ingress.json \
   /etc/xray-private-cascade/config.json
+sudo install -d -o root -g root -m 0755 /usr/local/libexec
+sudo install -o root -g root -m 0755 libexec/private_cascade_udp.py \
+  /usr/local/libexec/xrayebator-private-udp.py
+command -v python3
 ```
 
-Create `/etc/systemd/system/xray-private-cascade.service` as root. The bind capability also supports a free privileged ingress port such as 443. This example uses the standard Xrayebator binary and asset paths.
+The install command reads the helper from the reviewed checkout, not a separately downloaded latest file. Ensure Python 3 is installed at `/usr/bin/python3` before starting; on the supported Debian/Ubuntu hosts install the `python3` package if absent. Keep the config root-owned and group-readable only by `xray` (`0640`); both services need it.
+
+Create `/etc/systemd/system/xray-private-cascade-udp.service` as root:
+
+```ini
+[Unit]
+Description=Xray private cascade UDP destination splitter
+PartOf=xray-private-cascade.service
+
+[Service]
+User=xray
+Group=xray
+NoNewPrivileges=true
+ExecStart=/usr/bin/python3 /usr/local/libexec/xrayebator-private-udp.py --config /etc/xray-private-cascade/config.json
+Restart=on-failure
+```
+
+Create `/etc/systemd/system/xray-private-cascade.service` as root. `Wants` starts the helper but keeps existing TCP routes available if it fails. `PartOf` stops or restarts the helper with the ingress. The bind capability also supports a free privileged ingress port such as 443. Keep the two local helper ports above 1023. This example uses the standard Xrayebator binary and asset paths.
 
 ```ini
 [Unit]
 Description=Xray private cascade ingress
-Wants=network-online.target
-After=network-online.target
+Wants=network-online.target xray-private-cascade-udp.service
+After=network-online.target xray-private-cascade-udp.service
 
 [Service]
 User=xray
@@ -170,15 +209,19 @@ WantedBy=multi-user.target
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl start xray-private-cascade.service
-sudo systemctl status --no-pager xray-private-cascade.service
+sudo systemctl status --no-pager xray-private-cascade.service xray-private-cascade-udp.service
 ss -ltn 'sport = :15443'
+ss -ltn 'sport = :15444 or sport = :15445'
 ```
+
+Confirm that both local listeners use `127.0.0.1`. A running Xray service alone does not prove UDP works. On an update, protect backups of the config, helper and both units; validate the candidate, then restart the ingress so its `PartOf` helper rereads the matching credentials. Restore those files together if validation or acceptance fails.
 
 Use the template inbound's first client URI as a private reference. Replace its UUID with the new ingress UUID and set the dial address and port to the standalone listener. Keep the REALITY fields, flow, fingerprint, and transport options, including the XHTTP host, path and mode if present. Import it as a separate test profile. Rotate its UUID in the standalone config and issue a new link when needed.
 
 ## Verify or roll back the cascade
 
 1. From a desktop or command-line client on the intended network, verify the REALITY connection and send a few small HTTPS and DNS requests. Use controlled endpoints or destination-side logs to confirm that an explicit Russian route sees the Russian source IP and an unmatched route sees the foreign source IP. Check a Russia-only name whose public IPv4 also matches `blocked_ips` both by name and by IP with the same SNI. Both should reach the actual Russia-only destination directly. A general Russian name resolving to a blocked IP must take the foreign path.
-2. In a maintenance window, briefly withdraw only the dedicated foreign hop and open fresh test connections. Confirm that a direct Russian TCP request and a virtual DNS query still work. Confirm that foreign TCP and application UDP fail, including when two datagrams in one XUDP association address different destinations. Use controlled endpoints to confirm they receive no traffic from the Russian VPS. Restore the hop and check recovery. Verify the private address and IPv6 restrictions with isolated probes.
-3. Compare the original Xray service, profiles and subscriptions, Hysteria 2 and AmneziaWG against the preflight baseline. The separate unit leaves their services and routing in place. After verification, enable the cascade at boot with `sudo systemctl enable xray-private-cascade.service`.
-4. To roll back, disconnect the cascade profile and run `sudo systemctl disable --now xray-private-cascade.service`. Verify that its listener is gone. Remove the dedicated unit and installed config, then run `sudo systemctl daemon-reload`. Close the dedicated ports in both firewalls. Delete `private-cascade-egress` on the foreign VPS with `sudo xrayebator profile-delete --name private-cascade-egress`, then remove the dedicated routing rule and the `private-cascade-exit` outbound. If you created `private-cascade-template` for the cascade, delete that profile by name on the Russian VPS. Recheck the baseline services.
+2. In one real XUDP association, send small UDP datagrams to controlled Russian, foreign and blocked destinations, then back to the Russian destination. Confirm each delivery's source address and replies; repeat in the reverse order and with a virtual DNS query first. A blocked destination must take the foreign path even if its address is Russian. Private and IPv6 targets must not receive packets. Independent single-destination tests do not verify this transition.
+3. In a maintenance window, withdraw only the dedicated foreign hop and open fresh test connections. Direct Russian TCP/UDP and virtual DNS must still work; foreign TCP/UDP must fail without traffic from the Russian exit. Restore the hop and check recovery. Separately stop only `xray-private-cascade-udp.service`: application UDP and virtual UDP DNS must stop without bypass while TCP keeps its routes. Restart the helper and check recovery.
+4. Compare the original Xray service, profiles and subscriptions, Hysteria 2 and AmneziaWG against the preflight baseline. The separate units leave their services and routing in place. After verification, enable only the ingress at boot with `sudo systemctl enable xray-private-cascade.service`; its `Wants` starts the helper.
+5. To roll back, disconnect the cascade profile and run `sudo systemctl disable --now xray-private-cascade.service`, then `sudo systemctl stop xray-private-cascade-udp.service`. Verify that all three ingress-side listeners are gone. Remove the two dedicated units and installed config; remove the installed helper only if it belongs solely to this cascade. Run `sudo systemctl daemon-reload`. Close only the dedicated public ports in both firewalls; the loopback ports need no public rules. Delete `private-cascade-egress` on the foreign VPS with `sudo xrayebator profile-delete --name private-cascade-egress`, then remove its routing rule and `private-cascade-exit` outbound. If you created `private-cascade-template`, delete that profile by name on the Russian VPS. Recheck the baseline services.
