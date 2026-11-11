@@ -36,7 +36,7 @@ Linux-машину. Проверки lifecycle должны также убеж�
 
 ## Что покрывают тесты
 
-В `validation/` ровно 50 скриптов. Запускайте каждый `validation/test-*.sh`; текущий набор:
+В `validation/` ровно 51 Bash-скрипт. Запускайте каждый `validation/test-*.sh`; текущий набор:
 
 | Тест | Что проверяет |
 |---|---|
@@ -54,6 +54,7 @@ Linux-машину. Проверки lifecycle должны также убеж�
 | `test-certbot-snap-ip.sh` | Certbot для IP-сертификатов: единственная реализация `_ensure_certbot_ip_tls` (в quickstart нет своего `snap install`), ожидание готовности snapd (`snap wait system seed.loaded`), повтор установки, проверка результата по фактическим флагам бинарника, вывод snap в лог вместо stdout; функционально — `_certbot_supports_ip_address` отличает certbot 5.4+ от apt-версии и от бинарника без `--preferred-profile` |
 | `test-profile-revoke-expire-cli.sh` | CLI `profile-revoke` (только токен / ротация uuid с сохранением чужих клиентов на общем порту) и сроки профилей (отключение, возврат из снимка, rebuild без снимка, идемпотентный `expire-check`) |
 | `test-cascade-routing.sh` | Cascade routing |
+| `test-private-cascade-udp.sh` | Локальный UDP-обработчик: аутентификация, границы кадров, разделение назначений, ответы, освобождение ресурсов и лимиты на стенде стандартной библиотеки Python |
 | `test-profile-create-without-pq.sh` | Создание и экспорт legacy XHTTP, обычный режим PQ, несовместимые порты и события бэкендов |
 | `test-cascade-upstream-import.sh` | Импорт upstream каскада из ссылки VLESS |
 | `test-dead-stealth-route-pruning.sh` | Отсечение мёртвых stealth-маршрутов |
@@ -99,6 +100,8 @@ Linux-машину. Проверки lifecycle должны также убеж�
 > отключает `fail2ban` (после прогона включите обратно), а `test-hysteria2-lifecycle.sh` ждёт хост
 > без сертификата Let's Encrypt на подписку — при живом серте `_hysteria2_tls_mode_detect` честно
 > отвечает `le <domain>`, тогда как тест ожидает `selfsigned`.
+
+Задания `udp-runtime` в CI дополнительно запускают `test-private-cascade-udp-runtime.py` с официальными Xray 26.6.27 и 26.10.31 после проверки SHA-256. Локальные приёмники и узкие тестовые исключения позволяют наблюдать реальные исходящие адреса UDP, смену назначений одной XUDP-сессии, ответы, замену цели по QUIC и поведение при отказе. Для локального запуска: `python3 validation/test-private-cascade-udp-runtime.py --repo "$PWD" --xray /путь/к/xray`; рядом с бинарём нужны его geo-файлы. Это не заменяет проверку firewall провайдера и живых клиентов.
 
 ## Проверка lifecycle и HAPP-эндпоинта
 
