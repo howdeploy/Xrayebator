@@ -28,12 +28,14 @@ QUIC = bytes.fromhex('cd0000000108f1fb7bcc78aa5e7203a8f86400421531fe825b19541876
 
 
 def free_port():
+    """Find an unused loopback TCP port without changing network configuration."""
     with socket.socket() as s:
         s.bind(('127.0.0.1', 0))
         return s.getsockname()[1]
 
 
 def address(host):
+    """Encode a VLESS address without resolving a domain name."""
     for family, kind in ((socket.AF_INET, 1), (socket.AF_INET6, 3)):
         try:
             return bytes([kind]) + socket.inet_pton(family, host)
@@ -44,6 +46,7 @@ def address(host):
 
 
 def frame(status, host, port, payload, global_id):
+    """Encode an XUDP frame whose explicit destination may differ from earlier frames."""
     meta = struct.pack('>HBBB', 1, status, 1, 2)
     meta += struct.pack('>H', port) + address(host)
     if status == 1:
@@ -52,6 +55,7 @@ def frame(status, host, port, payload, global_id):
 
 
 def exact(sock, n):
+    """Read a complete protocol field and reject an early connection close."""
     result = b''
     while len(result) < n:
         chunk = sock.recv(n - len(result))
@@ -63,6 +67,7 @@ def exact(sock, n):
 
 class Association:
     def __init__(self, port):
+        """Open one authenticated raw VLESS mux association for destination changes."""
         self.sock = socket.create_connection(('127.0.0.1', port), timeout=4)
         self.sock.settimeout(4)
         self.sock.sendall(b'\x00' + IDENTITY.bytes + b'\x00\x03')
@@ -71,10 +76,12 @@ class Association:
         self.global_id = os.urandom(8)
 
     def send(self, host, port, payload):
+        """Keep every new destination inside the original XUDP association."""
         self.sock.sendall(frame(1 if self.first else 2, host, port, payload, self.global_id))
         self.first = False
 
     def response(self):
+        """Decode one returned data frame while skipping mux control frames."""
         if not self.response_header:
             header = exact(self.sock, 2)
             assert header[0] == 0, header
@@ -89,10 +96,12 @@ class Association:
         raise AssertionError('no data response frame')
 
     def close(self):
+        """Release only this fixture's client connection."""
         self.sock.close()
 
 
 def stop(process):
+    """Stop a captured fixture process with a bounded termination fallback."""
     if process.poll() is None:
         process.terminate()
         try:
@@ -103,6 +112,7 @@ def stop(process):
 
 
 def ready(process, port, log):
+    """Wait for a listener or report its fixture log if startup fails."""
     for _ in range(80):
         if process.poll() is not None:
             log.flush()
@@ -116,6 +126,7 @@ def ready(process, port, log):
 
 
 def sink_thread(sock, events, stopped):
+    """Record the real UDP source and destination before echoing the exact payload."""
     sock.settimeout(.1)
     while not stopped.is_set():
         try:
@@ -129,6 +140,7 @@ def sink_thread(sock, events, stopped):
 
 
 def tcp_sink_thread(sock, stopped):
+    """Return the observed TCP source address for independent routing canaries."""
     sock.settimeout(.1)
     while not stopped.is_set():
         try:
@@ -144,10 +156,12 @@ def tcp_sink_thread(sock, stopped):
 
 
 def dns_a_response(packet, identifier):
+    """Validate a test DNS response and extract its IPv4 answers."""
     ident, flags, questions, answers, _, _ = struct.unpack('>HHHHHH', packet[:12])
     assert ident == identifier and flags & 0x8000 and flags & 15 == 0, packet.hex()
 
     def skip_name(offset):
+        """Skip a DNS name or compression pointer without following arbitrary offsets."""
         for _ in range(128):
             size = packet[offset]
             if size & 0xc0 == 0xc0:
@@ -173,6 +187,7 @@ def dns_a_response(packet, identifier):
 
 
 def local_ip():
+    """Select an existing local IPv4 without adding an interface or address."""
     if sys.platform == 'darwin':
         return subprocess.check_output(['/usr/sbin/ipconfig', 'getifaddr', 'en0'], text=True).strip()
     for ip in socket.gethostbyname_ex(socket.gethostname())[2]:
@@ -182,6 +197,7 @@ def local_ip():
 
 
 def run(binary, relay_script, source_ip, keep, repo, bash, transport, decoy_name, decoy_target, empty_ips=False):
+    """Check real-core delivery using narrowly scoped local destination exceptions."""
     version = subprocess.check_output([binary, 'version'], text=True).splitlines()[0].split()[1]
     profile = 'unmatched' if empty_ips else 'full'
     directory = pathlib.Path(tempfile.mkdtemp(prefix='udp-split-' + version + '-' + transport + '-' + profile + '-'))
@@ -218,6 +234,7 @@ def run(binary, relay_script, source_ip, keep, repo, bash, transport, decoy_name
         public_key = next(v for k, v in keys.items() if 'Public' in k or 'Password' in k)
         network = 'xhttp' if transport == 'plain' else transport
         def reality_stream(outgoing=False):
+            """Build matching REALITY settings for the selected trusted TLS target."""
             reality = ({'serverName': decoy_name, 'fingerprint': 'chrome',
                 'publicKey': public_key, 'shortId': 'ab12'} if outgoing else
                 {'target': decoy_target, 'serverNames': [decoy_name],
@@ -337,6 +354,7 @@ def run(binary, relay_script, source_ip, keep, repo, bash, transport, decoy_name
             connection_port = front_port
 
         def tcp_canary(host, expected_branch):
+            """Verify TCP routing independently of whether the UDP helper is running."""
             with socket.create_connection(('127.0.0.1', connection_port), timeout=8) as client:
                 client.settimeout(8)
                 request = b'\x00' + IDENTITY.bytes + b'\x00\x01' + struct.pack('>H', tcp_port) + address(host)
@@ -350,6 +368,7 @@ def run(binary, relay_script, source_ip, keep, repo, bash, transport, decoy_name
             print(version, 'TCP canary', host, '->', expected_branch, flush=True)
 
         def observed(client, host, expected_branch, target=None, payload=None):
+            """Assert the actual UDP target, source address and byte-exact response."""
             target = target or hosts.get(host, host)
             data = payload if payload is not None else (host + ':' + uuid.uuid4().hex[:8]).encode()
             client.send(host, sink_port, data)
@@ -360,6 +379,7 @@ def run(binary, relay_script, source_ip, keep, repo, bash, transport, decoy_name
             print(version, host, '->', expected_branch, 'actual source', event[1], 'target', event[0], flush=True)
 
         def denied(client, host, port, payload=None):
+            """Require that a prohibited datagram reaches none of the controlled sinks."""
             marker = payload if payload is not None else ('denied-' + uuid.uuid4().hex).encode()
             client.send(host, port, marker)
             try:

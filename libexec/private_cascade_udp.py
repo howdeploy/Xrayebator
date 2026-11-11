@@ -24,11 +24,13 @@ IDLE_TIMEOUT = 120
 
 
 class ProtocolError(ValueError):
+    """Identify malformed or unsupported relay protocol data."""
     pass
 
 
 @dataclass(frozen=True)
 class Config:
+    """Hold local endpoints and independent credentials from renderer output."""
     listen_port: int
     dispatch_port: int
     password: str
@@ -36,6 +38,7 @@ class Config:
 
     @classmethod
     def from_file(cls, path):
+        """Read protected secrets and require authenticated, loopback-only endpoints."""
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(fd) as file:
             info = os.fstat(file.fileno())
@@ -72,11 +75,13 @@ class Config:
 
 @dataclass(frozen=True)
 class Destination:
+    """Retain exact Trojan identity and port-first VLESS framing without DNS."""
     wire: bytes
     vless: bytes
 
 
 async def read_destination(reader):
+    """Decode an address without resolving it or merging distinct flow keys."""
     kind = await reader.readexactly(1)
     if kind == b"\x01":
         address = await reader.readexactly(4)
@@ -102,6 +107,7 @@ async def read_destination(reader):
 
 
 async def read_packet(reader):
+    """Read a complete datagram, rejecting lengths that exceed Xray's framing budget."""
     destination = await read_destination(reader)
     size = struct.unpack("!H", await reader.readexactly(2))[0]
     if not 1 <= size <= min(MAX_PAYLOAD, 8192 - len(destination.wire) - 4) or await reader.readexactly(2) != b"\r\n":
@@ -110,6 +116,7 @@ async def read_packet(reader):
 
 
 async def close_writer(writer):
+    """Release a local stream within the I/O deadline, including failed connections."""
     if writer is not None:
         writer.close()
         try:
@@ -119,7 +126,10 @@ async def close_writer(writer):
 
 
 class Flow:
+    """Confine one destination to one backend stream with bounded pending packets."""
+
     def __init__(self, session, destination):
+        """Create a bounded queue and schedule its immutable-destination stream."""
         self.session = session
         self.destination = destination
         self.queue = asyncio.Queue(QUEUE_SIZE)
@@ -128,6 +138,7 @@ class Flow:
         self.task.add_done_callback(self.finished)
 
     def finished(self, task):
+        """Release capacity even when cancellation preceded the flow's first execution."""
         self.session.flows.pop(self.destination.wire, None)
         self.session.relay.flow_count -= 1
         if not task.cancelled() and task.exception() is not None:
@@ -135,12 +146,14 @@ class Flow:
             self.session.writer.close()
 
     async def send(self, writer):
+        """Preserve datagram boundaries while bounding stalled backend writes."""
         while True:
             payload = await self.queue.get()
             writer.write(struct.pack("!H", len(payload)) + payload)
             await asyncio.wait_for(writer.drain(), IO_TIMEOUT)
 
     async def receive(self, reader):
+        """Restore original reply labels and serialize writes to the frontend stream."""
         if await reader.readexactly(2) != b"\0\0":
             raise ProtocolError("Unexpected local VLESS response")
         while True:
@@ -155,12 +168,14 @@ class Flow:
                 await asyncio.wait_for(self.session.writer.drain(), IO_TIMEOUT)
 
     async def idle(self):
+        """Expire an inactive backend flow without switching its selected exit."""
         while True:
             await asyncio.sleep(min(1, IDLE_TIMEOUT / 2))
             if asyncio.get_running_loop().time() - self.last_active >= IDLE_TIMEOUT:
                 return
 
     async def run(self):
+        """Own one fixed VLESS stream and cancel all directions when any task ends."""
         writer = None
         tasks = []
         try:
@@ -184,13 +199,17 @@ class Flow:
 
 
 class Session:
+    """Keep each authenticated client's destination map and replies isolated."""
+
     def __init__(self, relay, reader, writer):
+        """Allocate client-local flow identity, response ordering and idle state."""
         self.relay, self.reader, self.writer = relay, reader, writer
         self.flows = {}
         self.write_lock = asyncio.Lock()
         self.last_active = asyncio.get_running_loop().time()
 
     async def read(self):
+        """Split destinations into bounded flows and drop overload without rerouting."""
         while True:
             destination, payload = await read_packet(self.reader)
             self.last_active = asyncio.get_running_loop().time()
@@ -207,12 +226,14 @@ class Session:
                 pass
 
     async def idle(self):
+        """End a session after both client packets and backend replies become inactive."""
         while True:
             await asyncio.sleep(min(1, IDLE_TIMEOUT / 2))
             if asyncio.get_running_loop().time() - self.last_active >= IDLE_TIMEOUT:
                 return
 
     async def run(self):
+        """Tie every backend socket and task to the frontend connection lifetime."""
         tasks = [asyncio.create_task(self.read()), asyncio.create_task(self.idle())]
         try:
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -229,7 +250,10 @@ class Session:
 
 
 class Relay:
+    """Authenticate local Trojan streams before allowing per-destination splitting."""
+
     def __init__(self, config):
+        """Track authentication and global capacity without logging credentials or data."""
         self.config = config
         self.key = hashlib.sha224(config.password.encode()).hexdigest().encode()
         self.clients = set()
@@ -238,6 +262,7 @@ class Relay:
         self.server = None
 
     async def authenticate(self, reader):
+        """Accept only the configured password hash and Trojan UDP request command."""
         if not hmac.compare_digest(await reader.readexactly(56), self.key):
             raise ProtocolError("Authentication failed")
         if await reader.readexactly(3) != b"\r\n\x03":
@@ -247,6 +272,7 @@ class Relay:
             raise ProtocolError("Invalid request header")
 
     async def handle(self, reader, writer):
+        """Enforce admission and handshake limits before allocating client flows."""
         task = asyncio.current_task()
         self.handlers.add(task)
         try:
@@ -263,9 +289,11 @@ class Relay:
             self.handlers.discard(task)
 
     async def start(self):
+        """Expose the authenticated relay only on IPv4 loopback."""
         self.server = await asyncio.start_server(self.handle, "127.0.0.1", self.config.listen_port)
 
     async def close(self):
+        """Stop admission and await cleanup of every accepted client."""
         if self.server is not None:
             self.server.close()
             await self.server.wait_closed()
@@ -276,6 +304,7 @@ class Relay:
 
 
 async def serve(config):
+    """Install termination hooks and release all clients before process exit."""
     relay = Relay(config)
     stopped = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -289,6 +318,7 @@ async def serve(config):
 
 
 def main():
+    """Load renderer output and report startup failures without disclosing secrets."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True)
     args = parser.parse_args()
