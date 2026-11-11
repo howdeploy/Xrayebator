@@ -36,7 +36,7 @@ Linux-машину. Проверки lifecycle должны также убеж�
 
 ## Что покрывают тесты
 
-В `validation/` ровно 49 скриптов. Запускайте каждый `validation/test-*.sh`; текущий набор:
+В `validation/` ровно 50 скриптов. Запускайте каждый `validation/test-*.sh`; текущий набор:
 
 | Тест | Что проверяет |
 |---|---|
@@ -54,6 +54,7 @@ Linux-машину. Проверки lifecycle должны также убеж�
 | `test-certbot-snap-ip.sh` | Certbot для IP-сертификатов: единственная реализация `_ensure_certbot_ip_tls` (в quickstart нет своего `snap install`), ожидание готовности snapd (`snap wait system seed.loaded`), повтор установки, проверка результата по фактическим флагам бинарника, вывод snap в лог вместо stdout; функционально — `_certbot_supports_ip_address` отличает certbot 5.4+ от apt-версии и от бинарника без `--preferred-profile` |
 | `test-profile-revoke-expire-cli.sh` | CLI `profile-revoke` (только токен / ротация uuid с сохранением чужих клиентов на общем порту) и сроки профилей (отключение, возврат из снимка, rebuild без снимка, идемпотентный `expire-check`) |
 | `test-cascade-routing.sh` | Cascade routing |
+| `test-profile-create-without-pq.sh` | Создание и экспорт legacy XHTTP, обычный режим PQ, несовместимые порты и события бэкендов |
 | `test-cascade-upstream-import.sh` | Импорт upstream каскада из ссылки VLESS |
 | `test-dead-stealth-route-pruning.sh` | Отсечение мёртвых stealth-маршрутов |
 | `test-fingerprint-subscription-sync.sh` | Синхронность маршрутов и подписки при смене fingerprint |

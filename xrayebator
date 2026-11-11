@@ -7124,7 +7124,7 @@ private_cascade_command() (
       inbounds: [($in | .listen=$p.listen | .port=$p.port | .tag="private-cascade-entry" |
         .settings.clients=[($template_client | {id:$client_id} + (if .flow then {flow} else {} end))] |
         .sniffing={enabled:true, destOverride:["http","tls","quic"], routeOnly:false,
-                   ipsExcluded:$protected_ips})],
+                   ipsExcluded:$denied_ips})],
       outbounds:[
         {tag:"block",protocol:"blackhole"},
         {tag:"private-cascade-dns",protocol:"dns"},
@@ -16296,7 +16296,7 @@ profiles_command() {
   return 0
 }
 
-# xrayebator profile-create --name NAME [--transport T] [--port P] [--count N]
+# xrayebator profile-create --name NAME [--transport T] [--port P] [--count N] [--without-pq]
 #   T: tcp|tcp-utls|tcp-xudp|tcp-mux|grpc|xhttp (по умолчанию xhttp)
 #   N: количество копий (по умолчанию 1); имена: name, name-2, name-3, ...
 # При N>1 каждый профиль получает отдельный случайный порт (или заданный --port).
@@ -16305,7 +16305,7 @@ profile_create_command() {
   export DEBIAN_FRONTEND=noninteractive
   export XRAYEBATOR_NONINTERACTIVE=1
 
-  local name="" transport="xhttp" port="" count=1 expire_raw=""
+  local name="" transport="xhttp" port="" count=1 expire_raw="" pq_enabled=true
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --name) name="$2"; shift 2 ;;
@@ -16313,6 +16313,7 @@ profile_create_command() {
       --port) port="$2"; shift 2 ;;
       --count) count="$2"; shift 2 ;;
       --expire) expire_raw="$2"; shift 2 ;;
+      --without-pq) pq_enabled=false; shift ;;
       *) shift ;;
     esac
   done
@@ -16328,6 +16329,10 @@ profile_create_command() {
       return 1
       ;;
   esac
+  if [[ "$pq_enabled" == "false" && "$transport" != "xhttp" ]]; then
+    echo '{"ok":false,"error":"--without-pq допустим только для транспорта xhttp"}'
+    return 1
+  fi
   if ! [[ "$count" =~ ^[0-9]+$ ]] || [[ "$count" -lt 1 ]] || [[ "$count" -gt 50 ]]; then
     echo '{"ok":false,"error":"Некорректное количество (1-50)"}'
     return 1
@@ -16386,7 +16391,7 @@ profile_create_command() {
       errors+=("$pname: уже существует")
       continue
     fi
-    if _profile_cli_create_one "$pname" "$transport" "$port" "$results_file" "$expire_value"; then
+    if _profile_cli_create_one "$pname" "$transport" "$port" "$results_file" "$expire_value" "$pq_enabled"; then
       created_names+=("$pname")
     else
       errors+=("$pname: не удалось создать")
@@ -16406,9 +16411,10 @@ profile_create_command() {
 
 # Один профиль: файл JSON + inbound + safe_restart_xray. Возвращает 0/1.
 # $5 — expire (epoch-секунды, 0 = бессрочный).
+# $6 — PQ для XHTTP (по умолчанию true).
 _profile_cli_create_one() {
-  local pname="$1" transport="$2" fixed_port="${3:-}" results_file="${4:-}" expire_value="${5:-0}"
-  local uuid sub_token grpc_service_name xhttp_path port default_sni
+  local pname="$1" transport="$2" fixed_port="${3:-}" results_file="${4:-}" expire_value="${5:-0}" pq_enabled="${6:-true}"
+  local uuid sub_token grpc_service_name="" xhttp_path="" port default_sni
   uuid=$(uuidgen)
   sub_token=$(openssl rand -hex 16)
   if [[ ! "$sub_token" =~ ^[a-f0-9]{32}$ ]]; then
@@ -16454,7 +16460,7 @@ _profile_cli_create_one() {
   elif [[ "$transport" == "xhttp" ]]; then
     jq_args+=(--arg xhttp_path "$xhttp_path")
     jq_expr+=', xhttp_path: $xhttp_path'
-    jq_args+=(--argjson schema_v 2 --argjson pq_enabled true)
+    jq_args+=(--argjson schema_v 2 --argjson pq_enabled "$pq_enabled")
     jq_expr+=', schema_version: $schema_v, pq_enabled: $pq_enabled'
   fi
   jq_expr+=', sub_token: $sub_token, created: $created'
@@ -16475,7 +16481,7 @@ _profile_cli_create_one() {
     return 1
   fi
 
-  if ! add_inbound "$uuid" "$transport" "$port" "$default_sni" "$fingerprint" "$grpc_service_name" "$xhttp_path"; then
+  if ! add_inbound "$uuid" "$transport" "$port" "$default_sni" "$fingerprint" "$grpc_service_name" "$xhttp_path" "$pq_enabled"; then
     rm -f "$PROFILES_DIR/$pname.json"
     echo -e "${RED}✗ Inbound не создан — профиль удалён${NC}" >&2
     return 1
@@ -20497,8 +20503,8 @@ if [[ "$XRAYEBATOR_SOURCED" -eq 0 ]]; then
       echo -e "  ${CYAN}sudo xrayebator happ-setup${NC}       — создать/переиспользовать HAPP multi-route профиль"
       echo -e "  ${CYAN}sudo xrayebator probe-test${NC}       — проверить доступность SNI с VPS"
       echo -e "  ${CYAN}sudo xrayebator profiles${NC}          — JSON-список профилей"
-      echo -e "  ${CYAN}sudo xrayebator profile-create --name N [--transport T] [--port P] [--count N] [--expire 2006-12-31]${NC}"
-      echo -e "                               — создать профиль/семейство профилей (JSON)"
+      echo -e "  ${CYAN}sudo xrayebator profile-create --name N [--transport T] [--port P] [--count N] [--expire 2006-12-31] [--without-pq]${NC}"
+      echo -e "                               — создать профиль/семейство профилей (JSON); --without-pq: только XHTTP, encryption=none"
       echo -e "  ${CYAN}sudo xrayebator profile-delete --name N${NC} — удалить профиль (JSON)"
       echo -e "  ${CYAN}sudo xrayebator fp-change --name N [--route R] --fp FINGERPRINT${NC} — сменить fingerprint (JSON)"
       echo -e "  ${CYAN}sudo xrayebator profile-revoke --name N [--full]${NC} — новый sub_token; --full: и новый uuid, старые клиенты отваливаются (JSON)"
