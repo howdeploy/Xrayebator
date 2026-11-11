@@ -102,7 +102,7 @@ disables `fail2ban` (re-enable it afterwards), and `test-hysteria2-lifecycle.sh`
 a subscription Let's Encrypt certificate — with a real one present `_hysteria2_tls_mode_detect`
 correctly answers `le <domain>` while the test expects `selfsigned`.
 
-The `udp-runtime` CI jobs additionally run `test-private-cascade-udp-runtime.py` against SHA-256-verified official Xray 26.6.27 and 26.10.31 binaries. Local sinks and narrowly scoped test-only destination exceptions expose actual UDP exit source addresses, mixed destinations in one XUDP association, replies, QUIC destination rewriting and failure behavior. Run locally with `python3 validation/test-private-cascade-udp-runtime.py --repo "$PWD" --xray /path/to/xray`; the binary directory must contain its geo assets. This does not replace provider-firewall or live-client acceptance.
+The `udp-runtime` CI jobs additionally run `test-private-cascade-udp-runtime.py` against SHA-256-verified official Xray 26.6.27 and 26.10.31 binaries. Local sinks and narrowly scoped test-only destination exceptions expose actual UDP exit source addresses, mixed destinations in one XUDP association, replies, QUIC destination rewriting and failure behavior. On Linux run `python3 validation/test-private-cascade-udp-runtime.py --repo "$PWD" --xray /path/to/xray --local-ip 127.0.0.2`; the binary directory must contain its geo assets. On other hosts, use an existing local IPv4 distinct from `127.0.0.1` and provide Bash 4+ through `--bash` with GNU coreutils on PATH. Do not add a network address merely for this test. This does not replace provider-firewall or live-client acceptance.
 
 ## Lifecycle and HAPP endpoint checks
 
