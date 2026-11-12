@@ -2,6 +2,13 @@
 
 User-facing Xrayebator changes. The server manager and Electron application are published from the canonical `howdeploy/Xrayebator` repository.
 
+## [Unreleased]
+
+### Added
+
+- Opt-in private cascade configuration generation for a Russian ingress and foreign exit, with ordered TCP/UDP routing, a Python 3 UDP destination helper, fail-closed foreign routes, and deployment, update and removal guides.
+- `profile-create --transport xhttp --without-pq` creates a legacy XHTTP profile with `encryption=none`. XHTTP profile creation uses PQ by default.
+
 ## [0.7.3] - 2026-11-07
 
 Secrets no longer travel in process arguments. `/proc/<pid>/cmdline` is readable by every local

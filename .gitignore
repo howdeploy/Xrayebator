@@ -19,3 +19,6 @@ DESIGN-REVIEW-*.md
 # OS
 .DS_Store
 Thumbs.db
+
+# Python UDP helper validation
+__pycache__/

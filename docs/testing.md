@@ -28,6 +28,8 @@ ShellCheck is not a CI gate in the current workflows. The Linux CI gate is the f
 plus the complete validation suite on Ubuntu; local ShellCheck results should not be described as a
 separate CI requirement.
 
+The UDP helper tests and real-core runtime fixture require `python3`. Check `command -v python3` before invoking the runtime fixture directly. The Bash helper-test wrapper reports a skip when the interpreter is absent.
+
 The Bash tests use Linux-flavoured tools such as `jq`, `uuidgen` and `rg`. A bare Windows Git Bash
 checkout may therefore be unable to run the complete suite; use the Ubuntu CI environment or a Linux
 machine for authoritative results. Lifecycle checks should also verify Xray, DNS and the subscription
@@ -36,7 +38,7 @@ promise that installer and updater paths behave identically.
 
 ## Validation suite
 
-`validation/` contains exactly 49 scripts. Run every `validation/test-*.sh`; the current set is:
+`validation/` contains exactly 51 Bash scripts. Run every `validation/test-*.sh`; the current set is:
 
 | Script | What it checks |
 |---|---|
@@ -54,6 +56,8 @@ promise that installer and updater paths behave identically.
 | `test-certbot-snap-ip.sh` | Certbot for IP certificates: a single `_ensure_certbot_ip_tls` implementation (quickstart keeps no `snap install` of its own), waiting for snapd readiness (`snap wait system seed.loaded`), a retried install, the result verified by the binary's actual flags, snap output going to a log instead of stdout; functionally, `_certbot_supports_ip_address` tells certbot 5.4+ apart from the apt build and from a binary without `--preferred-profile` |
 | `test-profile-revoke-expire-cli.sh` | Subscription revoke (token-only and uuid rotation, foreign clients on shared ports survive) and profile expiry (disable/enable, rebuild without a snapshot, idempotent `expire-check`) |
 | `test-cascade-routing.sh` | Cascade routing configuration |
+| `test-private-cascade-udp.sh` | Local UDP helper: authenticated framing, destination isolation, replies, cleanup and resource limits using a Python standard-library fixture |
+| `test-profile-create-without-pq.sh` | Legacy XHTTP creation and URI export, unchanged PQ default, incompatible ports and backend lifecycle events |
 | `test-cascade-upstream-import.sh` | Cascade upstream import from a VLESS link |
 | `test-dead-stealth-route-pruning.sh` | Pruning dead stealth routes |
 | `test-fingerprint-subscription-sync.sh` | Fingerprint changes and subscription synchronisation |
@@ -99,6 +103,8 @@ by running it on a live server: `test-ssh-protect.sh` walks the real `--disable`
 disables `fail2ban` (re-enable it afterwards), and `test-hysteria2-lifecycle.sh` expects a host without
 a subscription Let's Encrypt certificate — with a real one present `_hysteria2_tls_mode_detect`
 correctly answers `le <domain>` while the test expects `selfsigned`.
+
+The `udp-runtime` CI jobs additionally run `test-private-cascade-udp-runtime.py` against SHA-256-verified official Xray 26.6.27 and 26.10.31 binaries. Local sinks and narrowly scoped test-only destination exceptions expose actual UDP exit source addresses, mixed destinations in one XUDP association, replies, QUIC destination rewriting and failure behavior. On Linux run `python3 validation/test-private-cascade-udp-runtime.py --repo "$PWD" --xray /path/to/xray --local-ip 127.0.0.2`; the binary directory must contain its geo assets. On other hosts, use an existing local IPv4 distinct from `127.0.0.1` and provide Bash 4+ through `--bash` with GNU coreutils on PATH. Do not add a network address merely for this test. This does not replace provider-firewall or live-client acceptance.
 
 ## Lifecycle and HAPP endpoint checks
 
@@ -218,7 +224,7 @@ The workflows have separate responsibilities:
 
 - `.github/workflows/ci-linux.yml` is the Bash core gate on `ubuntu-24.04`: it installs `jq`,
   `uuid-runtime` and `ripgrep`, runs all four Bash syntax checks, then runs every
-  `validation/test-*.sh` script (49 at the time of writing).
+  `validation/test-*.sh` script (currently 51).
 - `.github/workflows/release.yml` is the active Electron release path for `v*` tags or manual runs.
   A `preflight` job first checks that the release notes file `docs/releases/<tag>.en.md` exists and
   that the `AP3X0` repository secret (if set) can actually create releases — it probes with a draft

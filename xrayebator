@@ -6828,18 +6828,16 @@ _cascade_parse_vless_uri() {
     return 1
   fi
 
-  jq -n \
+  XRAYEBATOR_CASCADE_UUID="$uuid" XRAYEBATOR_CASCADE_SHORT_ID="$short_id" \
+    XRAYEBATOR_CASCADE_PATH="$xhttp_path" jq -n \
     --arg address "$address" \
     --argjson port "$port" \
-    --arg uuid "$uuid" \
     --arg transport "$transport" \
     --arg sni "$sni" \
     --arg fingerprint "$fingerprint" \
     --arg public_key "$public_key" \
-    --arg short_id "$short_id" \
     --arg flow "$flow" \
     --arg packet_encoding "$packet_encoding" \
-    --arg xhttp_path "$xhttp_path" \
     --arg xhttp_host "$xhttp_host" \
     --arg xhttp_mode "$xhttp_mode" '
       {
@@ -6847,19 +6845,19 @@ _cascade_parse_vless_uri() {
         tag: "cascade-upstream",
         address: $address,
         port: $port,
-        uuid: $uuid,
+        uuid: $ENV.XRAYEBATOR_CASCADE_UUID,
         transport: $transport,
         sni: $sni,
         fingerprint: $fingerprint,
         public_key: $public_key,
-        short_id: $short_id
+        short_id: $ENV.XRAYEBATOR_CASCADE_SHORT_ID
       }
       + (if $transport == "tcp" then
           (if $flow == "" then {} else {flow: $flow} end)
           + (if $packet_encoding == "" then {} else {packet_encoding: $packet_encoding} end)
         else
           {
-            xhttp_path: $xhttp_path,
+            xhttp_path: $ENV.XRAYEBATOR_CASCADE_PATH,
             xhttp_host: $xhttp_host,
             xhttp_mode: $xhttp_mode
           }
@@ -7013,6 +7011,180 @@ _cascade_build_fragment_outbound_json() {
     }
   }'
 }
+
+private_cascade_command() (
+  local usage='Usage: xrayebator private-cascade render --policy-file FILE --upstream-file FILE --output FILE'
+  local policy="" upstream="" output="" workdir relay_password dispatch_id
+  local -a links=()
+  if [[ "$#" -eq 1 && "$1" == "--help" ]]; then
+    printf '%s\n' "$usage"
+    return 0
+  fi
+  if [[ "${1:-}" != "render" ]]; then
+    printf '%s\n' "$usage" >&2
+    return 1
+  fi
+  shift
+  while [[ $# -ge 2 ]]; do
+    case "$1" in
+      --policy-file) [[ -z "$policy" ]] || break; policy=$2 ;;
+      --upstream-file) [[ -z "$upstream" ]] || break; upstream=$2 ;;
+      --output) [[ -z "$output" ]] || break; output=$2 ;;
+      *) break ;;
+    esac
+    shift 2
+  done
+  if [[ $# -ne 0 || -z "$policy" || -z "$upstream" || "$output" != *.json ]]; then
+    printf '%s\n' "$usage" >&2
+    return 1
+  fi
+  local input
+  for input in "$policy" "$upstream"; do
+    if [[ ! -f "$input" || -L "$input" || "$(stat -c '%a:%u' -- "$input" 2>/dev/null)" != "600:$EUID" ]]; then
+      printf 'Private cascade inputs must be regular mode-0600 files owned by the caller.\n' >&2
+      return 1
+    fi
+  done
+  if [[ -e "$output" || -L "$output" ]]; then
+    printf 'Private cascade output already exists.\n' >&2
+    return 1
+  fi
+  local min_xray_version="26.6.27" xray_version
+  if ! xray_version=$("$XRAY_BIN" version 2>/dev/null) ||
+     ! [[ $xray_version =~ ^Xray[[:blank:]]+([0-9]+\.[0-9]+\.[0-9]+)([[:space:]]|$) ]] ||
+     ! _xray_version_at_least_pure "${BASH_REMATCH[1]}" "$min_xray_version"; then
+    printf 'Private cascade requires Xray-core %s or newer.\n' "$min_xray_version" >&2
+    return 1
+  fi
+  mapfile -t links < "$upstream" || return 1
+  if [[ "${#links[@]}" -ne 1 ]]; then
+    printf 'The upstream file must contain exactly one VLESS link.\n' >&2
+    return 1
+  fi
+  umask 077
+  workdir=$(mktemp -d "$(dirname -- "$output")/.xrayebator-private-cascade.XXXXXX") || return 1
+  trap 'rm -rf -- "$workdir"' EXIT
+  _cascade_parse_vless_uri "${links[0]%$'\r'}" > "$workdir/upstream.json" || return 1
+  _cascade_build_outbound_json "$workdir/upstream.json" > "$workdir/outbound.json" || return 1
+  _cascade_build_fragment_outbound_json > "$workdir/fragment.json" || return 1
+
+  relay_password=$(openssl rand -hex 24) || return 1
+  dispatch_id=$(uuidgen) || return 1
+  [[ "$relay_password" =~ ^[a-f0-9]{48}$ && "$dispatch_id" =~ ^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$ ]] || return 1
+
+  CASCADE_RELAY_PASSWORD="$relay_password" CASCADE_DISPATCH_ID="$dispatch_id" \
+  jq -e --slurpfile policies "$policy" --slurpfile upstream "$workdir/outbound.json" \
+    --slurpfile fragment "$workdir/fragment.json" '
+    def selectors: type == "array" and all(.[]; type == "string" and length > 0);
+    def optional_selectors($key): (has($key) | not) or (.[$key] | selectors);
+    def port_number: type == "number" and floor == . and . >= 1 and . <= 65535;
+    def optional_port($key): (has($key) | not) or (.[$key] | port_number and . >= 1024);
+    def ipv4:
+      type == "string" and (split(".") |
+        length == 4 and all(.[]; test("^(0|[1-9][0-9]{0,2})$") and tonumber <= 255));
+    def valid_policy:
+      type == "object" and
+      ((keys - ["inbound_tag", "client_id", "listen", "port", "russia_only_domains",
+                "blocked_domains", "blocked_ips", "russian_domains", "russian_ips",
+                "udp_relay_port", "udp_dispatch_port"]) | length == 0) and
+      (.inbound_tag | type == "string" and length > 0) and
+      (.client_id | type == "string" and test("^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$")) and
+      (.listen | ipv4) and
+      (.port | port_number) and
+      optional_port("udp_relay_port") and optional_port("udp_dispatch_port") and
+      (.udp_relay_port // 15444 | port_number) and
+      (.udp_dispatch_port // 15445 | port_number) and
+      ([.port, (.udp_relay_port // 15444), (.udp_dispatch_port // 15445)] | unique | length == 3) and
+      (.blocked_domains | selectors) and (.blocked_ips | selectors) and
+      ((.blocked_domains + .blocked_ips) | length > 0) and
+      optional_selectors("russia_only_domains") and
+      optional_selectors("russian_domains") and optional_selectors("russian_ips");
+    def rule($field; $values; $target):
+      if ($values | length) == 0 then empty
+      else {type:"field", ($field):$values, outboundTag:$target} end;
+    def direct($tag; $final_rules):
+      # Older cores resolve Freedom destinations before applying sockopt.
+      {tag:$tag, protocol:"freedom",
+       settings:{domainStrategy:"ForceIPv4", finalRules:$final_rules},
+       streamSettings:{sockopt:{domainStrategy:"ForceIPv4"}}};
+
+    if ($policies | length) != 1 or ($policies[0] | valid_policy | not)
+    then error("Invalid private cascade policy") else . end |
+    ($policies[0] | .udp_relay_port //= 15444 | .udp_dispatch_port //= 15445) as $p |
+    [.inbounds[]? | select(.tag == $p.inbound_tag)] as $matches |
+    if ($matches | length) != 1 then error("Select one configured ingress inbound") else . end |
+    $matches[0] as $in |
+    ($in.settings.clients[0] // {}) as $template_client |
+    ($p.client_id | ascii_downcase) as $client_id |
+    any(.inbounds[]?.settings.clients[]?; (.id // "" | ascii_downcase) == $client_id) as $client_exists |
+    if $in.protocol != "vless" or $in.streamSettings.security != "reality" or
+       (($in.streamSettings.network // "tcp") | IN("tcp","raw","xhttp") | not) or
+       ($in.settings.decryption // "none") != "none" or
+       (($in.settings.fallbacks // []) | length) != 0 or
+       $client_exists or
+       (($in.streamSettings.realitySettings.serverNames // []) | length) == 0
+    then error("Ingress needs standard VLESS Reality TCP/XHTTP and a new private client UUID")
+    else . end |
+    ["192.0.2.53"] as $dns_ips |
+    ($dns_ips + ["geoip:private","::/0"]) as $denied_ips |
+    ($denied_ips + $p.blocked_ips) as $protected_ips |
+    ($p.russia_only_domains // []) as $russia_only |
+    ($p.russian_ips // ["geoip:ru"]) as $russian_ips |
+    {
+      log:{loglevel:"warning", access:"none"},
+      dns:{servers:["https+local://1.1.1.1/dns-query","localhost"], queryStrategy:"UseIPv4"},
+      inbounds: [($in | .listen=$p.listen | .port=$p.port | .tag="private-cascade-entry" |
+        .settings.clients=[($template_client | {id:$client_id} + (if .flow then {flow} else {} end))] |
+        .sniffing={enabled:true, destOverride:["http","tls","quic"], routeOnly:false,
+                   ipsExcluded:$denied_ips}),
+        {tag:"private-cascade-udp-dispatch", listen:"127.0.0.1", port:$p.udp_dispatch_port,
+         protocol:"vless", settings:{decryption:"none", clients:[{id:env.CASCADE_DISPATCH_ID}]},
+         streamSettings:{network:"tcp", security:"none"},
+         sniffing:{enabled:true, destOverride:["quic"], routeOnly:false, ipsExcluded:$denied_ips}}
+      ],
+      outbounds:[
+        {tag:"block",protocol:"blackhole"},
+        {tag:"private-cascade-dns",protocol:"dns"},
+        direct("direct"; [{action:"block", ip:$protected_ips}]),
+        (if ($russia_only | length) > 0
+         then direct("direct-russia-only"; [{action:"block", ip:$denied_ips}])
+         else empty end),
+        (if ($russian_ips | length) > 0
+         then direct("direct-russian-ip"; [
+           {action:"block", ip:$protected_ips},
+           {action:"allow", ip:$russian_ips},
+           {action:"block"}
+         ])
+         else empty end),
+        {tag:"private-cascade-udp-relay", protocol:"trojan",
+         settings:{servers:[{address:"127.0.0.1", port:$p.udp_relay_port, password:env.CASCADE_RELAY_PASSWORD}]},
+         streamSettings:{network:"tcp", security:"none"}},
+        $fragment[0], $upstream[0]
+      ],
+      routing:{domainStrategy:"IPOnDemand",rules:[
+        # Split mutable public XUDP before DNS or any destination-based route.
+        {type:"field", inboundTag:["private-cascade-entry"], network:"udp",outboundTag:"private-cascade-udp-relay"},
+        {type:"field", inboundTag:["private-cascade-udp-dispatch"], network:"tcp",outboundTag:"block"},
+        {type:"field", ip:$dns_ips, port:53, network:"tcp,udp",outboundTag:"private-cascade-dns"},
+        {type:"field", ip:$denied_ips,outboundTag:"block"},
+        rule("domain"; $russia_only; "direct-russia-only"),
+        rule("domain"; $p.blocked_domains; "cascade-upstream"),
+        rule("ip"; $p.blocked_ips; "cascade-upstream"),
+        rule("domain"; $p.russian_domains // ["domain:ru","domain:xn--p1ai"]; "direct"),
+        rule("ip"; $russian_ips; "direct-russian-ip"),
+        {type:"field",network:"tcp,udp",outboundTag:"cascade-upstream"}
+      ]}
+    }
+  ' "$CONFIG_FILE" > "$workdir/config.json" || return 1
+
+  if ! XRAY_LOCATION_ASSET="${XRAY_LOCATION_ASSET:-/usr/local/share/xray}" \
+      "$XRAY_BIN" run -test -config "$workdir/config.json" > "$workdir/xray-test.log" 2>&1; then
+    printf 'Xray rejected the private cascade candidate. Verify the selected inbound and installed geo assets.\n' >&2
+    return 1
+  fi
+  ln -T -- "$workdir/config.json" "$output" || return 1
+  printf 'Private cascade config validated and written: %s\n' "$output"
+)
 
 _cascade_apply_current_upstream() {
   local reason=${1:-cascade_apply}
@@ -8050,7 +8222,7 @@ probe_test_command() {
 # xrayebator на каждый HTTP-request — лишние сетевые вызовы под xray:xray неприемлемы).
 # В source-режиме SERVER_IP инициализируется пустым; pure-функции берут публичный
 # адрес из HAPP markers, а get_server_ip() используют только как fallback.
-if [[ "$XRAYEBATOR_SOURCED" -eq 0 ]]; then
+if [[ "$XRAYEBATOR_SOURCED" -eq 0 && "${1:-}" != "private-cascade" ]]; then
   SERVER_IP=$(get_server_ip)
 else
   SERVER_IP=""
@@ -16145,7 +16317,7 @@ profiles_command() {
   return 0
 }
 
-# xrayebator profile-create --name NAME [--transport T] [--port P] [--count N]
+# xrayebator profile-create --name NAME [--transport T] [--port P] [--count N] [--without-pq]
 #   T: tcp|tcp-utls|tcp-xudp|tcp-mux|grpc|xhttp (по умолчанию xhttp)
 #   N: количество копий (по умолчанию 1); имена: name, name-2, name-3, ...
 # При N>1 каждый профиль получает отдельный случайный порт (или заданный --port).
@@ -16154,7 +16326,7 @@ profile_create_command() {
   export DEBIAN_FRONTEND=noninteractive
   export XRAYEBATOR_NONINTERACTIVE=1
 
-  local name="" transport="xhttp" port="" count=1 expire_raw=""
+  local name="" transport="xhttp" port="" count=1 expire_raw="" pq_enabled=true
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --name) name="$2"; shift 2 ;;
@@ -16162,6 +16334,7 @@ profile_create_command() {
       --port) port="$2"; shift 2 ;;
       --count) count="$2"; shift 2 ;;
       --expire) expire_raw="$2"; shift 2 ;;
+      --without-pq) pq_enabled=false; shift ;;
       *) shift ;;
     esac
   done
@@ -16177,6 +16350,10 @@ profile_create_command() {
       return 1
       ;;
   esac
+  if [[ "$pq_enabled" == "false" && "$transport" != "xhttp" ]]; then
+    echo '{"ok":false,"error":"--without-pq допустим только для транспорта xhttp"}'
+    return 1
+  fi
   if ! [[ "$count" =~ ^[0-9]+$ ]] || [[ "$count" -lt 1 ]] || [[ "$count" -gt 50 ]]; then
     echo '{"ok":false,"error":"Некорректное количество (1-50)"}'
     return 1
@@ -16235,7 +16412,7 @@ profile_create_command() {
       errors+=("$pname: уже существует")
       continue
     fi
-    if _profile_cli_create_one "$pname" "$transport" "$port" "$results_file" "$expire_value"; then
+    if _profile_cli_create_one "$pname" "$transport" "$port" "$results_file" "$expire_value" "$pq_enabled"; then
       created_names+=("$pname")
     else
       errors+=("$pname: не удалось создать")
@@ -16255,9 +16432,10 @@ profile_create_command() {
 
 # Один профиль: файл JSON + inbound + safe_restart_xray. Возвращает 0/1.
 # $5 — expire (epoch-секунды, 0 = бессрочный).
+# $6 — PQ для XHTTP (по умолчанию true).
 _profile_cli_create_one() {
-  local pname="$1" transport="$2" fixed_port="${3:-}" results_file="${4:-}" expire_value="${5:-0}"
-  local uuid sub_token grpc_service_name xhttp_path port default_sni
+  local pname="$1" transport="$2" fixed_port="${3:-}" results_file="${4:-}" expire_value="${5:-0}" pq_enabled="${6:-true}"
+  local uuid sub_token grpc_service_name="" xhttp_path="" port default_sni
   uuid=$(uuidgen)
   sub_token=$(openssl rand -hex 16)
   if [[ ! "$sub_token" =~ ^[a-f0-9]{32}$ ]]; then
@@ -16303,7 +16481,7 @@ _profile_cli_create_one() {
   elif [[ "$transport" == "xhttp" ]]; then
     jq_args+=(--arg xhttp_path "$xhttp_path")
     jq_expr+=', xhttp_path: $xhttp_path'
-    jq_args+=(--argjson schema_v 2 --argjson pq_enabled true)
+    jq_args+=(--argjson schema_v 2 --argjson pq_enabled "$pq_enabled")
     jq_expr+=', schema_version: $schema_v, pq_enabled: $pq_enabled'
   fi
   jq_expr+=', sub_token: $sub_token, created: $created'
@@ -16324,7 +16502,7 @@ _profile_cli_create_one() {
     return 1
   fi
 
-  if ! add_inbound "$uuid" "$transport" "$port" "$default_sni" "$fingerprint" "$grpc_service_name" "$xhttp_path"; then
+  if ! add_inbound "$uuid" "$transport" "$port" "$default_sni" "$fingerprint" "$grpc_service_name" "$xhttp_path" "$pq_enabled"; then
     rm -f "$PROFILES_DIR/$pname.json"
     echo -e "${RED}✗ Inbound не создан — профиль удалён${NC}" >&2
     return 1
@@ -20276,6 +20454,10 @@ if [[ "$XRAYEBATOR_SOURCED" -eq 0 ]]; then
       shift
       bypass_command "$@"
       ;;
+    private-cascade)
+      shift
+      private_cascade_command "$@"
+      ;;
     backend-status)
       _backend_status_json
       ;;
@@ -20342,8 +20524,8 @@ if [[ "$XRAYEBATOR_SOURCED" -eq 0 ]]; then
       echo -e "  ${CYAN}sudo xrayebator happ-setup${NC}       — создать/переиспользовать HAPP multi-route профиль"
       echo -e "  ${CYAN}sudo xrayebator probe-test${NC}       — проверить доступность SNI с VPS"
       echo -e "  ${CYAN}sudo xrayebator profiles${NC}          — JSON-список профилей"
-      echo -e "  ${CYAN}sudo xrayebator profile-create --name N [--transport T] [--port P] [--count N] [--expire 2006-12-31]${NC}"
-      echo -e "                               — создать профиль/семейство профилей (JSON)"
+      echo -e "  ${CYAN}sudo xrayebator profile-create --name N [--transport T] [--port P] [--count N] [--expire 2006-12-31] [--without-pq]${NC}"
+      echo -e "                               — создать профиль/семейство профилей (JSON); --without-pq: только XHTTP, encryption=none"
       echo -e "  ${CYAN}sudo xrayebator profile-delete --name N${NC} — удалить профиль (JSON)"
       echo -e "  ${CYAN}sudo xrayebator fp-change --name N [--route R] --fp FINGERPRINT${NC} — сменить fingerprint (JSON)"
       echo -e "  ${CYAN}sudo xrayebator profile-revoke --name N [--full]${NC} — новый sub_token; --full: и новый uuid, старые клиенты отваливаются (JSON)"
@@ -20370,6 +20552,7 @@ if [[ "$XRAYEBATOR_SOURCED" -eq 0 ]]; then
       echo -e "  ${CYAN}sudo xrayebator sni-change --name N [--route R] --sni S${NC} — сменить SNI (JSON; обновит все профили на порту)"
       echo -e "  ${CYAN}sudo xrayebator port-change --name N [--route R] --port P|random${NC} — сменить порт (JSON; reconnect клиентов)"
       echo -e "  ${CYAN}sudo xrayebator bypass list${NC} — список доменов в обходе (JSON)"
+      echo -e "  ${CYAN}sudo xrayebator private-cascade render --policy-file F --upstream-file U --output O.json${NC} — отдельный конфиг каскада"
       echo -e "  ${CYAN}sudo xrayebator bypass add --domain D${NC} — добавить домен в обход (JSON)"
       echo -e "  ${CYAN}sudo xrayebator bypass remove --domain D${NC} — убрать домен из обхода (JSON)"
       echo -e "  ${CYAN}sudo xrayebator bypass reset${NC} — сбросить все bypass-правила (JSON)"

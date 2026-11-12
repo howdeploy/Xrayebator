@@ -127,3 +127,147 @@ _cascade_apply_current_upstream "cascade_test_reapply" >/dev/null 2>&1 \
   || fail "cascade re-apply duplicated cascade-fragment outbound"
 
 echo "OK: cascade routing (real _cascade_* functions)"
+
+# Private render is opt-in and leaves the running config and its other profiles alone.
+jq '.inbounds = [
+  {tag:"legacy-inbound", protocol:"vless"},
+  {tag:"private-template", protocol:"vless", listen:"0.0.0.0", port:443,
+   settings:{clients:[{id:"33333333-3333-4333-8333-333333333333",email:"template"}],decryption:"none"},
+   streamSettings:{network:"xhttp",security:"reality",
+     xhttpSettings:{path:"/fixture",mode:"stream-one"},
+     realitySettings:{dest:"127.0.0.1:9444",serverNames:["ingress.example.net"]}}}
+]' "$CONFIG_FILE" > "$WORKDIR/template.json"
+CONFIG_FILE="$WORKDIR/template.json"
+cp "$CONFIG_FILE" "$WORKDIR/template.before"
+
+cat > "$WORKDIR/policy.json" <<'JSON'
+{
+  "inbound_tag": "private-template",
+  "client_id": "22222222-2222-4222-8222-222222222222",
+  "listen": "0.0.0.0",
+  "port": 15443,
+  "russia_only_domains": ["full:only.example"],
+  "blocked_domains": ["domain:blocked.example"],
+  "blocked_ips": ["198.51.100.0/24"]
+}
+JSON
+printf '%s\n' 'vless://11111111-1111-4111-8111-111111111111@[2001:db8::10]:25443?security=reality&type=xhttp&sni=egress.example.net&pbk=abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN&sid=abcd1234&mode=stream-one&path=%2Ffixture' > "$WORKDIR/upstream.uri"
+chmod 600 "$WORKDIR/policy.json" "$WORKDIR/upstream.uri"
+
+XRAY_BIN="$WORKDIR/xray-test"
+cat > "$XRAY_BIN" <<'BASH'
+#!/usr/bin/env bash
+if [[ "$1" == "version" ]]; then
+  printf 'Xray %s (Xray, Penetrates Everything.) fixture\n' "${XRAY_TEST_VERSION:-26.6.27}"
+  exit 0
+fi
+[[ "${XRAY_TEST_REJECT_CONFIG:-0}" == 0 &&
+   "$1" == "run" && "$2" == "-test" && "$3" == "-config" && "$4" == *.json ]] &&
+  jq -e '.outbounds[0].protocol == "blackhole"' "$4" >/dev/null
+BASH
+chmod +x "$XRAY_BIN"
+output="$WORKDIR/private.json"
+render() {
+  private_cascade_command render --policy-file "${1:-$WORKDIR/policy.json}" \
+    --upstream-file "$WORKDIR/upstream.uri" --output "$output"
+}
+render >/dev/null || fail "private cascade render failed"
+cmp -s "$CONFIG_FILE" "$WORKDIR/template.before" || fail "live config changed"
+[[ "$(stat -c %a "$output")" == 600 ]] || fail "candidate is not private"
+jq -e '
+  def outbound($tag): first(.outbounds[] | select(.tag == $tag));
+  ["192.0.2.53","geoip:private","::/0"] as $denied_ips |
+  ($denied_ips + ["198.51.100.0/24"]) as $protected_ips |
+  .routing.rules as $rules |
+  (.inbounds | length) == 2 and
+  .inbounds[0].port == 15443 and .inbounds[0].sniffing.routeOnly == false and
+  .inbounds[0].settings.clients == [{id:"22222222-2222-4222-8222-222222222222"}] and
+  .dns.servers[-1] == "localhost" and
+  .routing.domainStrategy == "IPOnDemand" and
+  ($rules | map(.outboundTag)) == [
+    "private-cascade-udp-relay", "block", "private-cascade-dns", "block", "direct-russia-only", "cascade-upstream",
+    "cascade-upstream", "direct", "direct-russian-ip", "cascade-upstream"
+  ] and
+  $rules[0] == {type:"field", inboundTag:["private-cascade-entry"], network:"udp", outboundTag:"private-cascade-udp-relay"} and
+  $rules[1] == {type:"field", inboundTag:["private-cascade-udp-dispatch"], network:"tcp", outboundTag:"block"} and
+  $rules[2] == {type:"field", ip:["192.0.2.53"], port:53, network:"tcp,udp", outboundTag:"private-cascade-dns"} and
+  $rules[3] == {type:"field", ip:$denied_ips, outboundTag:"block"} and
+  $rules[-1] == {type:"field", network:"tcp,udp", outboundTag:"cascade-upstream"} and
+  .inbounds[0].sniffing.ipsExcluded == $denied_ips and
+  .inbounds[1].tag == "private-cascade-udp-dispatch" and
+  .inbounds[1].listen == "127.0.0.1" and .inbounds[1].port == 15445 and
+  .inbounds[1].protocol == "vless" and .inbounds[1].settings.decryption == "none" and
+  .inbounds[1].settings.clients[0].id != .inbounds[0].settings.clients[0].id and
+  .inbounds[1].streamSettings == {network:"tcp", security:"none"} and
+  .inbounds[1].sniffing == {enabled:true, destOverride:["quic"], routeOnly:false, ipsExcluded:$denied_ips} and
+  $rules[7].domain == ["domain:ru","domain:xn--p1ai"] and $rules[8].ip == ["geoip:ru"] and
+  .outbounds[0].protocol == "blackhole" and
+  all(.outbounds[] | select(.tag | startswith("direct"));
+    .protocol == "freedom" and .settings.domainStrategy == "ForceIPv4" and
+    .streamSettings.sockopt.domainStrategy == "ForceIPv4") and
+  outbound("direct").settings.finalRules == [{action:"block", ip:$protected_ips}] and
+  outbound("direct-russia-only").settings.finalRules == [{action:"block", ip:$denied_ips}] and
+  outbound("direct-russian-ip").settings.finalRules == [
+    {action:"block", ip:$protected_ips}, {action:"allow", ip:["geoip:ru"]}, {action:"block"}
+  ] and
+  (outbound("private-cascade-udp-relay") | .protocol == "trojan" and
+    .streamSettings == {network:"tcp",security:"none"} and
+    .settings.servers[0].address == "127.0.0.1" and .settings.servers[0].port == 15444 and
+    (.settings.servers[0].password | test("^[a-f0-9]{48}$"))) and
+  (outbound("cascade-upstream") | .settings.vnext[0].address == "2001:db8::10"
+    and .settings.vnext[0].users[0].id == "11111111-1111-4111-8111-111111111111"
+    and .streamSettings.realitySettings.shortId == "abcd1234"
+    and .streamSettings.xhttpSettings.mode == "stream-one")
+' "$output" >/dev/null || fail "private cascade routing or ingress mismatch"
+cp "$output" "$WORKDIR/private.before"
+if render >/dev/null 2>&1; then fail "private cascade overwrote existing output"; fi
+cmp -s "$output" "$WORKDIR/private.before" || fail "existing candidate changed"
+
+output="$WORKDIR/empty-selectors.json"
+jq '.russia_only_domains = [] | .russian_domains = [] | .russian_ips = []' \
+  "$WORKDIR/policy.json" > "$WORKDIR/optional-selectors.json"
+chmod 600 "$WORKDIR/optional-selectors.json"
+render "$WORKDIR/optional-selectors.json" >/dev/null || fail "private cascade rejected empty optional selectors"
+jq -e 'all(.routing.rules[]; .outboundTag | startswith("direct") | not) and
+  all(.outbounds[]; .tag != "direct-russian-ip" and .tag != "direct-russia-only")' "$output" >/dev/null \
+  || fail "empty optional selectors enabled direct routes"
+
+output="$WORKDIR/rejected.json"
+for field in udp_relay_port udp_dispatch_port; do
+  for value in 0 -1 1023 65536 15443 false null '"15446"'; do
+    jq --arg field "$field" --argjson value "$value" '.[$field] = $value' \
+      "$WORKDIR/policy.json" > "$WORKDIR/bad-port.json"
+    chmod 600 "$WORKDIR/bad-port.json"
+    if render "$WORKDIR/bad-port.json" >/dev/null 2>&1; then
+      fail "private cascade accepted $field=$value"
+    fi
+    [[ ! -e "$output" ]] || fail "invalid local port left a candidate"
+  done
+done
+jq '.udp_relay_port=15445' "$WORKDIR/policy.json" > "$WORKDIR/bad-port.json"
+if render "$WORKDIR/bad-port.json" >/dev/null 2>&1; then fail "private cascade accepted colliding local ports"; fi
+for field in russia_only_domains russian_domains russian_ips; do
+  for value in false null; do
+    jq --arg field "$field" --argjson value "$value" '.[$field] = $value' \
+      "$WORKDIR/policy.json" > "$WORKDIR/optional-selectors.json"
+    if render "$WORKDIR/optional-selectors.json" >/dev/null 2>&1; then
+      fail "private cascade accepted $field=$value"
+    fi
+    [[ ! -e "$output" ]] || fail "invalid optional selector left a candidate"
+  done
+done
+if XRAY_TEST_VERSION=26.3.27 render >/dev/null 2>&1; then fail "private cascade accepted old Xray"; fi
+[[ ! -e "$output" ]] || fail "old Xray left a candidate"
+
+jq '.client_id = "33333333-3333-4333-8333-333333333333"' "$WORKDIR/policy.json" > "$WORKDIR/reused.json"
+chmod 600 "$WORKDIR/reused.json"
+if render "$WORKDIR/reused.json" >/dev/null 2>&1; then
+  fail "private cascade reused an existing client"
+fi
+if XRAY_TEST_REJECT_CONFIG=1 render >/dev/null 2>&1; then fail "private cascade accepted rejected Xray config"; fi
+[[ ! -e "$output" ]] || fail "failed render left a candidate"
+chmod 644 "$WORKDIR/upstream.uri"
+if render >/dev/null 2>&1; then fail "private cascade accepted exposed URI file"; fi
+[[ ! -e "$output" ]] || fail "bad permissions left a candidate"
+
+echo "OK: private cascade routing, isolation, permissions and atomic validation"
