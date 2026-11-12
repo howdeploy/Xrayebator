@@ -3943,6 +3943,29 @@ _awg_gen_junk() {
       H1:$h1, H2:$h2, H3:$h3, H4:$h4, HeaderProtectionKey: $hpk}'
 }
 
+# Клиентские junk-параметры (Jc/Jmin/Jmax). По документации AmneziaWG они
+# client-side: junk-пакеты уходят ДО handshake и получателем не разбираются
+# вообще (падают в ветку Unknown), поэтому сверять их с сервером не нужно и
+# расхождение ничего не ломает. Держать их одинаковыми у всех клиентов нельзя:
+# «identical junk train across a hundred clients is a ready-made pattern for DPI».
+# Значения выводятся детерминированно из seed (имя профиля + его публичный ключ),
+# поэтому уникальны для клиента, стабильны между вызовами и не требуют ни
+# хранения состояния, ни миграции уже выданных профилей.
+# $1 — seed. Печатает JSON {Jc,Jmin,Jmax}.
+_awg_client_jitter_pure() {
+  local seed=${1:-} h n1 n2 n3 jc jmin jmax
+  [[ -n "$seed" ]] || return 1
+  h=$(printf '%s' "$seed" | sha256sum | cut -c1-16) || return 1
+  [[ "$h" =~ ^[0-9a-f]{16}$ ]] || return 1
+  n1=$((16#${h:0:4})); n2=$((16#${h:4:4})); n3=$((16#${h:8:4}))
+  jc=$(( n1 % 5 + 3 ))                        # 3..7 — рекомендация спеки
+  jmin=$(( n2 % 11 + 10 ))                    # 10..20
+  jmax=$(( jmin + 20 + (n3 % 41) ))           # jmin+20..jmin+60, всегда > jmin
+  jq -cn --argjson jc "$jc" --argjson jmin "$jmin" --argjson jmax "$jmax" \
+    --arg id "${h:0:12}" \
+    '{Jc:$jc, Jmin:$jmin, Jmax:$jmax, seed_id:$id}'
+}
+
 # Догенерация 3.1-полей в старом server-params.json (установки до 3.1-этапа):
 # добавляет S3/S4 (≥12, уникальные) и HeaderProtectionKey, если их нет.
 _awg_ensure_31_params() {
@@ -4845,6 +4868,15 @@ _awg_client_conf_pure() {
   local fe_hpk=$(jq -r '.hpk // false' <<<"$features")
   local fe_rt=$(jq -r '.rt // false' <<<"$features")
   local hpk=$(jq -r '.HeaderProtectionKey // empty' <<<"$junk")
+  # Jc/Jmin/Jmax — client-side (см. _awg_client_jitter_pure): у каждого профиля
+  # своя junk-тренировка, иначе одинаковый старт у сотни клиентов сам является
+  # паттерном для DPI. Остальные поля (S1-S4, H1-H4, HPK) обязаны совпадать с
+  # сервером — их не трогаем.
+  local jitter jc jmin jmax
+  jitter=$(_awg_client_jitter_pure "$name:$cpub") || return 1
+  jc=$(jq -r '.Jc' <<<"$jitter")
+  jmin=$(jq -r '.Jmin' <<<"$jitter")
+  jmax=$(jq -r '.Jmax' <<<"$jitter")
   {
     # Самодокументирующаяся шапка (этап 2, срез D): в AmneziaVPN видно, что
     # профиль живёт вне V2Ray/HAPP-мира и how to перекачать конфиг.
@@ -4856,9 +4888,9 @@ _awg_client_conf_pure() {
 PrivateKey = ${cpriv}
 Address = ${addr}/32
 MTU = ${mtu:-1280}
-Jc = $(jq -r '.Jc' <<<"$junk")
-Jmin = $(jq -r '.Jmin' <<<"$junk")
-Jmax = $(jq -r '.Jmax' <<<"$junk")
+Jc = ${jc}
+Jmin = ${jmin}
+Jmax = ${jmax}
 S1 = $(jq -r '.S1' <<<"$junk")
 S2 = $(jq -r '.S2' <<<"$junk")
 EOF

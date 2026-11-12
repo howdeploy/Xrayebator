@@ -208,6 +208,46 @@ grep -qF "PublicKey = $(jq -r '.public_key' "$AWG_PARAMS_FILE")" "$TMP_ROOT/caro
   || fail "client conf must not emit DisableCookies when dc=false"
 pass "client .conf carries keys, S1-S4+HPK/RandomTrailers, server peer and endpoint"
 
+# Jc/Jmin/Jmax — client-side: у каждого клиента свои, и НЕ серверные.
+# Одинаковая junk-тренировка у всех клиентов сама является паттерном для DPI
+# (документация AmneziaWG), поэтому это поведение зафиксировано тестом.
+cli_jc=$(sed -n 's/^Jc = //p' "$TMP_ROOT/carol-client.conf")
+srv_jc=$(jq -r '.junk.Jc' "$AWG_PARAMS_FILE")
+cli_jmin=$(sed -n 's/^Jmin = //p' "$TMP_ROOT/carol-client.conf")
+cli_jmax=$(sed -n 's/^Jmax = //p' "$TMP_ROOT/carol-client.conf")
+[[ "$cli_jc" =~ ^[0-9]+$ && "$cli_jmin" =~ ^[0-9]+$ && "$cli_jmax" =~ ^[0-9]+$ ]] \
+  || fail "client junk params not numeric: Jc=$cli_jc Jmin=$cli_jmin Jmax=$cli_jmax"
+(( cli_jc >= 3 && cli_jc <= 7 )) || fail "client Jc out of spec: $cli_jc"
+(( cli_jmin >= 10 && cli_jmin <= 20 )) || fail "client Jmin out of spec: $cli_jmin"
+(( cli_jmax > cli_jmin )) || fail "client Jmax must exceed Jmin: $cli_jmax <= $cli_jmin"
+pass "client junk params (Jc/Jmin/Jmax) are client-side and within spec"
+
+# Два разных профиля должны получить РАЗНЫЕ junk-параметры, а повторный вызов
+# для того же профиля — те же самые (детерминированно, без хранения состояния).
+jq -n '{name:"dave", uuid:"u-dave", transport:"tcp", port:444}' > "$PROFILES_DIR/dave.json" \
+  || fail "fixture dave"
+_awg_grant_profile dave || fail "awg grant dave"
+conf2="$(awg_conf_command --name dave)" || fail "awg-conf for second profile"
+jq -r '.conf' <<<"$conf2" > "$TMP_ROOT/dave-client.conf"
+dave_jc=$(sed -n 's/^Jc = //p' "$TMP_ROOT/dave-client.conf")
+dave_jmin=$(sed -n 's/^Jmin = //p' "$TMP_ROOT/dave-client.conf")
+conf3="$(awg_conf_command --name carol)" || fail "awg-conf repeat for carol"
+jq -r '.conf' <<<"$conf3" > "$TMP_ROOT/carol-again.conf"
+[[ "$(sed -n 's/^Jc = //p' "$TMP_ROOT/carol-again.conf")" == "$cli_jc" ]] \
+  || fail "carol junk params not stable across calls"
+[[ "$dave_jc:$dave_jmin" != "$cli_jc:$cli_jmin" ]] \
+  || fail "carol and dave share identical junk train (DPI pattern)"
+pass "junk train differs per profile and is stable across calls"
+
+_awg_jitter=$(_awg_client_jitter_pure "seed-fixture:pubkey-fixture") \
+  || fail "_awg_client_jitter_pure failed"
+jq -e '.Jc >= 3 and .Jc <= 7 and .Jmin >= 10 and .Jmin <= 20 and .Jmax > .Jmin
+       and (.seed_id | test("^[0-9a-f]{12}$"))' <<<"$_awg_jitter" >/dev/null \
+  || fail "jitter helper out of spec: $_awg_jitter"
+[[ "$(_awg_client_jitter_pure "seed-fixture:pubkey-fixture")" == "$_awg_jitter" ]] \
+  || fail "jitter helper is not deterministic"
+pass "jitter helper: spec bounds, deterministic, opaque seed id"
+
 # 3.1 toggle: off -> 2.0-формат, on -> 3.1 возвращается
 _awg_31_toggle off "" >/dev/null 2>&1 || fail "awg-31 toggle off"
 grep -q '^RandomTrailers = on$' "$AWG_CONF_FILE" && fail "toggle off: RandomTrailers still present"
