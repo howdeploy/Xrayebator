@@ -1,6 +1,6 @@
 # Private cascade through a Russian VPS
 
-[← Back to README](../README.md) · [Русский](ru/private-cascade.md)
+[← Back to README](../README.md) · [Русский](ru/private-cascade.md) · [简体中文](zh-CN/private-cascade.md)
 
 ## Topology
 
@@ -217,6 +217,12 @@ ss -ltn 'sport = :15444 or sport = :15445'
 Confirm that both local listeners use `127.0.0.1`. A running Xray service alone does not prove UDP works. On an update, protect backups of the config, helper and both units; validate the candidate, then restart the ingress so its `PartOf` helper rereads the matching credentials. Restore those files together if validation or acceptance fails.
 
 Use the template inbound's first client URI as a private reference. Replace its UUID with the new ingress UUID and set the dial address and port to the standalone listener. Keep the REALITY fields, flow, fingerprint, and transport options, including the XHTTP host, path and mode if present. Import it as a separate test profile. Rotate its UUID in the standalone config and issue a new link when needed.
+
+## Update and uninstall
+
+The standalone cascade has a manual lifecycle. Before an update, save protected backups of its config, installed helper and both unit files. Check out the reviewed revision, render and validate a new candidate at a new output path, then install the matching config and copy `libexec/private_cascade_udp.py` to `/usr/local/libexec/xrayebator-private-udp.py` again. Compare both unit files with the guide and apply any changes. Run `sudo systemctl daemon-reload` after unit changes, then restart `xray-private-cascade.service` so its helper reloads the same credentials. Repeat acceptance and restore the saved files together if it fails.
+
+Before running the general `uninstall.sh`, follow the rollback below. Stop the ingress and helper before removing `/etc/systemd/system/xray-private-cascade.service`, `/etc/systemd/system/xray-private-cascade-udp.service`, `/etc/xray-private-cascade/` and the installed helper. Run `systemctl daemon-reload` after removal, close the cascade's public ports and remove its foreign profile and scoped route. Keep protected source inputs and backups until rollback is no longer needed. The operator manages these separate files and units when using the normal installer, updater or uninstaller.
 
 ## Verify or roll back the cascade
 

@@ -70,12 +70,14 @@ class WireTests(unittest.IsolatedAsyncioTestCase):
         """Close fixture peers and require complete relay capacity and task release."""
         for writer in self.writers:
             writer.close()
+        await asyncio.gather(*(writer.wait_closed() for writer in self.writers),
+                             return_exceptions=True)
         await self.proxy.close()
         self.backend.close()
-        await self.backend.wait_closed()
         for task in list(self.backend_tasks):
             task.cancel()
         await asyncio.gather(*self.backend_tasks, return_exceptions=True)
+        await self.backend.wait_closed()
         self.assertEqual(self.proxy.flow_count, 0)
         self.assertFalse(self.proxy.clients)
         self.assertFalse(self.proxy.handlers)

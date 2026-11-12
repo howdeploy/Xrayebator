@@ -13,9 +13,11 @@ for test_file in validation/*.sh; do bash "$test_file" || exit; done
 
 这是本地检查的最小门槛。`shellcheck` 可以额外运行，但不是 CI 的必要 gate（见下文）。
 
+UDP 辅助程序的测试和真实 Xray 运行时测试需要 `python3`。直接运行后者前，先执行 `command -v python3`。缺少解释器时，Bash 测试入口会报告跳过。
+
 ## 测试覆盖范围
 
-`validation/` 中有 49 个静态与本地回归测试：
+`validation/` 中有 51 个静态与本地回归测试：
 
 | 测试 | 检查内容 |
 |---|---|
@@ -49,6 +51,8 @@ for test_file in validation/*.sh; do bash "$test_file" || exit; done
 | `test-secret-argv.sh` | 密钥不进入进程参数（`/proc/<pid>/cmdline` 对所有用户可读，`/proc/<pid>/environ` 不可读）：桩 `curl` 证明机器人令牌与 `sub_token` 通过 stdin 配置（`-K -`）传入且不出现在 `argv`；`--secret-file`/`--secret-stdin` 载荷解析（单行令牌、AWS 对、显式标志优先、垃圾输入）、拒绝宽于 `0600` 的文件、读取后删除、`--token` 在 stderr 打印警告而 stdout 仍是纯 JSON、jq 读取 `$ENV.XRAYEBATOR_JQ_SECRET` |
 | `test-awg-lifecycle.sh` | AmneziaWG 后端：Amnezia 默认 junk 方言（Jc=5、Jmin=10、Jmax=50、H1–H4=1..4、S1–S4 互不相同）、密钥生成、服务端配置渲染（PostUp MASQUERADE、安装时无 peer）、peer 地址分配、客户端 `.conf` 内容、revoke/expire/restore 事件、预删除配置档后的 deleted 重生成、created 为无操作（不自动签发）、CLI 分发、`/etc/modules-load.d` 的开机模块登记（仅在模块可用时写入）、`backend-start`（「已安装」≠「正在运行」）、以及安装成功判定：内核模块必须针对**当前**内核（`AWG_MODULES_ROOT` 为测试接缝） |
 | `test-main-readiness-regressions.sh` | 审计后的 readiness 回归：certbot manifest、UFW manifest、nginx 回滚、权限与 SSH 端口 |
+| `test-private-cascade-udp.sh` | Python 标准库 UDP 辅助程序测试：认证、报文边界、目标隔离、响应、清理和资源限制 |
+| `test-profile-create-without-pq.sh` | 旧式 XHTTP 配置档的创建与 URI 导出、保留 PQ 默认值、不兼容端口和后端生命周期事件 |
 | `test-sni-change-cli.sh` | `sni-change` CLI：JSON 输出、Reality、XHTTP host、配置档同步与回滚 |
 | `test-bypass-cli.sh` | `bypass` CLI：JSON 输出、路由规则更新、带 SNI 探测的 add |
 | `test-port-change-cli.sh` | `port-change` CLI：unit/shared/move 入站场景、无效端口、缺少配置档、多线路 `--route` |
@@ -70,6 +74,8 @@ for test_file in validation/*.sh; do bash "$test_file" || exit; done
 | `test-sni-reachability.sh` | 默认 SNI 的选择：不可达的默认值（或 `sni_list.txt` 首行）被第一个可达候选替换、全部不可达时回退到原默认值（不让探测破坏隔离主机上的部署）、结果按 SNI 缓存；同时覆盖探针判据（完整 TLS 1.3 + 已验证证书 + HTTP 应答）与候选顺序的上限 |
 
 > 静态测试不能替代一次性 VPS 上的实测：创建与删除配置档、校验配置、重启服务、回滚以及真实客户端连接。
+
+`udp-runtime` CI 任务会使用 SHA-256 校验后的官方 Xray 26.6.27 和 26.10.31 运行 `test-private-cascade-udp-runtime.py`。本地接收端和严格限定的测试例外用于检查真实 UDP 出站源地址、同一 XUDP 会话内的目标切换、响应、QUIC 目标改写和故障行为。在 Linux 上运行 `python3 validation/test-private-cascade-udp-runtime.py --repo "$PWD" --xray /path/to/xray --local-ip 127.0.0.2`，二进制文件旁需有 geo 数据。在其他系统上使用已有的非 `127.0.0.1` 本机 IPv4，通过 `--bash` 指定 Bash 4+，并将 GNU coreutils 放入 PATH。保持现有网络地址配置。另行验证服务商防火墙和真实客户端。
 >
 > 该测试集并非自封闭的——请在一次性主机或容器中运行。以下两点来自在真实服务器上的运行：
 > `test-ssh-protect.sh` 会走真实的 `--disable` 路径，即停止并禁用 `fail2ban`（跑完请重新启用）；
@@ -177,7 +183,7 @@ npm test              # Vitest 单元测试
 
 三个独立 workflow：
 
-- **ci-linux.yml** — Bash validation：在 ubuntu-24.04 上对所有脚本执行 `bash -n`，并运行全部 49 个
+- **ci-linux.yml** — Bash validation：在 ubuntu-24.04 上对所有脚本执行 `bash -n`，并运行全部 51 个
   `validation/test-*.sh`；在 push 到 `main`、`dev`、`experimental` 以及 pull request 时运行。
 - **release.yml** — Electron 构建（Windows/macOS/Linux）。只在 `v*` tag 和手动触发时运行；先由
   `preflight` 检查发布说明 `docs/releases/<tag>.en.md` 是否存在，以及仓库密钥 `AP3X0`（若已设置）

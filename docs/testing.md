@@ -28,6 +28,8 @@ ShellCheck is not a CI gate in the current workflows. The Linux CI gate is the f
 plus the complete validation suite on Ubuntu; local ShellCheck results should not be described as a
 separate CI requirement.
 
+The UDP helper tests and real-core runtime fixture require `python3`. Check `command -v python3` before invoking the runtime fixture directly. The Bash helper-test wrapper reports a skip when the interpreter is absent.
+
 The Bash tests use Linux-flavoured tools such as `jq`, `uuidgen` and `rg`. A bare Windows Git Bash
 checkout may therefore be unable to run the complete suite; use the Ubuntu CI environment or a Linux
 machine for authoritative results. Lifecycle checks should also verify Xray, DNS and the subscription
@@ -222,7 +224,7 @@ The workflows have separate responsibilities:
 
 - `.github/workflows/ci-linux.yml` is the Bash core gate on `ubuntu-24.04`: it installs `jq`,
   `uuid-runtime` and `ripgrep`, runs all four Bash syntax checks, then runs every
-  `validation/test-*.sh` script (49 at the time of writing).
+  `validation/test-*.sh` script (currently 51).
 - `.github/workflows/release.yml` is the active Electron release path for `v*` tags or manual runs.
   A `preflight` job first checks that the release notes file `docs/releases/<tag>.en.md` exists and
   that the `AP3X0` repository secret (if set) can actually create releases — it probes with a draft
