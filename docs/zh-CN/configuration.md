@@ -112,7 +112,7 @@ Xrayebator 不会更改主机的 TCP 拥塞控制算法，也不会写入或应�
 | `sudo xrayebator kernel-guard [--status\|--enable\|--disable] [--quiet]` | 针对 CVE-2026-98432 的加固（IPv4 选项处理中的 use-after-free，CVSS 9.8，影响所有 IPv4 TCP 监听器）。`--enable` 在内核中关闭 MPTCP（`/etc/sysctl.d/99-xrayebator-netguard.conf` 中的 `net.mptcp.enabled = 0`），并按 Ubuntu 安全团队的规则丢弃带 IP 选项的入站 IPv4 TCP 报文——使用独立的 nftables 表与自己的开机单元，刻意**不用** `nftables.service`，因为其默认的 `flush ruleset` 会在开机时清掉 UFW 规则集。MPTCP 还会由迁移 `netguard_mptcp_2026` 自动关闭；丢弃 IPv4 选项则保持显式开启，因为它改变服务器接受哪些报文。`--status` 报告运行中的内核、`newer_kernel_installed`、`reboot_required`、`mptcp_enabled`、`ipv4_options_drop`、Xray-core 版本以及是否不低于 `26.10.31`（`xray_mptcp_safe`）。它是缓解措施，不是内核更新。同样提供为菜单第 16 项 |
 | `sudo xrayebator ssh-protect [--status\|--enable\|--disable] [--unban IP\|--prune-ignore] [--quiet]` | SSH 防爆破保护：安装 `fail2ban`，启用基于 journald 的 `sshd` 规则（10 分钟内 4 次失败 → 封禁 30 分钟，屡犯最长一天），并在 `sshd_config.d` 写入 `MaxAuthTries 3` / `LoginGraceTime 30`。**密码登录保持启用** —— 桌面 GUI 通过它管理服务器，改用密钥属于运营者的独立决定。幂等：drop-in 先经 `sshd -t` 校验，`ssh` 只 `reload` 不 `restart`，已打开的 GUI 会话不会被断开。`install.sh` 与 `quickstart` 会自动启用（部署 JSON 中有 `ssh_protect`）；`--quiet` 供脚本使用。菜单第 15 项与 GUI 的**安全与 TLS**选项卡提供同一功能。实测：公开 VPS 上 24 小时 9 953 次失败（115 个地址），启用后约 72 次/小时。执行命令的地址在 24 小时内免于封禁（`ignoreip` 加过期标记；到期后由 `--prune-ignore` 经 `xrayebator-ssh-ignoreip.timer` 移除） |
 | `sudo xrayebator profiles` | 以 JSON 数组输出服务器全部配置档（供桌面 GUI「服务器设置」页使用）；有效期同时包含用于服务端执行的 epoch 秒（`expire`）和用于界面显示的服务器本地日历日期（`expire_date`），因此不同时区的客户端也会显示用户选择的日期 |
-| `sudo xrayebator profile-create --name 名称 [--transport tcp\|tcp-utls\|tcp-xudp\|tcp-mux\|grpc\|xhttp] [--port P] [--count N] [--expire 日期]` | 非交互式创建单个或多个配置档；`--expire` 接受 `YYYY-MM-DD[ HH:MM]`、epoch 秒或 13 位毫秒。只选日期时，配置档在服务器本地时区的当天 `23:59:59` 之前（含该秒）有效；指定时间时按同一服务器时区执行。过去的有效期会被拒绝；已有名称不会被覆盖——它们会进入 `errors`（GUI 在创建前也会预检名称冲突，因为删除以配置档为单位，名称唯一才能保证删除精确），打印 `{"ok":true,"names":[...],"errors":[...]}` |
+| `sudo xrayebator profile-create --name 名称 [--transport tcp\|tcp-utls\|tcp-xudp\|tcp-mux\|grpc\|xhttp] [--port P] [--count N] [--expire 日期] [--without-pq]` | 非交互式创建单个或多个配置档。XHTTP 默认使用 PQ。`--without-pq` 仅适用于 XHTTP，在空闲端口或兼容入站上创建 `encryption=none` 的旧式配置档。`--expire` 接受 `YYYY-MM-DD[ HH:MM]`、epoch 秒或 13 位毫秒。只选日期时，配置档在服务器本地时区的当天 `23:59:59` 之前（含该秒）有效；指定时间时按同一服务器时区执行。过去的有效期会被拒绝；已有名称不会被覆盖——它们会进入 `errors`（GUI 在创建前也会预检名称冲突，因为删除以配置档为单位，名称唯一才能保证删除精确），打印 `{"ok":true,"names":[...],"errors":[...]}` |
 | `sudo xrayebator profile-delete --name 名称` | 非交互式删除配置档；被删配置档的后端授权会立即吊销——AWG peer 从 `awg0.conf` 移除，Hysteria 密码从 `server.yaml` 移除（不会残留孤立凭据），名称可立即复用；打印 `{"ok":true,"name":"..."}` |
 | `sudo xrayebator profile-revoke --name 名称 [--full]` | 重新签发订阅链接：新的 `sub_token`；带 `--full` 时还会更换该配置档所有 inbound 中的 uuid（已下载的配置立即失效），打印 JSON |
 | `sudo xrayebator profile-expire --name 名称 --expire 日期\|epoch\|none` | 设置、延长或取消配置档有效期；只输入日期时，在服务器本地时区的当天 `23:59:59`（含）到期，显式输入的时间按同一时区原样使用；立即生效（已过期会移除客户端，延长则恢复），打印 JSON |
@@ -594,6 +594,8 @@ nginx，也不会用 IP 覆盖订阅标记（否则 GUI 会拿到一个失效的
 
 ## 级联与上游节点
 
+`--without-pq` 的范围取决于命令。`quickstart --without-pq` 表示不向受管理的多线路配置档添加额外 PQ 线路。`profile-create --transport xhttp --without-pq` 则以 `encryption=none` 创建基础 XHTTP 配置档。
+
 级联是服务端的出站与路由模式，而不是新的客户端配置档。客户端仍然连接当前 VPS：
 
 ```text
@@ -612,6 +614,8 @@ nginx，也不会用 IP 覆盖订阅标记（否则 GUI 会拿到一个失效的
 运行时的配置改动经过 `backup_config`、`safe_jq_write` 与 `safe_restart_xray`；安装程序与项目更新有各自的校验、重启和回滚路径。
 
 第 `10` 项配置的是另一侧：把当前 VPS 变成境外节点，供另一台服务器的级联连入。
+
+通过俄罗斯入口对目的地进行分流并连接受限境外节点的部署方式，见[私有级联部署](private-cascade.md)。
 
 ## 自有域名与 self-steal 挡板
 

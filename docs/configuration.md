@@ -676,6 +676,8 @@ button in Server settings.
 
 ## Cascade and upstream nodes
 
+The scope of `--without-pq` depends on the command. `quickstart --without-pq` skips the additional PQ route in the managed multi-route profile. `profile-create --transport xhttp --without-pq` creates the base XHTTP profile with `encryption=none` instead of PQ.
+
 The cascade is a server-side outbound and routing mode, not a new client profile. The client keeps
 connecting to the current VPS:
 

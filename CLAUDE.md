@@ -26,7 +26,9 @@ bash -n uninstall.sh
 
 ### Single-file application
 
-All logic lives in `xrayebator`. Supporting scripts (`install.sh`, `update.sh`, `uninstall.sh`) handle lifecycle but are not part of the runtime. The repository is a single runtime source file, but a deployed VPS is not literally one file: `xrayebator` generates additional root-owned runtime artifacts from heredocs — `/usr/local/bin/subhttp.sh` (the subscription/geo HTTP handler, which sources `xrayebator` in source-mode), systemd units (`xrayebator-sub.service`, `xrayebator-expire.service/.timer`, `xrayebator-traffic.service/.timer`, `xrayebator-monitor.service/.timer`, backend units) and nginx vhosts. Never edit those on the server — change `xrayebator` and regenerate.
+The Bash manager lives in `xrayebator`. Supporting scripts (`install.sh`, `update.sh`, `uninstall.sh`) handle lifecycle. The optional private cascade also uses the maintained `libexec/private_cascade_udp.py` runtime helper, which requires Python 3 and its standard library. Its unit tests and real-core fixture also require `python3`. The cascade guide installs the helper as `/usr/local/libexec/xrayebator-private-udp.py` with two separate systemd units and documents their manual update and removal.
+
+`xrayebator` generates additional root-owned runtime artifacts from heredocs, including `/usr/local/bin/subhttp.sh` (the subscription/geo HTTP handler, which sources `xrayebator` in source-mode), systemd units (`xrayebator-sub.service`, `xrayebator-expire.service/.timer`, `xrayebator-traffic.service/.timer`, `xrayebator-monitor.service/.timer`, backend units) and nginx vhosts. Change their sources in `xrayebator` and regenerate them.
 
 ### Production paths
 
@@ -130,6 +132,8 @@ Do NOT use raw `jq ... > temp && mv temp file` — always go through `safe_jq_wr
 - This checkout is currently on `dev`; do not assume `experimental` is the working branch.
 
 ## CLI commands
+
+- `xrayebator private-cascade render --policy-file F --upstream-file U --output O.json` — write a separate, protected ingress configuration and validate it with the installed Xray core. The live configuration is preserved. Deployment uses the Python 3 helper from `libexec/` and the dedicated units described in [Private cascade](docs/private-cascade.md).
 
 Apart from the interactive menu (`sudo xrayebator`), the script exposes subcommands used by the GUI and by automation. They are dispatched at the very bottom of `xrayebator` (the `case "${1:-}" in ... esac` block guarded by `XRAYEBATOR_SOURCED`):
 
