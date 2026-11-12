@@ -18,6 +18,14 @@ command -v jq >/dev/null 2>&1 || fail "jq required (CI installs it)"
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
+# _ssh_protect_client_ip читает SSH_CONNECTION ПЕРВЫМ, а SSH_CLIENT только как
+# fallback. При запуске теста по SSH обе переменные реально выставлены сессией,
+# поэтому подставленный «только SSH_CLIENT» кейс возвращал адрес живой сессии
+# (live-хост: ожидали 198.51.100.8, получали 217.217.244.71). Гасим унаследованное
+# окружение, чтобы каждая ветка проверялась изолированно; сами вызовы ниже
+# передают нужную переменную явно.
+unset SSH_CONNECTION SSH_CLIENT
+
 export SSH_PROTECT_JAIL_FILE="$TMP_ROOT/fail2ban/jail.d/xrayebator-sshd.local"
 export SSH_PROTECT_SSHD_FILE="$TMP_ROOT/ssh/sshd_config.d/99-xrayebator-hardening.conf"
 export SSH_PROTECT_MARKER="$TMP_ROOT/.ssh_protect_2026"
