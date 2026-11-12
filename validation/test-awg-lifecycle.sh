@@ -155,6 +155,21 @@ grep -q '^RandomTrailers = on$' "$conf" || fail "conf RandomTrailers"
 grep -q '^DisableCookies = on$' "$conf" || fail "conf DisableCookies"
 pass "server conf 3.1 mode emits HeaderProtectionKey/RandomTrailers/DisableCookies"
 
+# Transport protection: без рандомизации размеров и таймингов «3.1» остаётся
+# только HPK, а повторяемые размеры пакетов и постоянные интервалы — ровно то,
+# что анализирует поведенческий DPI (документация AmneziaWG).
+for k in ContentPaddingAddition RekeyAfterTime RekeyTimeout RejectAfterTime \
+         KeepaliveTimeout MaxHandshakeAttempts; do
+  want=$(jq -r --arg k "$k" '.[$k]' <<<"$junk")
+  [[ -n "$want" && "$want" != "null" ]] || fail "junk params missing $k"
+  grep -qF "$k = $want" "$conf" || fail "server conf missing transport-protection $k=$want"
+done
+cpa=$(jq -r '.ContentPaddingAddition' <<<"$junk")
+cpa_lo=${cpa%-*}; cpa_hi=${cpa#*-}
+(( cpa_lo >= 2 && cpa_hi <= 10 && cpa_hi >= cpa_lo )) \
+  || fail "ContentPaddingAddition out of 2..10: $cpa"
+pass "server conf carries ContentPaddingAddition (2..10) and randomised timers"
+
 # 4) реестр + awg-status
 _backend_set awg '(.awg.installed) = true' || fail "set installed"
 _backend_set awg '(.awg.port) = $p' --argjson p 51820 || fail "set port"
@@ -247,6 +262,16 @@ jq -e '.Jc >= 3 and .Jc <= 7 and .Jmin >= 10 and .Jmin <= 20 and .Jmax > .Jmin
 [[ "$(_awg_client_jitter_pure "seed-fixture:pubkey-fixture")" == "$_awg_jitter" ]] \
   || fail "jitter helper is not deterministic"
 pass "jitter helper: spec bounds, deterministic, opaque seed id"
+
+# Клиент обязан получить те же transport-protection диапазоны, что и сервер:
+# это общий секрет на уровне интерфейса, расхождение ломает туннель.
+for k in ContentPaddingAddition RekeyAfterTime KeepaliveTimeout; do
+  want=$(jq -r --arg k "$k" '.junk[$k]' "$AWG_PARAMS_FILE")
+  [[ -n "$want" && "$want" != "null" ]] || fail "server params missing junk.$k"
+  grep -qF "$k = $want" "$TMP_ROOT/carol-client.conf" \
+    || fail "client conf missing transport-protection $k=$want"
+done
+pass "client conf mirrors server transport-protection (padding + timers)"
 
 # 3.1 toggle: off -> 2.0-формат, on -> 3.1 возвращается
 _awg_31_toggle off "" >/dev/null 2>&1 || fail "awg-31 toggle off"

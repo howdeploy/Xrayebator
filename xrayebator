@@ -3918,7 +3918,8 @@ AWG_REPO_TOOLS="amnezia-vpn/amneziawg-tools"
 # Jc=5, Jmin=10, Jmax=50, H1–H4=1..4 (WG-магия), S1/S2 12..150, S3/S4 12..64
 # (лимиты их валидатора), S1+56≠S2, S1..S4 уникальные. HPK — 32 байта base64.
 _awg_gen_junk() {
-  local jc jmin jmax s1 s2 s3 s4 h1 h2 h3 h4 hpk
+  local jc jmin jmax s1 s2 s3 s4 h1 h2 h3 h4 hpk cpa
+  local ra rto rat ka mha
   jc=5                                                 # дефолт Amnezia
   jmin=10
   jmax=50
@@ -3935,12 +3936,36 @@ _awg_gen_junk() {
   h1=1; h2=2; h3=3; h4=4                               # WG-магия, дефолт Amnezia
   # tr -d '\r\n': на Windows-хосте (Git Bash/MSYS) openssl печатает CRLF, а HeaderProtectionKey — base64, передаваемый клиенту как есть. Артефакт не должен просочиться в server-params.json и в клиентские .conf.
   hpk=$(openssl rand -base64 32 2>/dev/null | tr -d '\r\n') || return 1
+  # --- Transport protection (AWG 3.x). До этого мы выдавали только HPK и
+  # RandomTrailers, хотя «3.1» в документации Amnezia — это ещё и рандомизация
+  # размеров и таймингов. Без них повторяемость пакетов и постоянные интервалы
+  # остаются ровно тем, что анализирует поведенческий DPI.
+  # ContentPaddingAddition: рекомендация Amnezia — 2..10 (наименьшее рабочее
+  # значение; паддинг добавляет объём каждому пакету).
+  cpa_low=$((RANDOM % 4 + 2))                          # 2..5
+  cpa_high=$((cpa_low + RANDOM % 6))                   # +0..5, остаётся в 2..10
+  # Таймеры задаются ДИАПАЗОНОМ (range<uint16>): постоянный интервал — признак.
+  # Значения берём вокруг дефолтов WireGuard, но с разбросом.
+  ra=$((RANDOM % 61 + 110))                            # RekeyAfterTime  110..170
+  rto=$((RANDOM % 3 + 5))                              # RekeyTimeout    5..7
+  rat=$((RANDOM % 41 + 170))                           # RejectAfterTime 170..210
+  ka=$((RANDOM % 5 + 8))                               # KeepaliveTimeout 8..12
+  mha=$((RANDOM % 3 + 5))                              # MaxHandshakeAttempts 5..7
   jq -n --argjson jc "$jc" --argjson jmin "$jmin" --argjson jmax "$jmax" \
     --argjson s1 "$s1" --argjson s2 "$s2" --argjson s3 "$s3" --argjson s4 "$s4" \
     --argjson h1 "$h1" --argjson h2 "$h2" --argjson h3 "$h3" --argjson h4 "$h4" \
     --arg hpk "$hpk" \
+    --arg cpa "${cpa_low}-${cpa_high}" \
+    --arg ra "$((ra))-$((ra + RANDOM % 31 + 20))" \
+    --arg rto "${rto}-$((rto + RANDOM % 3 + 2))" \
+    --arg rat "$((rat))-$((rat + RANDOM % 41 + 30))" \
+    --arg ka "${ka}-$((ka + RANDOM % 4 + 3))" \
+    --arg mha "${mha}-$((mha + RANDOM % 3 + 1))" \
     '{Jc:$jc, Jmin:$jmin, Jmax:$jmax, S1:$s1, S2:$s2, S3:$s3, S4:$s4,
-      H1:$h1, H2:$h2, H3:$h3, H4:$h4, HeaderProtectionKey: $hpk}'
+      H1:$h1, H2:$h2, H3:$h3, H4:$h4, HeaderProtectionKey: $hpk,
+      ContentPaddingAddition: $cpa,
+      RekeyAfterTime: $ra, RekeyTimeout: $rto, RejectAfterTime: $rat,
+      KeepaliveTimeout: $ka, MaxHandshakeAttempts: $mha}'
 }
 
 # Клиентские junk-параметры (Jc/Jmin/Jmax). По документации AmneziaWG они
@@ -3967,10 +3992,22 @@ _awg_client_jitter_pure() {
 }
 
 # Догенерация 3.1-полей в старом server-params.json (установки до 3.1-этапа):
-# добавляет S3/S4 (≥12, уникальные) и HeaderProtectionKey, если их нет.
+# добавляет S3/S4 (≥12, уникальные), HeaderProtectionKey и transport-protection
+# диапазоны (ContentPaddingAddition + таймеры), если их нет.
+# ВАЖНО: проверяем не только «3.1-минимум» (S3/S4/HPK), но и транспортные поля.
+# Иначе установка, прошедшая ранний 3.1-этап, навсегда остаётся с HPK, но без
+# рандомизации размеров и таймингов — то есть ровно с теми постоянными
+# признаками, которые анализирует поведенческий DPI.
+_AWG_31_MIN_KEYS=(S3 S4 HeaderProtectionKey)
+_AWG_TRANSPORT_KEYS=(ContentPaddingAddition RekeyAfterTime RekeyTimeout \
+                     RejectAfterTime KeepaliveTimeout MaxHandshakeAttempts)
 _awg_ensure_31_params() {
   local junk=$1
-  if jq -e 'has("S3") and has("S4") and has("HeaderProtectionKey")' <<<"$junk" >/dev/null 2>&1; then
+  if jq -e 'has("S3") and has("S4") and has("HeaderProtectionKey")
+            and has("ContentPaddingAddition") and has("RekeyAfterTime")
+            and has("RekeyTimeout") and has("RejectAfterTime")
+            and has("KeepaliveTimeout") and has("MaxHandshakeAttempts")' \
+       <<<"$junk" >/dev/null 2>&1; then
     echo "$junk"
     return 0
   fi
@@ -3983,8 +4020,33 @@ _awg_ensure_31_params() {
   while (( s4 == s1 || s4 == s2 || s4 == s3 )); do s4=$((RANDOM % 53 + 12)); done
   # tr -d '\r\n': на Windows-хосте (Git Bash/MSYS) openssl печатает CRLF, а HeaderProtectionKey — base64, передаваемый клиенту как есть. Артефакт не должен просочиться в server-params.json и в клиентские .conf.
   hpk=$(openssl rand -base64 32 2>/dev/null | tr -d '\r\n') || return 1
-  jq -n --argjson j "$junk" --argjson s3 "$s3" --argjson s4 "$s4" --arg hpk "$hpk" \
-    '$j + {S3: $s3, S4: $s4, HeaderProtectionKey: $hpk}'
+  local cpa_low=$((RANDOM % 4 + 2))                  # 2..5
+  local cpa="${cpa_low}-$((cpa_low + RANDOM % 6))"   # остаётся в 2..10
+  local ra=$((RANDOM % 61 + 110))
+  local rto=$((RANDOM % 3 + 5))
+  local rat=$((RANDOM % 41 + 170))
+  local ka=$((RANDOM % 5 + 8))
+  local mha=$((RANDOM % 3 + 5))
+  # Не затираем уже существующие значения: досоздаём только недостающие.
+  jq -n --argjson j "$junk" \
+    --argjson s3 "$s3" --argjson s4 "$s4" --arg hpk "$hpk" \
+    --arg cpa "$cpa" \
+    --arg ra "$ra-$((ra + RANDOM % 31 + 20))" \
+    --arg rto "$rto-$((rto + RANDOM % 3 + 2))" \
+    --arg rat "$rat-$((rat + RANDOM % 41 + 30))" \
+    --arg ka "$ka-$((ka + RANDOM % 4 + 3))" \
+    --arg mha "$mha-$((mha + RANDOM % 3 + 1))" '
+    $j
+    + (if ($j|has("S3")) then {} else {S3:$s3} end)
+    + (if ($j|has("S4")) then {} else {S4:$s4} end)
+    + (if ($j|has("HeaderProtectionKey")) then {} else {HeaderProtectionKey:$hpk} end)
+    + (if ($j|has("ContentPaddingAddition")) then {} else {ContentPaddingAddition:$cpa} end)
+    + (if ($j|has("RekeyAfterTime")) then {} else {RekeyAfterTime:$ra} end)
+    + (if ($j|has("RekeyTimeout")) then {} else {RekeyTimeout:$rto} end)
+    + (if ($j|has("RejectAfterTime")) then {} else {RejectAfterTime:$rat} end)
+    + (if ($j|has("KeepaliveTimeout")) then {} else {KeepaliveTimeout:$ka} end)
+    + (if ($j|has("MaxHandshakeAttempts")) then {} else {MaxHandshakeAttempts:$mha} end)
+    '
 }
 
 # Свободный высокий UDP-порт под интерфейс (не как у hysteria).
@@ -4055,6 +4117,16 @@ EOF
     # Формат булевых в парсере awg (kernel UAPI): on/off, НЕ true/false.
     [[ "$fe_rt" == true ]] && printf 'RandomTrailers = on\n' >> "$out_file"
     [[ "$fe_dc" == true ]] && printf 'DisableCookies = on\n' >> "$out_file"
+    # Transport protection: рандомизация размеров и таймингов. Только вместе с
+    # 3.1 — в формате 2.0 этих ключей не существует.
+    if [[ "$fe_rt" == true ]]; then
+      local v
+      for v in ContentPaddingAddition RekeyAfterTime RekeyTimeout RejectAfterTime \
+               KeepaliveTimeout MaxHandshakeAttempts; do
+        local val; val=$(jq -r --arg k "$v" '.[$k] // empty' <<<"$params")
+        [[ -n "$val" ]] && printf '%s = %s\n' "$v" "$val" >> "$out_file"
+      done
+    fi
     cat >> "$out_file" <<EOF
 # Managed by xrayebator — peer-секции добавляет _awg_regen_config.
 PostUp = iptables -A FORWARD -i ${AWG_IFACE} -j ACCEPT; iptables -t nat -A POSTROUTING -o ${iface} -j MASQUERADE
@@ -4904,6 +4976,16 @@ EOF
     [[ "$fe_hpk" == true && -n "$hpk" ]] && printf 'HeaderProtectionKey = %s\n' "$hpk"
     [[ "$fe_rt" == true ]] && printf 'RandomTrailers = on\n'
     [[ "$fe_dc" == true ]] && printf 'DisableCookies = on\n'
+    # Transport protection 3.x — объявляем приёмнику те же диапазоны, что у
+    # сервера. Работает только когда 3.1 включён (fe_rt).
+    if [[ "$fe_rt" == true ]]; then
+      local k tv
+      for k in ContentPaddingAddition RekeyAfterTime RekeyTimeout RejectAfterTime \
+               KeepaliveTimeout MaxHandshakeAttempts; do
+        tv=$(jq -r --arg k "$k" '.[$k] // empty' <<<"$junk")
+        [[ -n "$tv" ]] && printf '%s = %s\n' "$k" "$tv"
+      done
+    fi
     cat <<EOF
 
 [Peer]
