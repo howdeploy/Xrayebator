@@ -12,6 +12,9 @@ import type {
   Dns01StatusResult,
   Hysteria2LinkResult,
   Hysteria2SubbodyResult,
+  WarpMode,
+  WarpModeResult,
+  WarpStatusResult,
   DeployStartPayload,
   ElectronAPI,
   ImportProgressEvent,
@@ -218,7 +221,20 @@ const api: ElectronAPI = {
     awgConf: (serverId: string, access: SshAccessInput, name: string): Promise<AwgConfResult> =>
       ipcRenderer.invoke('backends:awgConf', serverId, access, name),
     awg31: (serverId: string, access: SshAccessInput, on: boolean): Promise<BackendToggleResult> =>
-      ipcRenderer.invoke('backends:awg31', serverId, access, on)
+      ipcRenderer.invoke('backends:awg31', serverId, access, on),
+    warpStatus: (serverId: string, access: SshAccessInput): Promise<WarpStatusResult> =>
+      ipcRenderer.invoke('backends:warpStatus', serverId, access),
+    warpSetup: (
+      serverId: string,
+      access: SshAccessInput,
+      force: boolean
+    ): Promise<BackendSimpleResult> =>
+      ipcRenderer.invoke('backends:warpSetup', serverId, access, force),
+    warpMode: (
+      serverId: string,
+      access: SshAccessInput,
+      mode: WarpMode
+    ): Promise<WarpModeResult> => ipcRenderer.invoke('backends:warpMode', serverId, access, mode)
   },
 
   security: {

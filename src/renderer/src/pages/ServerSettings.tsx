@@ -42,7 +42,9 @@ import type {
   ServerProfile,
   SniEntry,
   SshAccessInput,
-  SshProtectStatusResult
+  SshProtectStatusResult,
+  WarpMode,
+  WarpStatusResult
 } from '@shared/types'
 import { isDns01Ready, type Dns01Input, type Dns01Provider } from '@shared/dns01'
 import { describeExpire, isFutureDate, presetDate } from '@shared/expire'
@@ -353,6 +355,10 @@ export function ServerPage({
   const [sshProtect, setSshProtect] = useState<SshProtectStatusResult | null>(null)
   const [sshProtectBusy, setSshProtectBusy] = useState(false)
   const [sshProtectError, setSshProtectError] = useState<string | null>(null)
+  // WARP как выходной адрес: состояние устройства и выбранный режим выхода.
+  const [warp, setWarp] = useState<WarpStatusResult | null>(null)
+  const [warpBusy, setWarpBusy] = useState(false)
+  const [warpError, setWarpError] = useState<string | null>(null)
   const [pqTarget, setPqTarget] = useState<ServerProfile | null>(null)
   const [pqTransport, setPqTransport] = useState<string>('tcp')
   const [pqBusy, setPqBusy] = useState(false)
@@ -423,6 +429,17 @@ export function ServerPage({
         })
         .catch((err: unknown) =>
           setSshProtectError(err instanceof Error ? err.message : String(err))
+        )
+      // WARP — тоже best-effort: сервер со старым менеджером команды не знает,
+      // и это не должно ронять остальные секции настроек.
+      void window.api.backends
+        .warpStatus(server.id, access)
+        .then((w) => {
+          setWarp(w)
+          setWarpError(w.ok ? null : (w.error ?? null))
+        })
+        .catch((err: unknown) =>
+          setWarpError(err instanceof Error ? err.message : String(err))
         )
       const refreshed = await window.api.servers.get(server.id)
       setHostKeyFingerprint(refreshed?.hostKeyFingerprint ?? null)
@@ -567,6 +584,57 @@ export function ServerPage({
       setSshProtectError(err instanceof Error ? err.message : String(err))
     } finally {
       setSshProtectBusy(false)
+    }
+  }
+
+  /**
+   * WARP: регистрация устройства и переключение режима выхода. Сервер меняет
+   * routing и перезапускает Xray, поэтому после успеха перечитываем профили —
+   * иначе таблица покажет старое состояние маршрутов.
+   */
+  const registerWarp = async (force: boolean): Promise<void> => {
+    if (!accessReady) {
+      setError(t('settings.errorPassword'))
+      return
+    }
+    setWarpBusy(true)
+    setWarpError(null)
+    try {
+      const res = await window.api.backends.warpSetup(server.id, access, force)
+      if (res.ok !== true) {
+        setWarpError(res.error ?? t('settings.warpFailed'))
+        return
+      }
+      const status = await window.api.backends.warpStatus(server.id, access)
+      setWarp(status)
+      toastText(t('settings.warpSetupToast'))
+    } catch (err) {
+      setWarpError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setWarpBusy(false)
+    }
+  }
+
+  const changeWarpMode = async (mode: WarpMode): Promise<void> => {
+    if (!accessReady) {
+      setError(t('settings.errorPassword'))
+      return
+    }
+    setWarpBusy(true)
+    setWarpError(null)
+    try {
+      const res = await window.api.backends.warpMode(server.id, access, mode)
+      if (res.ok !== true) {
+        setWarpError(res.error ?? t('settings.warpFailed'))
+        return
+      }
+      const status = await window.api.backends.warpStatus(server.id, access)
+      setWarp(status)
+      toastText(t('settings.warpModeSetToast'))
+    } catch (err) {
+      setWarpError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setWarpBusy(false)
     }
   }
 
@@ -2543,6 +2611,142 @@ export function ServerPage({
                   </Button>
                 </div>
                 <p className={styles.fpNote}>{t('settings.sshProtectUnbanHint')}</p>
+              </section>
+
+              {/* WARP: выходной адрес вместо собственного IP сервера. Смысл —
+                  чтобы адрес, к которому подключаются клиенты, не совпадал с
+                  адресом, который видят сайты (иначе его выжигают). */}
+              <section className={styles.subCard}>
+                <div className={styles.subHead}>
+                  <span
+                    className={`${styles.subIcon} ${
+                      warp?.mode && warp.mode !== 'off'
+                        ? styles.subIconOk
+                        : warp?.configured
+                          ? styles.subIconOff
+                          : styles.subIconIdle
+                    }`}
+                  >
+                    {warp?.mode && warp.mode !== 'off' ? (
+                      <ShieldCheck size={20} />
+                    ) : (
+                      <ShieldOff size={20} />
+                    )}
+                  </span>
+                  <span className={styles.subHeadText}>
+                    <span className={styles.subTitleRow}>
+                      <span className={styles.subTitle}>{t('settings.warpTitle')}</span>
+                      <span
+                        className={`${styles.subMode} ${
+                          warp?.mode && warp.mode !== 'off'
+                            ? styles.subModeOk
+                            : warp?.configured
+                              ? styles.subModeWarn
+                              : ''
+                        }`}
+                      >
+                        {warp?.mode === 'all'
+                          ? t('settings.warpModeAll')
+                          : warp?.mode === 'games-direct'
+                            ? t('settings.warpModeGames')
+                            : warp?.configured
+                              ? t('settings.warpOff')
+                              : t('settings.warpNotConfigured')}
+                      </span>
+                    </span>
+                    <span className={styles.subSubtitle}>{t('settings.warpSubtitle')}</span>
+                  </span>
+                </div>
+
+                {warp?.configured ? (
+                  <>
+                    <dl className={styles.subGrid}>
+                      <div className={styles.subRow}>
+                        <dt className={styles.subLabel}>{t('settings.warpModeLabel')}</dt>
+                        <dd className={`${styles.subValue} ${styles.subValueBox}`}>
+                          {warp?.mode === 'all'
+                            ? t('settings.warpModeAll')
+                            : warp?.mode === 'games-direct'
+                              ? t('settings.warpModeGames')
+                              : t('settings.warpModeOff')}
+                        </dd>
+                      </div>
+                      <div className={styles.subRow}>
+                        <dt className={styles.subLabel}>{t('settings.warpMtu')}</dt>
+                        <dd className={`${styles.subValue} ${styles.subValueBox}`}>
+                          {warp?.mtu ?? 1280}
+                        </dd>
+                      </div>
+                      <div className={styles.subRow}>
+                        <dt className={styles.subLabel}>{t('settings.warpEndpoint')}</dt>
+                        <dd className={`${styles.subValue} ${styles.subValueBox}`}>
+                          {warp?.endpoint ?? 'engage.cloudflareclient.com:2408'}
+                        </dd>
+                      </div>
+                    </dl>
+                    <p className={styles.subNotice}>
+                      {warp?.mode === 'all'
+                        ? t('settings.warpModeAllHint')
+                        : warp?.mode === 'games-direct'
+                          ? t('settings.warpModeGamesHint')
+                          : t('settings.warpModeOffHint')}
+                    </p>
+                    <p className={styles.subNotice}>{t('settings.warpUnstableNote')}</p>
+                  </>
+                ) : (
+                  <p className={styles.subNotice}>{t('settings.warpNotConfiguredNote')}</p>
+                )}
+
+                {warpError && <p className={styles.error}>{warpError}</p>}
+
+                <div className={styles.subActions}>
+                  {warp?.configured ? (
+                    <>
+                      <Button
+                        size="sm"
+                        variant={warp?.mode === 'games-direct' ? 'secondary' : 'primary'}
+                        isDisabled={warpBusy}
+                        onPress={() => void changeWarpMode('games-direct')}
+                      >
+                        {warpBusy ? t('settings.warpBusy') : t('settings.warpModeGames')}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant={warp?.mode === 'all' ? 'secondary' : 'primary'}
+                        isDisabled={warpBusy}
+                        onPress={() => void changeWarpMode('all')}
+                      >
+                        {t('settings.warpModeAll')}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        isDisabled={warpBusy}
+                        onPress={() => void changeWarpMode('off')}
+                      >
+                        {t('settings.warpModeOff')}
+                      </Button>
+                    </>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      isDisabled={warpBusy}
+                      onPress={() => void registerWarp(false)}
+                    >
+                      {warpBusy ? t('settings.warpBusy') : t('settings.warpSetup')}
+                    </Button>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    isDisabled={warpBusy}
+                    onPress={() => void registerWarp(true)}
+                  >
+                    <RefreshCw size={14} />
+                    {t('settings.warpForceSetup')}
+                  </Button>
+                </div>
               </section>
 
             <section className={styles.subCard}>

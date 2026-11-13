@@ -10,7 +10,10 @@ import type {
   BackendStatusResult,
   BackendToggleResult,
   Hysteria2LinkResult,
-  Hysteria2SubbodyResult
+  Hysteria2SubbodyResult,
+  WarpMode,
+  WarpModeResult,
+  WarpStatusResult
 } from '@shared/types'
 
 /**
@@ -272,6 +275,78 @@ export class BackendManager {
         disable_cookies: payload.disable_cookies,
         error: payload.error
       }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      return { ok: false, error: message }
+    }
+  }
+
+  /**
+   * Состояние Cloudflare WARP (выходной адрес вместо собственного IP сервера).
+   * `configured` — есть зарегистрированное устройство, `mode` — выбранный режим,
+   * `applied` — outbound реально присутствует в config.json.
+   */
+  async warpStatus(): Promise<WarpStatusResult> {
+    try {
+      const payload = extractJson(await this.run(['warp-status'])) as {
+        ok?: boolean
+        configured?: boolean
+        mode?: string
+        applied?: boolean
+        mtu?: number
+        endpoint?: string
+        error?: string
+      }
+      const mode = (payload.mode ?? 'off') as WarpMode
+      return {
+        ok: payload.ok === true,
+        configured: payload.configured === true,
+        mode: mode === 'all' || mode === 'games-direct' ? mode : 'off',
+        applied: payload.applied === true,
+        mtu: payload.mtu,
+        endpoint: payload.endpoint,
+        error: payload.error
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      return { ok: false, configured: false, mode: 'off', applied: false, error: message }
+    }
+  }
+
+  /**
+   * Регистрация устройства WARP. Идемпотентно на стороне сервера: повторный
+   * вызов вернёт `already: true`, а `force` перерегистрирует устройство (старые
+   * ключи станут недействительны — выданных клиентам .conf это не касается).
+   */
+  async warpSetup(force = false): Promise<BackendSimpleResult> {
+    try {
+      const args = force ? ['warp-setup', '--force'] : ['warp-setup']
+      const payload = extractJson(await this.run(args)) as {
+        ok?: boolean
+        already?: boolean
+        registered?: boolean
+        error?: string
+      }
+      return { ok: payload.ok === true, already: payload.already, error: payload.error }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      return { ok: false, error: message }
+    }
+  }
+
+  /**
+   * Переключение режима выхода. `all` — весь трафик через WARP; `games-direct`
+   * — игры (geosite:category-games) напрямую, остальное через WARP; `off` —
+   * вернуть catch-all в direct. Меняет routing и перезапускает Xray.
+   */
+  async warpMode(mode: WarpMode): Promise<WarpModeResult> {
+    try {
+      const payload = extractJson(await this.run(['warp-mode', mode])) as {
+        ok?: boolean
+        mode?: string
+        error?: string
+      }
+      return { ok: payload.ok === true, mode: payload.mode as WarpMode | undefined, error: payload.error }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       return { ok: false, error: message }

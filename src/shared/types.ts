@@ -288,6 +288,33 @@ export interface BackendToggleResult {
   error?: string
 }
 
+/**
+ * Режим выхода Cloudflare WARP.
+ * - `all` — весь трафик через WARP (максимальное разделение входа и выхода);
+ * - `games-direct` — geosite:category-games напрямую, остальное через WARP
+ *   (игроку пинг не растёт, адрес входа всё равно не светится);
+ * - `off` — catch-all возвращается в direct.
+ */
+export type WarpMode = 'all' | 'games-direct' | 'off'
+
+export interface WarpStatusResult {
+  ok: boolean
+  /** Устройство WARP зарегистрировано на сервере. */
+  configured: boolean
+  mode: WarpMode
+  /** Outbound warp-out реально присутствует в config.json. */
+  applied: boolean
+  mtu?: number
+  endpoint?: string
+  error?: string
+}
+
+export interface WarpModeResult {
+  ok: boolean
+  mode?: WarpMode
+  error?: string
+}
+
 export interface ServerProfile {
   name: string
   uuid: string
@@ -809,5 +836,22 @@ export interface ElectronAPI {
       access: SshAccessInput,
       on: boolean
     ) => Promise<BackendToggleResult>
+    /** Состояние Cloudflare WARP: зарегистрирован ли выход и какой режим включён. */
+    warpStatus: (serverId: string, access: SshAccessInput) => Promise<WarpStatusResult>
+    /** Регистрация устройства WARP; force перерегистрирует (старые ключи умрут). */
+    warpSetup: (
+      serverId: string,
+      access: SshAccessInput,
+      force: boolean
+    ) => Promise<BackendSimpleResult>
+    /**
+     * Смена режима выхода. Переписывает catch-all в routing и перезапускает
+     * Xray на сервере — вызывающий должен перечитать профили после успеха.
+     */
+    warpMode: (
+      serverId: string,
+      access: SshAccessInput,
+      mode: WarpMode
+    ) => Promise<WarpModeResult>
   }
 }

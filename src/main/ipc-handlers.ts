@@ -720,6 +720,35 @@ export function registerIpcHandlers({ store }: IpcContext): void {
   )
 
   ipcMain.handle(
+    'backends:warpStatus',
+    async (_e, serverId: string, access: SshAccessInput) => {
+      const manager = await backendManagerFor(serverId, access)
+      return manager.warpStatus()
+    }
+  )
+
+  ipcMain.handle(
+    'backends:warpSetup',
+    async (_e, serverId: string, access: SshAccessInput, force: boolean) => {
+      const manager = await backendManagerFor(serverId, access)
+      return manager.warpSetup(Boolean(force))
+    }
+  )
+
+  // Режим выхода меняет routing и перезапускает Xray на сервере, поэтому GUI
+  // обязан перечитать профили: catch-all мог уехать с direct на warp-out.
+  ipcMain.handle(
+    'backends:warpMode',
+    async (_e, serverId: string, access: SshAccessInput, mode: string) => {
+      if (mode !== 'all' && mode !== 'games-direct' && mode !== 'off') {
+        throw new Error('Неизвестный режим WARP')
+      }
+      const manager = await backendManagerFor(serverId, access)
+      return manager.warpMode(mode)
+    }
+  )
+
+  ipcMain.handle(
     'backends:hysteria2Install',
     async (_e, serverId: string, access: SshAccessInput, grantAll: boolean) => {
       const manager = await backendManagerFor(serverId, access)
