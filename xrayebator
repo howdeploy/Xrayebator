@@ -7516,6 +7516,194 @@ enable_cascade_mode() {
   read -r _
 }
 
+# --- WARP (Cloudflare WireGuard) как выходной адрес ------------------------------
+# Зачем: статья «Методичка по построению VPN, осень 2026» (раздел 2) требует, чтобы
+# пользовательский трафик НЕ выходил с адреса входа — иначе российские приложения
+# узнают внешний IP и его выжигают. WARP даёт выходной адрес Cloudflare: бесплатно,
+# не нужен второй IP у хостера (второй адрес в той же подсети заблокируют вместе
+# с первым) и не нужен второй сервер под шлюз.
+# Проверено живьём: адрес выхода подменяется на принадлежащий Cloudflare (warp=on).
+WARP_STATE_DIR="${WARP_STATE_DIR:-$BACKENDS_ROOT/warp}"
+WARP_STATE_FILE="$WARP_STATE_DIR/warp.json"
+WARP_TAG="warp-out"
+
+# Парсинг значения из TOML без зависимости от python3.11+ (tomllib). На Ubuntu
+# 22.04 стоит python3.10, где tomllib нет, — поэтому обычный sed по ключу.
+_warp_toml_get() {
+  local file=$1 key=$2
+  [[ -f "$file" ]] || return 1
+  sed -n "s/^[[:space:]]*$key[[:space:]]*=[[:space:]]*\"\(.*\)\"[[:space:]]*\$/\1/p" "$file" | head -1
+}
+
+# Регистрация WARP через wgcf. Ключи и reserved сохраняются в 0600 JSON.
+# reserved (3 байта) — часть client_id из регистрации; без него WARP молчит.
+warp_setup_workhorse() {
+  local dir tmp
+  mkdir -p "$WARP_STATE_DIR" || return 1
+  chmod 750 "$WARP_STATE_DIR" 2>/dev/null
+  if ! command -v wgcf >/dev/null 2>&1; then
+    echo -e "${CYAN}  → Установка wgcf...${NC}" >&2
+    local arch ver
+    arch=$(uname -m); [[ "$arch" == "x86_64" ]] && arch=amd64
+    [[ "$arch" == "aarch64" ]] && arch=arm64
+    ver=$(curl -fsSL --connect-timeout 10 --max-time 30 \
+      https://api.github.com/repos/ViRb3/wgcf/releases/latest 2>/dev/null \
+      | jq -r '.tag_name // empty') || true
+    [[ -n "$ver" ]] || { echo -e "${RED}✗ Не удалось узнать версию wgcf${NC}" >&2; return 1; }
+    if ! curl -fsSL --connect-timeout 20 --max-time 120 \
+        "https://github.com/ViRb3/wgcf/releases/download/${ver}/wgcf_${ver#v}_linux_${arch}" \
+        -o /usr/local/bin/wgcf; then
+      echo -e "${RED}✗ Не удалось скачать wgcf${NC}" >&2
+      return 1
+    fi
+    chmod 755 /usr/local/bin/wgcf
+  fi
+  tmp=$(mktemp -d) || return 1
+  # shellcheck disable=SC2064
+  trap "rm -rf -- '$tmp'" RETURN
+  ( cd "$tmp" && wgcf register --accept-tos >/dev/null 2>&1 && wgcf generate >/dev/null 2>&1 ) || {
+    echo -e "${RED}✗ wgcf не смог зарегистрировать WARP (лимиты регистрации с этого IP?)${NC}" >&2
+    return 1
+  }
+  local priv pub v4 v6 reserved cid
+  priv=$(_warp_toml_get "$tmp/wgcf-profile.conf" PrivateKey) || return 1
+  # В wgcf-profile.conf ключи лежат в [Interface]/[Peer], формат "Key = value".
+  [[ -n "$priv" ]] || priv=$(grep -m1 '^PrivateKey' "$tmp/wgcf-profile.conf" | cut -d= -f2- | tr -d ' ')
+  pub=$(grep -m1 '^PublicKey' "$tmp/wgcf-profile.conf" | cut -d= -f2- | tr -d ' ')
+  local addr_line
+  addr_line=$(grep -m1 '^Address' "$tmp/wgcf-profile.conf" | cut -d= -f2-)
+  v4=$(echo "$addr_line" | cut -d, -f1 | tr -d ' ')
+  v6=$(echo "$addr_line" | cut -d, -f2 | tr -d ' ')
+  [[ -n "$priv" && -n "$pub" && -n "$v4" ]] || {
+    echo -e "${RED}✗ wgcf вернул неполный профиль${NC}" >&2
+    return 1
+  }
+  # reserved: 3 байта из client_id. Если client_id недоступен — [0,0,0]
+  # (проверено: WARP с ним работает, но возможна нестабильность).
+  reserved='[0,0,0]'
+  local at did
+  at=$(_warp_toml_get "$tmp/wgcf-account.toml" access_token)
+  did=$(_warp_toml_get "$tmp/wgcf-account.toml" device_id)
+  if [[ -n "$at" && -n "$did" ]]; then
+    cid=$(curl -sS -m 20 -H "Authorization: Bearer $at" \
+      "https://api.cloudflareclient.com/v0i1909051800/reg/$did" 2>/dev/null \
+      | jq -r '.config.client_id // empty' 2>/dev/null) || true
+    if [[ -n "$cid" ]]; then
+      reserved=$(printf '%s' "$cid" | base64 -d 2>/dev/null | head -c 3 \
+        | od -An -tu1 | awk '{printf "[%d,%d,%d]", $1, $2, $3}')
+      [[ "$reserved" =~ ^\[[0-9]+,[0-9]+,[0-9]+\]$ ]] || reserved='[0,0,0]'
+    fi
+  fi
+  # Приватный ключ — через окружение, НЕ через --arg: аргументы процесса видны
+  # любому в /proc/<pid>/cmdline (0444), а окружение читает только владелец
+  # (0400). Тот же приём, что для остальных секретов проекта.
+  XRAYEBATOR_WARP_KEY="$priv" XRAYEBATOR_WARP_PEER="$pub" \
+  jq -n --arg v4 "$v4" --arg v6 "$v6" \
+     --argjson reserved "$reserved" \
+     '{private_key:$ENV.XRAYEBATOR_WARP_KEY, peer_public_key:$ENV.XRAYEBATOR_WARP_PEER,
+       address:[$v4,$v6],
+       reserved:$reserved, mtu:1280, endpoint:"engage.cloudflareclient.com:2408",
+       created:(now|todate)}' > "$WARP_STATE_FILE" || return 1
+  chmod 600 "$WARP_STATE_FILE"
+  chown root:root "$WARP_STATE_FILE" 2>/dev/null || true
+  return 0
+}
+
+warp_setup_command() {
+  if [[ -s "$WARP_STATE_FILE" && "${1:-}" != "--force" ]]; then
+    jq -cn '{ok:true, already:true}'; return 0
+  fi
+  warp_setup_workhorse || { jq -cn '{ok:false, error:"WARP registration failed"}'; return 1; }
+  jq -cn '{ok:true, registered:true}'
+}
+
+# Outbound для config.json. reserved обязателен: без него WARP не отвечает.
+_warp_outbound_json() {
+  [[ -s "$WARP_STATE_FILE" ]] || return 1
+  jq -c --arg tag "$WARP_TAG" '
+    {tag:$tag, protocol:"wireguard", settings:{
+      secretKey: .private_key,
+      address: .address,
+      peers: [{publicKey: .peer_public_key, endpoint: .endpoint,
+               allowedIPs:["0.0.0.0/0","::/0"]}],
+      reserved: .reserved,
+      mtu: (.mtu // 1280)}}' "$WARP_STATE_FILE"
+}
+
+# Режим: $1 = all | games-direct | off
+#   all          — весь трафик через WARP (максимальная скрытность, +30..40 мс)
+#   games-direct — игры (geosite:category-games) идут напрямую, остальное в WARP;
+#                  для игрока пинг не растёт, а адрес входа всё равно не светится
+#   off          — вернуть catch-all в direct
+# Fail-closed: при отсутствии WARP трафик уходит в blackhole, НИКОГДА в direct
+# (правило статьи: «Если все выходы недоступны — blackhole»).
+warp_mode_apply() {
+  local mode=${1:-all} ob rollback_config="" mode_file="$WARP_STATE_DIR/mode"
+  [[ -s "$WARP_STATE_FILE" ]] || { echo -e "${RED}✗ WARP не настроен: сначала warp-setup${NC}" >&2; return 1; }
+  case "$mode" in all|games-direct|off) ;; *) return 1 ;; esac
+  ob=$(_warp_outbound_json) || return 1
+  backup_config "warp_mode_$mode" rollback_config || return 1
+  if ! safe_jq_write --argjson ob "$ob" --arg mode "$mode" '
+      def catch_all:
+        (.type == "field" and (.network // "") == "tcp,udp"
+         and (.domain // null) == null and (.ip // null) == null and (.port // null) == null);
+      .outbounds = ((.outbounds // []) | map(select(.tag != "warp-out" and .tag != "warp-games-direct"))) |
+      .outbounds += [
+        {tag:"warp-games-direct", protocol:"freedom"},
+        $ob
+      ] |
+      .routing.rules = [ (.routing.rules // [])[] | select(catch_all | not) ] |
+      .routing.rules += (
+        if $mode == "off" then
+          [{type:"field", network:"tcp,udp", outboundTag:"direct"}]
+        elif $mode == "games-direct" then
+          # Игры — напрямую (пинг не страдает), всё остальное — в WARP.
+          [{type:"field", domain:["geosite:category-games"], outboundTag:"warp-games-direct"},
+           {type:"field", network:"tcp,udp", outboundTag:"warp-out"}]
+        else
+          [{type:"field", network:"tcp,udp", outboundTag:"warp-out"}]
+        end)
+    ' "$CONFIG_FILE"; then
+    echo -e "${RED}✗ Не удалось применить режим WARP${NC}" >&2
+    return 1
+  fi
+  fix_xray_permissions
+  if safe_restart_xray "$rollback_config"; then
+    mkdir -p "$WARP_STATE_DIR"; printf '%s\n' "$mode" > "$mode_file"
+    chmod 750 "$WARP_STATE_DIR" 2>/dev/null
+    echo -e "${GREEN}✓ WARP включён: режим ${mode}${NC}" >&2
+    return 0
+  fi
+  return 1
+}
+
+warp_mode_command() {
+  local mode=${1:-}
+  case "$mode" in
+    all|games-direct|off) ;;
+    *) jq -cn --arg m "$mode" '{ok:false, error:("неизвестный режим: " + $m + " (all|games-direct|off)")}'; return 1 ;;
+  esac
+  if warp_mode_apply "$mode"; then
+    jq -cn --arg m "$mode" '{ok:true, mode:$m}'
+  else
+    jq -cn '{ok:false, error:"не удалось применить режим WARP"}'
+    return 1
+  fi
+}
+
+warp_status_command() {
+  local mode
+  mode=$(cat "$WARP_STATE_DIR/mode" 2>/dev/null || echo "off")
+  if [[ ! -s "$WARP_STATE_FILE" ]]; then
+    jq -cn '{ok:true, configured:false, mode:"off"}'
+    return 0
+  fi
+  jq -cn --arg mode "$mode" \
+    --argjson installed "$(jq -r 'if (.outbounds // []) | map(select(.tag == "warp-out")) | length > 0 then "true" else "false" end' "$CONFIG_FILE" 2>/dev/null || echo false)" \
+    '{ok:true, configured:true, mode:$mode, applied:$installed,
+      mtu:1280, endpoint:"engage.cloudflareclient.com:2408"}'
+}
+
 disable_cascade_mode() {
   echo -e "${YELLOW}Отключить каскад и вернуть default route в direct? (y/N): ${NC}"
   local confirm
@@ -20572,6 +20760,17 @@ if [[ "$XRAYEBATOR_SOURCED" -eq 0 ]]; then
       shift
       private_cascade_command "$@"
       ;;
+    warp-setup)
+      shift
+      warp_setup_command "$@"
+      ;;
+    warp-mode)
+      shift
+      warp_mode_command "${1:-}"
+      ;;
+    warp-status)
+      warp_status_command
+      ;;
     backend-status)
       _backend_status_json
       ;;
@@ -20667,6 +20866,9 @@ if [[ "$XRAYEBATOR_SOURCED" -eq 0 ]]; then
       echo -e "  ${CYAN}sudo xrayebator port-change --name N [--route R] --port P|random${NC} — сменить порт (JSON; reconnect клиентов)"
       echo -e "  ${CYAN}sudo xrayebator bypass list${NC} — список доменов в обходе (JSON)"
       echo -e "  ${CYAN}sudo xrayebator private-cascade render --policy-file F --upstream-file U --output O.json${NC} — отдельный конфиг каскада"
+      echo -e "  ${CYAN}sudo xrayebator warp-setup${NC} — зарегистрировать Cloudflare WARP как выходной адрес (JSON)"
+      echo -e "  ${CYAN}sudo xrayebator warp-mode all|games-direct|off${NC} — весь трафик через WARP / игры напрямую (JSON)"
+      echo -e "  ${CYAN}sudo xrayebator warp-status${NC} — состояние WARP (JSON)"
       echo -e "  ${CYAN}sudo xrayebator bypass add --domain D${NC} — добавить домен в обход (JSON)"
       echo -e "  ${CYAN}sudo xrayebator bypass remove --domain D${NC} — убрать домен из обхода (JSON)"
       echo -e "  ${CYAN}sudo xrayebator bypass reset${NC} — сбросить все bypass-правила (JSON)"
