@@ -460,19 +460,12 @@ SERVER_COUNTRY_FILE="${SERVER_COUNTRY_FILE:-/usr/local/etc/xray/.server_country}
 # xrayebator на каждый запрос, лишние curl'ы под xray:xray неприемлемы).
 # Args: $1 = IP сервера (опционально; иначе get_server_ip).
 # Возвращает 0 даже при недоступности API — вызывающий никогда не фейлится из-за страны.
-_geo_detect_country() {
+#
+# _geo_lookup_pure: только сетевой запрос, печатает "code|country|city" или пустоту.
+# НИЧЕГО не пишет — нужен там, где запрещена мутация (inspect обязан быть read-only,
+# его охраняет validation/test-quickstart-email-and-inspect.sh).
+_geo_lookup_pure() {
   local ip="${1:-}"
-  local file="$SERVER_COUNTRY_FILE"
-
-  if [[ -s "$file" ]]; then
-    local now mtime
-    now=$(date +%s 2>/dev/null || echo 0)
-    mtime=$(stat -c %Y "$file" 2>/dev/null || echo 0)
-    if [[ "$now" -gt 0 && "$mtime" -gt 0 && $((now - mtime)) -lt 2592000 ]]; then
-      return 0
-    fi
-  fi
-
   [[ -z "$ip" ]] && ip=$(get_server_ip)
   ip="${ip//\[/}"; ip="${ip//\]/}"
   [[ -n "$ip" ]] || return 0
@@ -492,7 +485,27 @@ _geo_detect_country() {
   [[ -n "$code" && "$code" != "null" ]] || code=""
   [[ -n "$city" && "$city" != "null" ]] || city=""
 
-  printf '%s|%s|%s\n' "$code" "$country" "$city" > "$file" 2>/dev/null || true
+  printf '%s|%s|%s\n' "$code" "$country" "$city"
+}
+
+_geo_detect_country() {
+  local ip="${1:-}"
+  local file="$SERVER_COUNTRY_FILE"
+
+  if [[ -s "$file" ]]; then
+    local now mtime
+    now=$(date +%s 2>/dev/null || echo 0)
+    mtime=$(stat -c %Y "$file" 2>/dev/null || echo 0)
+    if [[ "$now" -gt 0 && "$mtime" -gt 0 && $((now - mtime)) -lt 2592000 ]]; then
+      return 0
+    fi
+  fi
+
+  local line
+  line=$(_geo_lookup_pure "$ip") || return 0
+  [[ -n "$line" ]] || return 0
+
+  printf '%s\n' "$line" > "$file" 2>/dev/null || true
   chown xray:xray "$file" 2>/dev/null || true
   return 0
 }
@@ -15652,6 +15665,18 @@ inspect_command() {
     geo_country=$(_geo_country_name)
     geo_city=$(_geo_city)
     flag=$(_geo_flag_emoji "$(_geo_country_code)")
+  else
+    # Маркера нет (сервер ставился install.sh или профили создавались клиентскими
+    # командами, а не quickstart). Спрашиваем API напрямую: _geo_lookup_pure только
+    # читает сеть и НЕ пишет файл, поэтому read-only контракт inspect не нарушается.
+    local _geo_line _gc _gn _gcity
+    _geo_line=$(_geo_lookup_pure "") || true
+    if [[ -n "$_geo_line" ]]; then
+      _gc="${_geo_line%%|*}"; _geo_line="${_geo_line#*|}"
+      _gn="${_geo_line%%|*}"; _gcity="${_geo_line#*|}"
+      geo_country="$_gn"; geo_city="$_gcity"
+      flag=$(_geo_flag_emoji "$_gc")
+    fi
   fi
 
   # Мультибэкенд: сводка реестра. STRICT read-only: inspect ничего не создаёт —
