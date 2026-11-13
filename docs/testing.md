@@ -147,6 +147,37 @@ migration does not retrofit missing routes. If UFW is already active, compare th
 before and after an operation: the installer adds the fixed project service TCP list and must not
 change the default policy, while uninstall should remove only rules recorded as owned.
 
+### What a full acceptance run covers
+
+One pass over a freshly installed host, in this order. Every item below was executed end to end; the
+numbers are what "passing" looked like, not a guarantee for other networks.
+
+| Step | Command | Passing result |
+|---|---|---|
+| Services | `systemctl is-active xray hysteria-server` | both `active`; `awg show awg0` exits 0 |
+| Config validity | `xray run -test -config /usr/local/etc/xray/config.json` | `Configuration OK.` |
+| Every transport | `xrayebator channel-test --name <profile>` | `http: "200"` on every route |
+| PQ route | same, on a profile that has `pq_routes > 0` | `pq: true`, still `200` |
+| Hysteria 2 | `hysteria server` + a client against the issued link | a real request returns `200` |
+| AWG handshake | `awg show awg0` after a client connects | `latest handshake` present, traffic counters move |
+| AWG 3.1 keys | `awg show awg0` | `content padding addition`, `rekey after time`, `random trailers: on` |
+| WARP exit | `xrayebator channel-test --name <profile> --url https://api.ipify.org` | the routed exit differs from the server's own |
+| WARP state | `xrayebator warp-status` | `applied: true` for the chosen mode |
+
+Two traps that cost real debugging time and are easy to miss on a re-run:
+
+1. **A stale manager binary.** `awg show` printing `random trailers: off` with no padding means the
+   deployed `xrayebator` predates the transport-protection stage even though the protocol is called
+   3.1 — check that the installed binary contains the keys, then re-run `awg-31 --on`.
+2. **Verifying WARP against Cloudflare.** `www.cloudflare.com/cdn-cgi/trace` reports `warp=on` for the
+   *server's own* exit too, because that host is itself inside Cloudflare's network, so it cannot
+   distinguish "routed through WARP" from "not routed at all". Use a non-Cloudflare echo service for
+   the entry/exit comparison.
+
+An AWG server without a connected peer has nothing to route, so `curl --interface awg0` returning
+`000` is expected on a server-only host and is not a fault; prove the tunnel with a real client
+instead. Likewise, a single slow `channel-test` route right after a restart is warm-up, not a defect.
+
 For the optional backends, a disposable VPS run should additionally cover: `hysteria2-install
 --grant-all` (service active, UDP listener present, grant in `server.yaml`), `awg-install
 --grant-all` (module in `lsmod`, `awg show awg0` shows the peer), a `profile-revoke` cycle rotating

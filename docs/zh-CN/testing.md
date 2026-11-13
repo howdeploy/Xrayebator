@@ -134,6 +134,34 @@ xrayebator channel-test --name <profile>                # 8/8 路由，延迟处
 这一周内 Hysteria 2 后端日志里只有客户端断开时的 `timeout: no recent network activity`；服务器侧没有
 错误。
 
+### 完整验收流程覆盖什么
+
+对全新安装的主机按此顺序走一遍。下列每一项都完整执行过；数字是"通过"当时的样子，并非对其他网络的保证。
+
+| 步骤 | 命令 | 通过标准 |
+|---|---|---|
+| 服务 | `systemctl is-active xray hysteria-server` | 两者均为 `active`；`awg show awg0` 返回 0 |
+| 配置有效性 | `xray run -test -config /usr/local/etc/xray/config.json` | `Configuration OK.` |
+| 全部传输 | `xrayebator channel-test --name <profile>` | 每条线路 `http: "200"` |
+| PQ 线路 | 同上，用于 `pq_routes > 0` 的配置档 | `pq: true`，仍为 `200` |
+| Hysteria 2 | 服务端 + 使用所发链接的客户端 | 真实请求返回 `200` |
+| AWG 握手 | 客户端连接后 `awg show awg0` | 出现 `latest handshake`，计数增长 |
+| AWG 3.1 密钥 | `awg show awg0` | `content padding addition`、`rekey after time`、`random trailers: on` |
+| WARP 出口 | `xrayebator channel-test --name <profile> --url https://api.ipify.org` | 经线路的出口不同于服务器自身出口 |
+| WARP 状态 | `xrayebator warp-status` | 所选模式为 `applied: true` |
+
+两个踩过坑、重复执行时容易忽略的陷阱：
+
+1. **过期的管理器二进制。** `awg show` 显示 `random trailers: off` 且没有 padding，说明已部署的
+   `xrayebator` 早于 transport protection 阶段，尽管协议名为 3.1 —— 确认已安装的二进制包含这些
+   键，然后重新执行 `awg-31 --on`。
+2. **用 Cloudflare 验证 WARP。** `www.cloudflare.com/cdn-cgi/trace` 对服务器自身出口也显示
+   `warp=on`，因为该主机本身就在 Cloudflare 网络内，因此无法区分"经 WARP"与"根本未路由"。比较入口
+   和出口时请使用 Cloudflare 之外的服务。
+
+AWG 服务端在没有已连接对端时没有可路由对象，因此在仅有服务端的主机上 `curl --interface awg0`
+返回 `000` 属预期，不是故障；请用真实客户端验证隧道。同样，重启后 `channel-test` 中单条较慢的线路
+属于预热，而非故障。
 ## 桌面图形界面
 
 GUI（`src/`）在 `tests/` 中有独立的 Vitest 单元测试：
