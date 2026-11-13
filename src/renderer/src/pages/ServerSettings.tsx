@@ -2645,19 +2645,21 @@ export function ServerPage({
                               : ''
                         }`}
                       >
-                        {warp?.mode === 'all'
-                          ? t('settings.warpModeAll')
-                          : warp?.mode === 'games-direct'
-                            ? t('settings.warpModeGames')
-                            : warp?.configured
-                              ? t('settings.warpOff')
-                              : t('settings.warpNotConfigured')}
+                        {/* Бейдж — короткий статус, как «выключена» у SSH: длинный
+                            текст режима растягивал шапку и повторял строку
+                            «Режим выхода» ниже. Полное имя режима — в сетке. */}
+                        {warp?.configured
+                          ? warp?.mode === 'all'
+                            ? t('settings.warpBadgeAll')
+                            : warp?.mode === 'games-direct'
+                              ? t('settings.warpBadgeGames')
+                              : t('settings.warpOff')
+                          : t('settings.warpNotConfigured')}
                       </span>
                     </span>
                     <span className={styles.subSubtitle}>{t('settings.warpSubtitle')}</span>
                   </span>
                 </div>
-
                 {warp?.configured ? (
                   <>
                     <dl className={styles.subGrid}>
@@ -2684,14 +2686,17 @@ export function ServerPage({
                         </dd>
                       </div>
                     </dl>
+                    {/* Оба предупреждения — в ОДНОМ боксе: два подряд жёлтых
+                        блока выглядели как сбой вёрстки, а по смыслу это один
+                        связный текст: что даёт режим и чем за это платим. */}
                     <p className={styles.subNotice}>
                       {warp?.mode === 'all'
                         ? t('settings.warpModeAllHint')
                         : warp?.mode === 'games-direct'
                           ? t('settings.warpModeGamesHint')
-                          : t('settings.warpModeOffHint')}
+                          : t('settings.warpModeOffHint')}{' '}
+                      {t('settings.warpUnstableNote')}
                     </p>
-                    <p className={styles.subNotice}>{t('settings.warpUnstableNote')}</p>
                   </>
                 ) : (
                   <p className={styles.subNotice}>{t('settings.warpNotConfiguredNote')}</p>
@@ -2704,24 +2709,27 @@ export function ServerPage({
                     <>
                       <Button
                         size="sm"
-                        variant={warp?.mode === 'games-direct' ? 'secondary' : 'primary'}
+                        variant={warp?.mode === 'games-direct' ? 'primary' : 'secondary'}
                         isDisabled={warpBusy}
+                        aria-pressed={warp?.mode === 'games-direct'}
                         onPress={() => void changeWarpMode('games-direct')}
                       >
                         {warpBusy ? t('settings.warpBusy') : t('settings.warpModeGames')}
                       </Button>
                       <Button
                         size="sm"
-                        variant={warp?.mode === 'all' ? 'secondary' : 'primary'}
+                        variant={warp?.mode === 'all' ? 'primary' : 'secondary'}
                         isDisabled={warpBusy}
+                        aria-pressed={warp?.mode === 'all'}
                         onPress={() => void changeWarpMode('all')}
                       >
                         {t('settings.warpModeAll')}
                       </Button>
                       <Button
                         size="sm"
-                        variant="secondary"
+                        variant={warp?.mode === 'off' ? 'primary' : 'secondary'}
                         isDisabled={warpBusy}
+                        aria-pressed={warp?.mode === 'off'}
                         onPress={() => void changeWarpMode('off')}
                       >
                         {t('settings.warpModeOff')}

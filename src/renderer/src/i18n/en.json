@@ -511,6 +511,8 @@
     "warpNotConfiguredNote": "WARP is not registered. Press “Register WARP” to give the server a Cloudflare egress address.",
     "warpSetupToast": "WARP registered",
     "warpModeSetToast": "WARP mode applied",
-    "warpUnstableNote": "WARP is free but it is somebody else's infrastructure: it goes unreachable for 30-60 seconds at a time. That is why the gaming mode keeps games on the direct path."
+    "warpUnstableNote": "WARP is free but it is somebody else's infrastructure: it goes unreachable for 30-60 seconds at a time. That is why the gaming mode keeps games on the direct path.",
+    "warpBadgeAll": "all traffic",
+    "warpBadgeGames": "games direct"
   }
 }

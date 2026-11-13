@@ -511,6 +511,8 @@
     "warpNotConfiguredNote": "WARP 尚未注册。点击“注册 WARP”为服务器分配 Cloudflare 出口地址。",
     "warpSetupToast": "WARP 已注册",
     "warpModeSetToast": "WARP 模式已应用",
-    "warpUnstableNote": "WARP 免费，但属于他人基础设施：它会间歇性不可达 30-60 秒。因此游戏模式让游戏走直连。"
+    "warpUnstableNote": "WARP 免费，但属于他人基础设施：它会间歇性不可达 30-60 秒。因此游戏模式让游戏走直连。",
+    "warpBadgeAll": "全部流量",
+    "warpBadgeGames": "游戏直连"
   }
 }
