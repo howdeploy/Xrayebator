@@ -129,6 +129,9 @@ Xrayebator 不会更改主机的 TCP 拥塞控制算法，也不会写入或应�
 | `sudo xrayebator bypass remove --domain D` | 从分流规则移除一个域名（JSON） |
 | `sudo xrayebator bypass reset` | 清空所有自定义分流规则（JSON） |
 | `sudo xrayebator bypass bundle [--group a,b,c]` | 应用默认分流分组；不带 `--group` 时重新应用全部分组（JSON） |
+| `sudo xrayebator warp-setup [--force]` | 注册 Cloudflare WARP 设备并将密钥以 `0600` 保存在 `/usr/local/etc/xrayebator/warp/`；按需安装 `wgcf`。幂等（`already: true`），`--force` 重新注册。输出 JSON |
+| `sudo xrayebator warp-mode all\|games-direct\|off` | 将 catch-all 指向 WARP（`all`）；`geosite:category-games` 直连、其余走 WARP（`games-direct`）；或把 catch-all 恢复为 `direct`（`off`）。备份配置、校验并重启 Xray；输出 JSON |
+| `sudo xrayebator warp-status` | 以 JSON 输出 WARP 状态：`configured`、`mode`、`applied` |
 | `sudo xrayebator backend-status` | 以 JSON 输出多协议后端注册表状态（`{"ok":true,"backends":{…}}`） |
 | `sudo xrayebator backend-start --type hysteria2\|awg` | 启动已安装但单元未激活的后端（重启或手动停止之后）：AWG 会先加载内核模块，再启动单元并验证接口；输出 JSON（本来就运行时返回 `already: true`）。GUI 的 **启动** 按钮调用的就是它 |
 | `sudo xrayebator hysteria2-install [--port P] [--grant-all]` | 安装 Hysteria 2 UDP 后端：从 `HyNetworks/hysteria` 官方 release 下载二进制（SHA-256 校验）、专用 `hysteria` 服务账户、独立 systemd 单元（`CAP_NET_BIND_SERVICE`）、QUIC sysctl 缓冲、自适应 TLS（优先复用订阅的 Let's Encrypt 证书并附续期 deploy-hook，否则自签）；UDP 端口默认 443；输出 JSON（已安装时 `already: true`） |
@@ -617,6 +620,50 @@ nginx，也不会用 IP 覆盖订阅标记（否则 GUI 会拿到一个失效的
 
 通过俄罗斯入口对目的地进行分流并连接受限境外节点的部署方式，见[私有级联部署](private-cascade.md)。
 
+## WARP 作为出口地址
+
+级联需要第二台服务器。更省事的方式是让用户流量经 Cloudflare WARP 出去：对端看到的是 Cloudflare
+地址，客户端连接的地址不会出现在另一侧，也不需要额外租用任何东西。这是"入口与出口必须不同"规则中
+出口的一半。同一主机商的第二个 IP 通常更差：它大多落在同一子网，会与第一个一起被封。
+
+```bash
+sudo xrayebator warp-setup              # 注册 WARP 设备，密钥 0600
+sudo xrayebator warp-mode games-direct  # 游戏直连，其余走 WARP
+sudo xrayebator warp-status             # JSON：configured / mode / applied
+```
+
+`warp-setup` 幂等（`{"ok":true,"already":true}`），`--force` 会重新注册设备。状态保存在
+`/usr/local/etc/xrayebator/warp/`：`warp.json` 为 `0600` root（私钥、对端公钥、分配到的地址、
+`reserved`），`mode` 保存当前模式。`wgcf` 按需安装。
+
+三种模式（`warp-mode`）：
+
+| 模式 | 行为 | 适用 |
+|---|---|---|
+| `all` | catch-all 全部走 WARP | 入口与出口最大程度分离，代价是延迟 |
+| `games-direct` | `geosite:category-games` 直连，其余走 WARP | 游戏：额外延迟与 WARP 抖动不可接受 |
+| `off` | catch-all 恢复为 `direct` | 回滚，或不需要分离出口时 |
+
+`games-direct` 来自实测的取舍。在测试主机上，WARP 对非 Cloudflare 目标增加约 30-40 毫秒端到端
+延迟；吞吐量视对端和时段为直连的 60-100%。更要紧的是 WARP 会间歇性不可达：连续多次请求可能失败
+数十秒，然后自行恢复。对交互式游戏来说，这比增加的延迟更糟，因此游戏流量被有意排除在 WARP 之外，
+而浏览和普通应用仍然经 Cloudflare 出口。
+
+两点运维提醒。第一，`reserved`（注册返回的 `client_id` 中三个字节）是必需的：没有它 WARP 不会
+应答；若 Cloudflare API 未返回 `client_id`，管理器会回退为 `[0,0,0]`，可用但可能不够稳定。
+第二，WARP 是别人的基础设施：Cloudflare 能看到这些流量，服务免费但有速率限制，从已被大量使用的
+地址注册可能被拒绝。它是对第二台节点的务实替代，而不是永久网关。
+
+必须从服务器本身验证，而不只是看配置。`channel-test` 会通过配置档的线路启动真实客户端，因此它
+看到的出口地址就是用户会得到的地址：
+
+```bash
+curl -s https://api.ipify.org                       # 服务器自身的出口
+sudo xrayebator channel-test --name NAME --url https://api.ipify.org
+```
+
+应用 `warp-mode` 后，服务器自身出口与经线路的出口必须不同。若两者仍然相同，说明 catch-all 未更新
+——检查 `warp-status` 的 `applied`。
 ## 自有域名与 self-steal 挡板
 
 Self-steal 会在 `127.0.0.1:9444` 部署带有效证书的 nginx，Reality 入站则获得

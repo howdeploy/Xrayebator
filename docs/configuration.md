@@ -141,6 +141,9 @@ is a client-side profile/route setting; changing it does not restart Xray or alt
 | `sudo xrayebator bypass remove --domain D` | Remove a domain from bypass rules |
 | `sudo xrayebator bypass reset` | Clear all custom bypass rules |
 | `sudo xrayebator bypass bundle [--group a,b,c]` | Apply the default bypass groups; without `--group`, apply all groups |
+| `sudo xrayebator warp-setup [--force]` | Register a Cloudflare WARP device and store its keys `0600` in `/usr/local/etc/xrayebator/warp/`; installs `wgcf` on demand. Idempotent (`already: true`); `--force` registers a new device. Prints JSON |
+| `sudo xrayebator warp-mode all\|games-direct\|off` | Point the catch-all at WARP (`all`), keep `geosite:category-games` on the direct path and send the rest through WARP (`games-direct`), or return the catch-all to `direct` (`off`). Backs up the config, validates it and restarts Xray; prints JSON |
+| `sudo xrayebator warp-status` | Print WARP state as JSON: `configured`, `mode`, `applied` |
 | `sudo xrayebator backend-status` | Print the multi-protocol backend registry status as JSON (`{"ok":true,"backends":{…}}`) |
 | `sudo xrayebator backend-start --type hysteria2\|awg` | Start an installed backend whose unit is not active (after a reboot or a manual stop): loads the kernel module for AWG, starts the unit, verifies the interface; prints JSON (`already: true` when it was running). The GUI button **Start** calls exactly this |
 | `sudo xrayebator hysteria2-install [--port P] [--grant-all]` | Install the Hysteria 2 UDP backend: binary from `HyNetworks/hysteria` releases (SHA-256 verified), dedicated `hysteria` service user, own systemd unit with `CAP_NET_BIND_SERVICE`, QUIC sysctl buffers, adaptive TLS (subscription Let's Encrypt cert with a renewal deploy-hook, otherwise self-signed); default UDP port 443; prints JSON (`already: true` when installed) |
@@ -372,19 +375,42 @@ Per the upstream protocol split, AmneziaWG parameters divide into two groups:
 | 3.0: `HeaderProtectionKey` | 3.0: `ContentPaddingAddition`, `Rekey*`, `Reject*`, `Keepalive*`, `MaxHandshakeAttempts` (integer or `"a-b"` range) |
 | 3.1: `RandomTrailers` | 3.1: `DisableCookies` |
 
-Xrayebator implements the AWG 3.1 feature set: junk parameters plus `S1`–`S4` (≥ 12), a randomly
-generated `HeaderProtectionKey` shared between the server and every client `.conf`, and
-`RandomTrailers = on`. `DisableCookies` is available but off by default (it trades away the
-built-in anti-amplification defence). New installs get 3.1 immediately; for installs made before
-the 3.1 stage, menu item 12 → «Режим AWG 3.1» or `awg-31 --on|--off` generates the missing keys,
-switches the config format and regenerates the interface. The migration caveat is unchanged, and
-it is exactly what matters against Russian DPI/ТСПУ analysis: plain WireGuard handshakes have
-fixed packet lengths and plaintext header type bytes, so passive classification works without
-inspecting payloads — AWG 3.0 encrypts the header, 3.1 removes the fixed-length signature. The
-3.1 keys live in the must-match group, so after a switch **every previously issued client `.conf`
-must be re-downloaded**, and clients need AmneziaVPN ≥ 5.0.1.5 — older apps refuse to import the
-config at all. Verify by `awg show`: no `latest handshake` means the must-match group disagrees; a
-handshake without traffic points to `awg-quick`/routing/firewall instead.
+Xrayebator implements the AWG 3.1 feature set. Beyond junk parameters and `S1`-`S4` (>= 12) it
+emits the whole transport-protection group, because header encryption alone keeps two recognisable
+signals: repeated packet sizes and constant timers.
+
+| Emitted key | What it removes |
+|---|---|
+| `HeaderProtectionKey` | plaintext header type bytes (shared by server and every client `.conf`) |
+| `RandomTrailers = on` | the fixed `handshake init` / `handshake response` lengths |
+| `ContentPaddingAddition` | repeated transport payload sizes; kept in the recommended 2..10 band |
+| `RekeyAfterTime`, `RekeyTimeout`, `RejectAfterTime`, `KeepaliveTimeout`, `MaxHandshakeAttempts` | constant session timings, which is what behavioural analysis scores |
+
+`DisableCookies` is available but off by default (it trades away the built-in anti-amplification
+defence). New installs get 3.1 immediately; for installs made before the 3.1 stage, menu item 12 ->
+«Режим AWG 3.1» or `awg-31 --on|--off` fills in **every missing key**, including the transport group
+— an installation that only received the early 3.1 subset is upgraded too, and existing values are
+never overwritten. The interface is regenerated afterwards.
+
+`Jc`, `Jmin` and `Jmax` are **client-side** and deliberately differ per profile: junk packets are
+sent before the handshake and the receiver never parses them, so nothing breaks, while an identical
+junk train across every client is itself a signature. They are derived deterministically from the
+profile name and its public key, so they stay stable across calls without extra state.
+
+The migration caveat is unchanged, and it is exactly what matters against Russian DPI/ТСПУ analysis:
+plain WireGuard handshakes have fixed packet lengths and plaintext header type bytes, so passive
+classification works without inspecting payloads — AWG 3.0 encrypts the header, 3.1 removes the
+fixed-length and fixed-timing signature. The 3.1 keys live in the must-match group, so after a switch
+**every previously issued client `.conf` must be re-downloaded**, and clients need
+AmneziaVPN >= 5.0.1.5 — older apps refuse to import the config at all. Verify by `awg show`: the
+interface prints `content padding addition`, `rekey after time` and friends when the kernel accepted
+them; no `latest handshake` means the must-match group disagrees, and a handshake without traffic
+points to `awg-quick`/routing/firewall instead.
+
+> A deployed server keeps running the manager binary that `install.sh` placed there. If that binary
+> predates the transport group, the interface comes up with `random trailers: off` and no padding
+> even though the version string says 3.1. Re-run `awg-31 --on` after updating the manager and
+> confirm with `awg show`.
 
 ### HAPP client routing profile
 
@@ -700,6 +726,59 @@ from another server connects to.
 
 For a separate Russian ingress that routes selected destinations locally and sends other traffic
 through a restricted foreign node, see [Private cascade deployment](private-cascade.md).
+
+## WARP as the egress address
+
+A cascade needs a second server. The cheaper way to stop the entry address from being exposed is to
+send user traffic out through Cloudflare WARP: the destination sees a Cloudflare address, the address
+clients connect to never appears on the far side, and nothing extra has to be rented. This is the
+egress half of the "ingress and egress must differ" rule; a second IP from the same hosting provider
+is usually a weaker choice, because it normally arrives in the same subnet and is burned together
+with the first one.
+
+```bash
+sudo xrayebator warp-setup              # register a WARP device, store keys 0600
+sudo xrayebator warp-mode games-direct  # games direct, everything else via WARP
+sudo xrayebator warp-status             # JSON: configured / mode / applied
+```
+
+`warp-setup` is idempotent (`{"ok":true,"already":true}`); `--force` registers a new device. State
+lives in `/usr/local/etc/xrayebator/warp/`: `warp.json` is `0600` root (private key, peer public key,
+assigned addresses, `reserved`) and `mode` holds the active mode. `wgcf` is installed on demand.
+
+Three modes (`warp-mode`):
+
+| Mode | Behaviour | Use when |
+|---|---|---|
+| `all` | Catch-all goes to the WARP outbound | maximum separation of ingress and egress; accepts the latency cost |
+| `games-direct` | `geosite:category-games` goes out directly, everything else through WARP | gaming, where added latency is felt and WARP jitter is unacceptable |
+| `off` | Catch-all returns to `direct` | revert, or when no egress separation is wanted |
+
+`games-direct` exists because of a measured trade-off. On a test host WARP added roughly 30-40 ms of
+end-to-end latency against non-Cloudflare targets; throughput stayed between 60% and 100% of the
+direct path depending on the far side and the hour. More importantly, WARP proved intermittently
+unreachable: a run of consecutive requests can fail for tens of seconds and then recover on its own.
+For an interactive game that is worse than the extra latency, so game traffic is deliberately kept
+off WARP while browsing and applications still exit through Cloudflare.
+
+Two operational notes. First, `reserved` (three bytes taken from the registration `client_id`) is
+mandatory — WARP does not answer without it; if the Cloudflare API does not return `client_id`, the
+manager falls back to `[0,0,0]`, which works but can be less stable. Second, WARP is somebody else's
+infrastructure: Cloudflare sees that traffic, the service is free but rate limited, and registration
+can be refused from an address that has already been used heavily. Treat it as the pragmatic
+alternative to a second node, not as a permanent gateway.
+
+Check the result from the server itself, not only from the config. `channel-test` drives a real
+client through the profile's route, so the exit address it observes is the one a user would get:
+
+```bash
+curl -s https://api.ipify.org                       # the server's own exit address
+sudo xrayebator channel-test --name NAME --url https://api.ipify.org
+```
+
+If `warp-mode` is applied, the server's own exit and the routed exit must differ. A routed exit that
+still equals the server address means the catch-all was not updated — check `warp-status` for
+`applied`.
 
 ## Custom domain and self-steal stub
 

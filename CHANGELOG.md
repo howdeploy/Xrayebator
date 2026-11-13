@@ -8,6 +8,17 @@ User-facing Xrayebator changes. The server manager and Electron application are 
 
 - Opt-in private cascade configuration generation for a Russian ingress and foreign exit, with ordered TCP/UDP routing, a Python 3 UDP destination helper, fail-closed foreign routes, and deployment, update and removal guides.
 - `profile-create --transport xhttp --without-pq` creates a legacy XHTTP profile with `encryption=none`. XHTTP profile creation uses PQ by default.
+- `warp-setup`, `warp-mode all|games-direct|off` and `warp-status` send user traffic out through Cloudflare WARP so that the address clients connect to is not the address destinations see. `games-direct` keeps `geosite:category-games` on the direct path, because WARP adds roughly 30-40 ms and is intermittently unreachable. WARP state lives `0600` under `/usr/local/etc/xrayebator/warp/`.
+
+### Changed
+
+- AmneziaWG 3.1 now emits the full transport-protection group, not only header encryption: `ContentPaddingAddition` (2..10), randomised `RekeyAfterTime`, `RekeyTimeout`, `RejectAfterTime`, `KeepaliveTimeout` and `MaxHandshakeAttempts`. Repeated packet sizes and constant timers were the remaining signal for behavioural analysis. `awg-31 --on` fills in every missing key on existing installations instead of stopping at the early 3.1 subset, and never overwrites values already present.
+- `Jc`, `Jmin` and `Jmax` are now derived per profile instead of being identical for every client. Those three are client-side and never parsed by the receiver, so nothing breaks, while an identical junk train across all clients is itself a DPI signature.
+
+### Fixed
+
+- `test-ssh-protect.sh` no longer inherits the live session's `SSH_CONNECTION`/`SSH_CLIENT`, which made the fallback branch compare against the real connection address instead of the value under test. The check was silently vacuous on a real host.
+- The WARP private key is passed to `jq` through the environment rather than `--arg`, so it no longer appears in `/proc/<pid>/cmdline`.
 
 ## [0.7.3] - 2026-11-07
 
