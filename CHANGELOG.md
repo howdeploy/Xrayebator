@@ -2,7 +2,10 @@
 
 User-facing Xrayebator changes. The server manager and Electron application are published from the canonical `howdeploy/Xrayebator` repository.
 
-## [Unreleased]
+## [0.7.5-beta.1] - 2026-11-13
+
+First beta after the autumn 2026 blocking round. Adds an egress address that differs from the ingress (Cloudflare WARP), the full AmneziaWG 3.1 transport-protection group, per-profile junk parameters and the opt-in private cascade. **Still a beta: if you need a proven build, stay on 0.7.3.**
+
 
 ### Added
 
