@@ -53,7 +53,7 @@ source ./xrayebator || fail "source ./xrayebator failed"
 # ── Срез 2: рендеры и детекты ──
 
 yaml="$TMP_ROOT/server.yaml"
-_hysteria2_render_server_yaml "$yaml" 443 "/opt/c.pem" "/opt/k.pem" || fail "render yaml"
+_hysteria2_render_server_yaml "$yaml" 443 "/opt/c.pem" "/opt/k.pem" '{}' "" || fail "render yaml"
 grep -q '^listen: :443$' "$yaml" || fail "yaml listen"
 grep -q '^  cert: /opt/c.pem$' "$yaml" || fail "yaml cert"
 grep -q '^  key: /opt/k.pem$' "$yaml" || fail "yaml key"
@@ -62,7 +62,7 @@ grep -q '^  userpass: {}$' "$yaml" || fail "yaml userpass empty map"
 grep -q '^  type: 404$' "$yaml" || fail "yaml masquerade 404"
 pass "server.yaml rendered with expected structure"
 
-_hysteria2_render_server_yaml "$yaml" 8443 "/c" "/k" '{"alice":"pw1"}' || fail "render yaml users"
+_hysteria2_render_server_yaml "$yaml" 8443 "/c" "/k" '{"alice":"pw1"}' "" || fail "render yaml users"
 grep -q '^  userpass: {"alice":"pw1"}$' "$yaml" || fail "yaml userpass map inline"
 pass "server.yaml accepts users map parameter"
 
@@ -79,47 +79,96 @@ arch=$(_hysteria2_asset_arch) || fail "asset arch"
 case "$arch" in amd64|arm64|arm|386) ;; *) fail "unexpected arch: $arch" ;; esac
 pass "asset arch resolves: $arch"
 
-# Детект TLS проверяем на синтетических путях: иначе тест зависел от хоста — на
-# сервере с живым Let's Encrypt он краснел («le <ip>» вместо «selfsigned»), хотя
-# код прав. Сначала без домена вовсе, затем с доменом без сертификата, затем с
-# сертификатом — три исхода детектора.
-export HYSTERIA2_SUBSCRIPTION_DOMAIN_FILE="$TMP_ROOT/.subscription_domain"
-export HYSTERIA2_LETSENCRYPT_LIVE_DIR="$TMP_ROOT/letsencrypt"
-rm -f "$HYSTERIA2_SUBSCRIPTION_DOMAIN_FILE"
-[[ "$(_hysteria2_tls_mode_detect)" == "selfsigned" ]] \
-  || fail "tls detect without domain: $(_hysteria2_tls_mode_detect)"
+# Проверяем выбор TLS и deploy-hook на изолированных LE-линиях.
+HYSTERIA2_SUBSCRIPTION_DOMAIN_FILE="$TMP_ROOT/.subscription_domain"
+HYSTERIA2_LETSENCRYPT_LIVE_DIR="$TMP_ROOT/letsencrypt"
+SELFSTEAL_DOMAIN_FILE="$TMP_ROOT/.selfsteal_domain"
+[[ "$(_hysteria2_tls_mode_detect)" == "selfsigned" ]] || fail "tls detect without domain"
 printf 'sub.example.com' > "$HYSTERIA2_SUBSCRIPTION_DOMAIN_FILE"
-[[ "$(_hysteria2_tls_mode_detect)" == "selfsigned" ]] \
-  || fail "tls detect with domain but no cert: $(_hysteria2_tls_mode_detect)"
-mkdir -p "$HYSTERIA2_LETSENCRYPT_LIVE_DIR/sub.example.com"
-[[ "$(_hysteria2_tls_mode_detect)" == "le sub.example.com" ]] \
-  || fail "tls detect with live cert: $(_hysteria2_tls_mode_detect)"
-pass "tls mode defaults to selfsigned without subscription markers"
+[[ "$(_hysteria2_tls_mode_detect)" == "selfsigned" ]] || fail "tls detect without cert"
+live="$HYSTERIA2_LETSENCRYPT_LIVE_DIR/sub.example.com"
+ip_live="$HYSTERIA2_LETSENCRYPT_LIVE_DIR/203.0.113.10"
+mkdir -p "$live" "$ip_live" "$HYSTERIA2_DIR"
+printf 'domain cert\n' > "$live/fullchain.pem"
+printf 'domain key\n' > "$live/privkey.pem"
+printf 'IP cert\n' > "$ip_live/fullchain.pem"
+printf 'IP key\n' > "$ip_live/privkey.pem"
+[[ "$(_hysteria2_tls_mode_detect)" == "le sub.example.com" ]] || fail "subscription domain cert"
+printf '203.0.113.10' > "$HYSTERIA2_SUBSCRIPTION_DOMAIN_FILE"
+[[ "$(_hysteria2_tls_mode_detect)" == "selfsigned" ]] || fail "IP-only TLS fallback"
+printf 'sub.example.com' > "$SELFSTEAL_DOMAIN_FILE"
+tls_mode=$(_hysteria2_tls_mode_detect)
+[[ "$tls_mode" == "le sub.example.com" ]] || fail "domain cert must win over IP cert"
+domain=${tls_mode#le }
+
+_hysteria2_render_server_yaml "$yaml" 443 /c /k '{}' "$domain" || fail "render proxy"
+grep -qx '  type: proxy' "$yaml" || fail "known domain must use proxy"
+grep -Fxq "    url: https://$domain/" "$yaml" || fail "proxy must target operator domain"
+grep -qx '    rewriteHost: true' "$yaml" || fail "proxy must rewrite Host"
+! grep -qx '  type: 404' "$yaml" || fail "known domain must not use 404"
+
+_hysteria2_write_certbot_hook "$domain" || fail "write deploy-hook"
+export HYSTERIA2_RESTART_LOG="$TMP_ROOT/restarts"
+cat > "$FAKEBIN/systemctl" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1" == restart ]]; then
+  printf '%s\n' "$2" >> "$HYSTERIA2_RESTART_LOG"
+fi
+exit 0
+EOF
+printf 'old cert\n' > "$HYSTERIA2_DIR/cert.pem"
+printf 'old key\n' > "$HYSTERIA2_DIR/key.pem"
+for renewed in "203.0.113.10" "203.0.113.10 $domain" "$domain 2001:db8::1" "other.example.com" ""; do
+  RENEWED_DOMAINS="$renewed" bash "$HYSTERIA2_CERTBOT_HOOK" || fail "deploy-hook: $renewed"
+  [[ $(<"$HYSTERIA2_DIR/cert.pem") == "old cert" &&
+     $(<"$HYSTERIA2_DIR/key.pem") == "old key" &&
+     ! -e "$HYSTERIA2_RESTART_LOG" ]] || fail "unexpected TLS update or restart: $renewed"
+done
+RENEWED_DOMAINS="$domain" RENEWED_LINEAGE="$HYSTERIA2_LETSENCRYPT_LIVE_DIR/other.example.com" \
+  bash "$HYSTERIA2_CERTBOT_HOOK" || fail "foreign lineage deploy-hook"
+[[ ! -e "$HYSTERIA2_RESTART_LOG" ]] || fail "foreign lineage triggered restart"
+RENEWED_DOMAINS="$domain" RENEWED_LINEAGE="$live" bash "$HYSTERIA2_CERTBOT_HOOK" || fail "domain deploy-hook"
+cmp -s "$live/fullchain.pem" "$HYSTERIA2_DIR/cert.pem" &&
+  cmp -s "$live/privkey.pem" "$HYSTERIA2_DIR/key.pem" &&
+  grep -qx 'hysteria-server' "$HYSTERIA2_RESTART_LOG" || fail "domain renewal must update TLS and restart"
+rm -f "$HYSTERIA2_CERTBOT_HOOK"
+pass "domain TLS wins over IP, uses proxy masquerade and ignores IP renewal"
 
 # ── Реестр + статус ──
 
-_backend_set hysteria2 '(.hysteria2.installed) = true' || fail "set installed"
-_backend_set hysteria2 '(.hysteria2.version) = $v' --arg v "v2.12.3" || fail "set version"
-_backend_set hysteria2 '(.hysteria2.port) = $p' --argjson p 443 || fail "set port"
-_backend_set hysteria2 '(.hysteria2.unit) = $u' --arg u "hysteria-server.service" || fail "set unit"
-_backend_set hysteria2 '(.hysteria2.tls_mode) = $m' --arg m "selfsigned" || fail "set tls"
-_backend_set hysteria2 '(.hysteria2.sni) = $s' --arg s "" || fail "set sni"
-_backend_set hysteria2 '(.hysteria2.sub_body) = true' || fail "set sub_body"
+(
+  _hysteria2_fetch_release_info() { printf 'app/v2.12.3 \n'; }
+  _hysteria2_ensure_user() { return 0; }
+  _hysteria2_apply_sysctl() { return 0; }
+  _backend_port_busy_udp() { return 1; }
+  open_firewall_port() { return 0; }
+  sleep() { return 0; }
+  curl() {
+    local output
+    while [[ "$1" != "-o" ]]; do shift; done
+    output=$2
+    printf '#!/bin/bash\nexit 0\n' > "$output"
+  }
+
+  mkdir -p "$(dirname "$HYSTERIA2_BIN")"
+  _hysteria2_install 443 no_prompt > "$TMP_ROOT/install.log" 2>&1 || { cat "$TMP_ROOT/install.log"; fail "install with domain TLS"; }
+) || fail "staged installation"
+cmp -s "$live/fullchain.pem" "$HYSTERIA2_DIR/cert.pem" &&
+  cmp -s "$live/privkey.pem" "$HYSTERIA2_DIR/key.pem" || fail "install did not copy domain TLS"
+grep -Fxq "    url: https://$domain/" "$HYSTERIA2_DIR/server.yaml" || fail "install lost proxy"
 status="$(hysteria2_status_command)" || fail "hysteria2_status_command"
-jq -e '.ok == true and
+jq -e --arg domain "$domain" '.ok == true and
        .backend.installed == true and
        .backend.version == "v2.12.3" and
-       .backend.tls_mode == "selfsigned" and
+       .backend.tls_mode == ("le " + $domain) and
+       .backend.sni == $domain and
+       .backend.masquerade == "proxy" and
+       .backend.masquerade_domain == $domain and
        .backend.port == 443 and
-       (.binary == "absent" or .binary == "present")' <<<"$status" >/dev/null \
-  || fail "status JSON shape: $status"
-pass "hysteria2-status JSON shape correct (registry fields preserved)"
+       .binary == "present"' <<<"$status" >/dev/null || fail "status JSON: $status"
+pass "install writes domain TLS and proxy to server config and registry"
 
 # ── Срез 3: гранты, события, ссылка ──
-# В реальном жизненном цикле каталог бэкенда создаёт _hysteria2_install;
-# тест собирает состояние вручную — воспроизводим это.
-mkdir -p "$HYSTERIA2_DIR"
-
 jq -n '{name:"alice", uuid:"u-alice", transport:"tcp", port:443, fingerprint:"firefox",
         sni:"www.example.com", sub_token:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", created:"2026-10-04"}' \
   > "$PROFILES_DIR/alice.json" || fail "fixture alice"
@@ -127,32 +176,36 @@ jq -n '{name:"alice", uuid:"u-alice", transport:"tcp", port:443, fingerprint:"fi
 
 _hysteria2_grant_profile alice || fail "grant alice"
 pw1=$(jq -r '.backends.hysteria2.password' "$PROFILES_DIR/alice.json")
-[[ "$pw1" =~ ^[0-9a-f]{32}$ ]] || fail "grant password format: $pw1"
+[[ "$pw1" =~ ^[0-9a-f]{32}$ ]] || fail "grant password format"
 jq -r '.backends.hysteria2.username' "$PROFILES_DIR/alice.json" | grep -qx "alice" || fail "grant username"
 grep -q "alice: $pw1" "$HYSTERIA2_DIR/server.yaml" 2>/dev/null \
   || grep -q "\"alice\":\"$pw1\"" "$HYSTERIA2_DIR/server.yaml" || fail "regen: alice missing in users map"
+grep -Fxq "    url: https://$domain/" "$HYSTERIA2_DIR/server.yaml" || fail "regen lost proxy"
 [[ "$(_hysteria2_grants_count)" == "1" ]] || fail "grants count 1 expected"
 pass "grant_profile writes password to profile and regenerates users map"
 
 link=$(_hysteria2_profile_link_pure "$PROFILES_DIR/alice.json") || fail "link pure"
+[[ "$link" == *"@203.0.113.10:443/?sni=$domain&insecure=0#"* ]] || fail "domain TLS link disagrees with registry"
+_backend_set hysteria2 '.hysteria2 |= (.port = 8443 | .tls_mode = "selfsigned" | .sni = "")' \
+  || fail "set selfsigned endpoint"
 # Метка ссылки включает страну, если на хосте есть geo-маркер (.server_country):
 # на живом сервере тест падал, потому что ожидал голое имя. Изолируем маркер и
 # проверяем ОБА варианта — без него и с ним (иначе один из путей не покрыт).
 export SERVER_COUNTRY_FILE="$TMP_ROOT/.server_country"
 rm -f "$SERVER_COUNTRY_FILE"
 link=$(_hysteria2_profile_link_pure "$PROFILES_DIR/alice.json") || fail "link pure (no country)"
-[[ "$link" == "hysteria2://alice:${pw1}@203.0.113.10:443/?insecure=1#alice" ]] \
-  || fail "link shape without country: $link"
+[[ "$link" == "hysteria2://alice:${pw1}@203.0.113.10:8443/?insecure=1#alice" ]] \
+  || fail "link shape without country"
 printf 'NL|Netherlands|Kerkrade' > "$SERVER_COUNTRY_FILE"
 link_geo=$(_hysteria2_profile_link_pure "$PROFILES_DIR/alice.json") || fail "link pure (country)"
 case "$link_geo" in
-  "hysteria2://alice:${pw1}@203.0.113.10:443/?insecure=1#"*"Netherlands"*"alice") ;;
-  *) fail "link shape with country: $link_geo" ;;
+  "hysteria2://alice:${pw1}@203.0.113.10:8443/?insecure=1#"*"Netherlands"*"alice") ;;
+  *) fail "link shape with country" ;;
 esac
 # Фрагмент обязан быть URL-encoded: юникод-флаг не должен попасть сырым.
 case "$link_geo" in
   *"%"*) ;;
-  *) fail "link fragment not URL-encoded: $link_geo" ;;
+  *) fail "link fragment not URL-encoded" ;;
 esac
 rm -f "$SERVER_COUNTRY_FILE"
 pass "pure link: selfsigned -> insecure=1, no sni param, name fragment (with and without country)"
@@ -168,9 +221,9 @@ pass "event revoked rotates password and regenerates config"
 safe_jq_write '.expire_disabled = true' "$PROFILES_DIR/alice.json" || fail "fixture expire"
 _hysteria2_on_profile_event alice expired || fail "event expired"
 users_line=$(grep '^  userpass: ' "$HYSTERIA2_DIR/server.yaml")
-[[ "$users_line" != *"alice"* ]] || fail "expired: alice still in users map: $users_line"
+[[ "$users_line" != *"alice"* ]] || fail "expired: alice still in users map"
 grep -q '_xrayebator_placeholder' <<<"$users_line" \
-  || fail "expired: empty map must fall back to placeholder: $users_line"
+  || fail "expired: empty map must fall back to placeholder"
 pass "event expired removes disabled profile grant (placeholder keeps config valid)"
 
 # restored: возврат гранта
@@ -216,9 +269,20 @@ pw3=$(jq -r '.backends.hysteria2.password' "$PROFILES_DIR/alice.json")
 [[ "$pw3" == "$pw2" ]] || fail "grant re-issue rotated password unexpectedly"
 pass "grant_profile is idempotent"
 
+_backend_set hysteria2 '.hysteria2 |= (del(.masquerade_domain) | .masquerade = "404")' \
+  || fail "fixture legacy masquerade"
+_hysteria2_grant_profile alice || fail "grant retry on legacy registry"
+grep -Fxq "    url: https://$domain/" "$HYSTERIA2_DIR/server.yaml" || fail "legacy regen lost proxy"
+jq -e --arg domain "$domain" '.hysteria2 | .masquerade == "proxy" and .masquerade_domain == $domain' \
+  "$BACKENDS_REGISTRY_FILE" >/dev/null || fail "legacy regen did not update registry"
+pass "grant retry preserves proxy and updates legacy registry"
+
 # ── Отсутствие установки: безопасные no-op ──
 
-safe_jq_write --arg t hysteria2 'del(.[$t])' "$BACKENDS_REGISTRY_FILE" || fail "registry del"
+(
+  close_firewall_port() { return 0; }
+  _hysteria2_uninstall >/dev/null 2>&1
+) || fail "uninstall staged backend"
 rc=0; _hysteria2_uninstall >/dev/null 2>&1 || rc=$?
 [[ "$rc" == "2" ]] || fail "uninstall rc=$rc on not-installed (expected 2)"
 rc=0; _hysteria2_grant_profile nobody >/dev/null 2>&1 || rc=$?
