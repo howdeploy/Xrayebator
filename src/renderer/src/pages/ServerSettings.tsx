@@ -20,6 +20,7 @@ import {
   Globe2,
   EthernetPort,
   Copy,
+  QrCode,
   Download,
   Check,
   ShieldOff,
@@ -1831,6 +1832,16 @@ export function ServerPage({
                       <Button size="sm" variant="secondary" onPress={() => copyUrl(profile)}>
                         <Copy size={13} />
                         {t('settings.copy')}
+                      </Button>
+                    )}
+                    {profile.subscription_url && (
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onPress={() => void showKeysQr(profile.subscription_url ?? '')}
+                      >
+                        <QrCode size={13} />
+                        {t('keys.qr')}
                       </Button>
                     )}
                     <Button
